@@ -28,11 +28,36 @@ pub struct FieldSchema {
     pub system: bool,
     #[schema(value_type = Option<Object>)]
     pub default: Option<Json>,
-    /// Type options sit beside `type`: `min_length`, `max_length`, `min`, `max`,
-    /// `integer`, `values`, `max_select`, `collection_id`, `cascade_delete`,
-    /// `items`, `min_items`, `max_items`, `dimensions`, `max_size`.
-    #[schema(value_type = Option<Object>)]
-    pub options: Option<Json>,
+    // Type options sit beside `type` (there is no `options` object; other
+    // keys are refused). Each applies to the types named.
+    /// `text`: minimum length in characters; `password`: minimum length (default 8).
+    pub min_length: Option<u32>,
+    /// `text`: maximum length in characters (default 1 000 000).
+    pub max_length: Option<u32>,
+    /// `number`: minimum value.
+    pub min: Option<f64>,
+    /// `number`: maximum value.
+    pub max: Option<f64>,
+    /// `number`: integers only.
+    pub integer: Option<bool>,
+    /// `select`: the allowed values.
+    pub values: Option<Vec<String>>,
+    /// `select`, `relation`, `file`: values that may be chosen at once (default 1; above 1 the field holds an array).
+    pub max_select: Option<u32>,
+    /// `relation`: the target collection's id.
+    pub collection_id: Option<String>,
+    /// `relation`: delete this record when the referenced record is deleted.
+    pub cascade_delete: Option<bool>,
+    /// `array`: item type, `text`, `number`, `bool` or `json` (default `json`).
+    pub items: Option<String>,
+    /// `array`: minimum number of items.
+    pub min_items: Option<u32>,
+    /// `array`: maximum number of items.
+    pub max_items: Option<u32>,
+    /// `vector`: number of dimensions (1 to 16 000).
+    pub dimensions: Option<u32>,
+    /// `json`: maximum serialised size in bytes (default 1 MiB).
+    pub max_size: Option<u32>,
 }
 
 #[derive(ToSchema)]

@@ -21,7 +21,7 @@ use forgebase_api::http::{ApiJson, Query};
 use forgebase_api::principal::Access;
 use forgebase_api::{ApiError, ApiExtension};
 use forgebase_data::AccessContext;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tower_http::limit::RequestBodyLimitLayer;
 use utoipa::{OpenApi, ToSchema};
 
@@ -30,6 +30,7 @@ use crate::branding::{MAX_ASSET_BYTES, theme_css};
 use crate::email::DeliveryQuery;
 use crate::error::CustomizeError;
 use crate::host::ResolvedHost;
+use crate::mailconfig::TestMailResult;
 use crate::model::{
     AcceptInput, Acceptance, Agreement, AgreementInput, AgreementRef, AssetKind, Branding, BrandingInput, Delivery,
     DeliveryStatus, Domain, DomainInput, DomainStatus, EmailTemplate, Pending, Preview, PreviewInput, PublicBranding,
@@ -54,6 +55,13 @@ fn ok<T: Serialize>(v: T) -> ApiResult {
 
 fn created<T: Serialize>(v: T) -> ApiResult {
     Ok((StatusCode::CREATED, Json(v)).into_response())
+}
+
+/// Body of `POST /email/provider/test`.
+#[derive(Deserialize, ToSchema)]
+pub struct TestMailInput {
+    /// Recipient of the test message.
+    pub to: String,
 }
 
 /// A list.
@@ -87,6 +95,11 @@ pub fn router<S: Clone + Send + Sync + 'static>(svc: CustomizeService) -> Router
             "/customize/email/templates/{key}",
             get(template).put(put_template).delete(delete_template),
         )
+        .route(
+            "/customize/email/provider",
+            get(mail_provider).put(put_mail_provider).delete(delete_mail_provider),
+        )
+        .route("/customize/email/provider/test", post(test_mail))
         .route("/customize/email/preview", post(preview))
         .route("/customize/email/send", post(send))
         .route("/customize/email/deliveries", get(deliveries))
@@ -123,13 +136,14 @@ pub fn openapi() -> utoipa::openapi::OpenApi {
 #[openapi(
     paths(
         domains, add_domain, domain, delete_domain, verify_domain, reissue_domain, branding, put_branding, put_asset,
-        delete_asset, templates, template, put_template, delete_template, preview, send, deliveries, delivery,
+        delete_asset, templates, template, put_template, delete_template, mail_provider, put_mail_provider,
+        delete_mail_provider, test_mail, preview, send, deliveries, delivery,
         retry_delivery, agreements, publish_agreement, pending, accept, accepted, acceptances, public_branding,
         public_asset, public_theme, public_agreements, docs,
     ),
     components(schemas(
         Domain, DomainStatus, DomainInput, Verification, VerifyResult, Branding, BrandingInput, PublicBranding,
-        EmailTemplate, TemplateInput, PreviewInput, Preview, SendInput, Delivery, DeliveryStatus, Agreement,
+        EmailTemplate, TemplateInput, PreviewInput, Preview, SendInput, TestMailInput, TestMailResult, Delivery, DeliveryStatus, Agreement,
         AgreementInput, AgreementRef, AcceptInput, Acceptance, Pending, Items<Domain>, Items<EmailTemplate>,
         Items<Delivery>, Items<Agreement>, Items<Acceptance>,
     )),
@@ -137,6 +151,7 @@ pub fn openapi() -> utoipa::openapi::OpenApi {
 )]
 struct CustomizeDoc;
 
+const MAIL_REALM: &str = "platform administrators: the realm whose provider to act on, or `*` for the instance's (default: the realm of the request)";
 const REALM: &str = "platform administrators: the realm to act on (default: the realm of the request)";
 
 // ---------------------------------------------------------------------------
@@ -327,6 +342,57 @@ async fn delete_template(
 ) -> ApiResult {
     s.delete_template(&ctx, q.get("realm"), &key).await.map_err(api)?;
     Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+/// The mail provider of a realm (`realm=*`: the instance), secrets masked.
+/// `configured: false` means the next level applies: the realm uses the
+/// instance's provider, which falls back to the log provider.
+#[utoipa::path(get, path = "/api/v1/customize/email/provider", tag = "customize",
+    params(("realm" = Option<String>, Query, description = MAIL_REALM)),
+    responses((status = 200, description = "`{realm, configured, config, created_at, updated_at}`", body = Object)))]
+async fn mail_provider(State(s): State<CustomizeService>, Access(ctx): Access, q: Query) -> ApiResult {
+    ok(s.mail_provider_config(&ctx, q.get("realm")).await.map_err(api)?)
+}
+
+/// Sets the mail provider: `{"provider": "resend" | "postmark" | "sendgrid" | "mailgun" | "ses" | "smtp" | "log",
+/// ...settings, "from_address"?}`. Secrets (`api_key`, `server_token`, `password`, `secret_access_key`,
+/// `session_token`) are sealed at rest and never returned; `"********"` or an absent field keeps the stored one.
+/// Nothing is sent: use `POST /email/provider/test`. Platform administrators only.
+#[utoipa::path(put, path = "/api/v1/customize/email/provider", tag = "customize", request_body = Object,
+    params(("realm" = Option<String>, Query, description = MAIL_REALM)),
+    responses((status = 200, description = "The stored configuration, secrets masked", body = Object)))]
+async fn put_mail_provider(
+    State(s): State<CustomizeService>,
+    Access(ctx): Access,
+    q: Query,
+    b: Body<serde_json::Value>,
+) -> ApiResult {
+    let input = body(&s, &ctx, b)?;
+    ok(s.put_mail_provider(&ctx, q.get("realm"), input).await.map_err(api)?)
+}
+
+/// Removes the provider configuration of a realm (`realm=*`: the instance).
+#[utoipa::path(delete, path = "/api/v1/customize/email/provider", tag = "customize",
+    params(("realm" = Option<String>, Query, description = MAIL_REALM)),
+    responses((status = 204, description = "Removed")))]
+async fn delete_mail_provider(State(s): State<CustomizeService>, Access(ctx): Access, q: Query) -> ApiResult {
+    s.delete_mail_provider(&ctx, q.get("realm")).await.map_err(api)?;
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+/// Sends a test message to `to` through the provider now (not queued, not in the delivery log)
+/// and reports the provider's message id, or why it was refused (`409 mail_test_failed`).
+#[utoipa::path(post, path = "/api/v1/customize/email/provider/test", tag = "customize", request_body = TestMailInput,
+    params(("realm" = Option<String>, Query, description = MAIL_REALM)),
+    responses((status = 200, description = "Accepted by the provider", body = TestMailResult)))]
+async fn test_mail(
+    State(s): State<CustomizeService>,
+    Access(ctx): Access,
+    q: Query,
+    b: Body<TestMailInput>,
+) -> ApiResult {
+    let input = body(&s, &ctx, b)?;
+    ok(s.send_test_mail(&ctx, q.get("realm"), &input.to).await.map_err(api)?)
 }
 
 /// Renders a stored template (`template`) or a draft (`draft`) with variables, without sending.

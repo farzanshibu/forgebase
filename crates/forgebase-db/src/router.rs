@@ -321,12 +321,26 @@ impl Backend for SetHandle {
         self.db.statement_writes(stmt)
     }
 
+    /// The primary's slow queries and those of the reads its replicas
+    /// served (each replica has its own handle and log), oldest first.
     fn slow_queries(&self) -> Vec<SlowQuery> {
-        self.db.slow_queries()
+        let mut all = self.db.slow_queries();
+        if let Some(replicas) = &self.replicas {
+            for (_, db) in replicas.node_databases() {
+                all.extend(db.slow_queries());
+            }
+            all.sort_by(|a, b| a.at.cmp(&b.at));
+        }
+        all
     }
 
     fn clear_slow_queries(&self) {
         self.db.clear_slow_queries();
+        if let Some(replicas) = &self.replicas {
+            for (_, db) in replicas.node_databases() {
+                db.clear_slow_queries();
+            }
+        }
     }
 
     fn slow_query_threshold(&self) -> Duration {
@@ -335,6 +349,11 @@ impl Backend for SetHandle {
 
     fn set_slow_query_threshold(&self, threshold: Duration) {
         self.db.set_slow_query_threshold(threshold);
+        if let Some(replicas) = &self.replicas {
+            for (_, db) in replicas.node_databases() {
+                db.set_slow_query_threshold(threshold);
+            }
+        }
     }
 
     /// On the set's primary.

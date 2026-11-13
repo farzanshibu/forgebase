@@ -6,7 +6,7 @@ mod common;
 use std::sync::Arc;
 
 use forgebase_data::{AccessContext, DefaultAuthorizer};
-use forgebase_kv::{KvConfig, KvService, Reply};
+use forgebase_kv::{KvConfig, KvError, KvService, Reply};
 
 fn cmd(s: &str) -> Vec<Vec<u8>> {
     s.split_whitespace().map(|p| p.as_bytes().to_vec()).collect()
@@ -138,4 +138,78 @@ async fn a_flush_cancelled_mid_write_keeps_its_keys_for_the_next_flush() {
         "the cancelled flush returned its key"
     );
     assert_eq!(kv.shutdown().await.unwrap(), 1, "the final flush writes it");
+}
+
+/// A key with U+0000 is refused on every backend: PostgreSQL `text` cannot
+/// store it, and a key the flusher cannot write used to block every save.
+#[tokio::test]
+async fn a_key_with_a_nul_character_is_refused() {
+    let kv = KvService::open(KvConfig::default(), Arc::new(DefaultAuthorizer), None)
+        .await
+        .unwrap();
+    let a = AccessContext::admin("root");
+    let set = vec![b"SET".to_vec(), b"bad\0key".to_vec(), b"v".to_vec()];
+    let err = kv.exec(&a, "app", &set).unwrap_err();
+    assert!(matches!(err, KvError::InvalidKey(_)), "{err}");
+    let mset = vec![
+        b"MSET".to_vec(),
+        b"x".to_vec(),
+        b"1".to_vec(),
+        b"y\0".to_vec(),
+        b"2".to_vec(),
+    ];
+    let err = kv.exec(&a, "app", &mset).unwrap_err();
+    assert!(matches!(err, KvError::InvalidKey(_)), "{err}");
+    assert_eq!(
+        kv.exec(&a, "app", &cmd("GET x")).unwrap(),
+        Reply::Nil,
+        "MSET is all or nothing"
+    );
+}
+
+/// One row the database refuses does not hold back the other keys of its
+/// set: they are saved, and only the refused key stays unsaved.
+#[tokio::test]
+async fn a_key_the_database_refuses_does_not_block_the_others() {
+    use forgebase_db::{Backend, BackendKind, Statement, TxMode};
+
+    let test = common::test_db().await;
+    let db = test.database().clone();
+    let poison = match db.kind() {
+        BackendKind::Sqlite => {
+            "CREATE TRIGGER kv_poison BEFORE INSERT ON _forgebase_kv_entries \
+             WHEN NEW.key = 'poison' BEGIN SELECT RAISE(ABORT, 'refused'); END"
+        }
+        BackendKind::Postgres => {
+            "CREATE FUNCTION kv_poison() RETURNS trigger LANGUAGE plpgsql AS $$ \
+             BEGIN IF NEW.key = 'poison' THEN RAISE EXCEPTION 'refused'; END IF; RETURN NEW; END $$; \
+             CREATE TRIGGER kv_poison BEFORE INSERT ON _forgebase_kv_entries \
+             FOR EACH ROW EXECUTE FUNCTION kv_poison();"
+        }
+    };
+    let mut tx = db.begin(TxMode::SchemaChange).await.unwrap();
+    tx.execute(&Statement::raw(poison)).await.unwrap();
+    tx.commit().await.unwrap();
+
+    let kv = KvService::open(
+        KvConfig::default(),
+        Arc::new(DefaultAuthorizer),
+        Some(Arc::new(db.clone())),
+    )
+    .await
+    .unwrap();
+    let a = AccessContext::admin("root");
+    for c in ["SET good1 a", "SET poison b", "SET good2 c"] {
+        kv.exec(&a, "app", &cmd(c)).unwrap();
+    }
+    assert_eq!(kv.flush().await.unwrap(), 2, "the two good keys are saved");
+    assert_eq!(kv.stats(&a).unwrap().unsaved_keys, 1, "the refused key stays unsaved");
+    assert!(kv.flush().await.is_err(), "the refused key alone still fails");
+
+    let kv2 = KvService::open(KvConfig::default(), Arc::new(DefaultAuthorizer), Some(Arc::new(db)))
+        .await
+        .unwrap();
+    assert_eq!(kv2.exec(&a, "app", &cmd("GET good1")).unwrap(), Reply::bulk("a"));
+    assert_eq!(kv2.exec(&a, "app", &cmd("GET good2")).unwrap(), Reply::bulk("c"));
+    assert_eq!(kv2.exec(&a, "app", &cmd("GET poison")).unwrap(), Reply::Nil);
 }

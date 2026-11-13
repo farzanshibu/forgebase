@@ -86,18 +86,28 @@ pub struct CreateExtension {
     pub name: String,
 }
 
+/// Who may call first (401 without credentials, 403 for others), then
+/// whether the backend has extensions: an anonymous caller learns nothing
+/// about the server.
 fn require(s: &AppState, ctx: &AccessContext) -> ApiResult<()> {
-    if s.db().kind() != BackendKind::Postgres {
-        return Err(ApiError::bad_request(
-            "extensions_unavailable",
-            "extensions need the PostgreSQL backend",
-        ));
-    }
     if !ctx.is_privileged() {
+        if matches!(ctx.principal, forgebase_data::access::Principal::Anonymous) {
+            return Err(ApiError::new(
+                StatusCode::UNAUTHORIZED,
+                "unauthenticated",
+                "authentication required",
+            ));
+        }
         return Err(ApiError::new(
             StatusCode::FORBIDDEN,
             "forbidden",
             "extensions are managed by administrators",
+        ));
+    }
+    if s.db().kind() != BackendKind::Postgres {
+        return Err(ApiError::bad_request(
+            "extensions_unavailable",
+            "extensions need the PostgreSQL backend",
         ));
     }
     Ok(())

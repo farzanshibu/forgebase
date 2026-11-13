@@ -330,9 +330,12 @@ projects while PostgreSQL is the default.
 binary into `<data_dir>/postgres/engine/` (about 30 MB, a few seconds), runs
 `initdb` (builtin C.UTF-8 locale, SCRAM passwords, data checksums), creates
 the ForgeBase roles with random passwords in `postgres/roles.secret` (0600),
-and listens on a Unix socket in `postgres/run/` only. TCP logins are off;
-`[database.postgres] listen = "127.0.0.1:5433"` turns on loopback TCP (other
-hosts need TLS, which this version does not set up). PostgreSQL refuses to run
+and listens on a Unix socket in `postgres/run/` only. TCP logins are off.
+Windows has no Unix socket: there the engine listens on loopback TCP
+(`127.0.0.1`, a free port picked at each start) and accepts loopback
+addresses only. `[database.postgres] listen = "127.0.0.1:5433"` turns on TCP
+logins at that address; they must use TLS (a self-signed certificate unless
+you set `[database.postgres] tls_cert` and `tls_key`). PostgreSQL refuses to run
 as root: run ForgeBase as an unprivileged user (the Docker image does). If the
 postmaster dies, ForgeBase restarts it with backoff; while it is down requests
 get `503 database_unavailable` and `/health/ready` fails the `database` check.
@@ -346,7 +349,8 @@ lock for the command and stop it afterwards (one to three seconds).
 | Command | What it does |
 |---|---|
 | `forgebase db status [--json]` | Backend, cluster directory, engine directory, whether the engine runs (pid, socket, port), TCP logins, and with a running engine the database size, connections, schema version and the extensions (available, installed). Never starts the engine. |
-| `forgebase db psql [--read-only \| --superuser] [PSQL_ARGS…]` | The engine's `psql` through the Unix socket, as `forgebase_server` (reads and writes every ForgeBase table, bypasses row-level security, not a superuser), `forgebase_reader` or `forgebase_super`. Example: `forgebase db psql -c 'select 1'`. The password goes through a temporary 0600 passfile, never the command line. External servers: use `psql "$FORGEBASE_DATABASE_URL"`. |
+| `forgebase db psql [--read-only \| --superuser \| --as LOGIN] [PSQL_ARGS…]` | The engine's `psql` through the Unix socket. By default the session runs as `forgebase_sql_admin`, the SQL editor's role (it logs in as `forgebase_server` and switches role): reads and writes collections, reads ForgeBase's tables except secret columns, bypasses row-level security, not a superuser. `--read-only` logs in as `forgebase_reader`, `--superuser` as `forgebase_super`. `--as LOGIN` logs in as a named direct login made with `forgebase db login create`; its rules apply, and psql asks for its password (or reads `PGPASSWORD` or `~/.pgpass`). Example: `forgebase db psql -c 'select 1'`. ForgeBase's own passwords go through a temporary 0600 passfile, never the command line. Not on Windows (no Unix socket). External servers: use `psql "$FORGEBASE_DATABASE_URL"`. |
+| `forgebase db login create\|list\|rotate\|delete` | Named direct logins: PostgreSQL logins (`fbu_<name>`) bound to one ForgeBase user or service account and at most one tenant, whose rules apply to every query. The password is printed once. |
 | `forgebase doctor` | Adds the engine (files against the archive manifest, `postgres --version`), the cluster (`PG_VERSION` against the engine, mode 0700), `roles.secret`, a postmaster left behind, and `amcheck` (`bt_index_check` on every B-tree index) plus the foreign-key check as the superuser. |
 
 `/api/system/info` reports `database.backend`, `mode`, `server_version`,
@@ -355,6 +359,105 @@ lock for the command and stop it afterwards (one to three seconds).
 package switches it over), `mode`, `extension`, `available`, `installed`,
 `state`). `/health/ready` keeps its shape and fails the `database` check while the
 bundled engine is restarting or has failed.
+
+### 3.6 Email, SMS and login providers
+
+Providers are not keys of the TOML file: they carry secrets, differ per
+realm and change without a restart. They are set over the REST API (secrets
+sealed under `auth/master.key`, never returned, masked as `********`) and
+survive restarts; back up `master.key` with the data directory or they cannot
+be opened. All calls go through the server's HTTPS client, which refuses
+private and metadata addresses unless `[auth] allow_private_outbound` is set
+([ADR-0039](adr/0039-more-providers.md)). Send administrator credentials on
+each call (`$ADMIN` is an administrator token).
+
+**Transactional email** (`resend`, `postmark`, `sendgrid`, `mailgun`, `ses`,
+`smtp`, `log`). Until one is set the server only logs the envelope of each
+message. One configuration per instance (`realm=*`) with optional overrides per
+realm; `from_address` is the `From` of every message (a verified sender or
+domain at the provider):
+
+```sh
+# Resend for the whole instance
+curl -X PUT "$BASE/api/v1/customize/email/provider?realm=*" -H "authorization: Bearer $ADMIN" \
+  -H 'content-type: application/json' \
+  -d '{"provider":"resend","api_key":"re_...","from_address":"no-reply@example.com"}'
+# Amazon SES in eu-west-1 for realm "acme" (credentials of an IAM user allowed ses:SendEmail)
+curl -X PUT "$BASE/api/v1/customize/email/provider?realm=acme" -H "authorization: Bearer $ADMIN" \
+  -H 'content-type: application/json' \
+  -d '{"provider":"ses","access_key_id":"AKIA...","secret_access_key":"...","region":"eu-west-1","from_address":"no-reply@acme.example"}'
+# Send a test message now; the answer carries the provider's message id
+curl -X POST "$BASE/api/v1/customize/email/provider/test?realm=*" -H "authorization: Bearer $ADMIN" \
+  -H 'content-type: application/json' -d '{"to":"you@example.com"}'
+```
+
+| `provider` | Settings | Notes |
+|---|---|---|
+| `resend` | `api_key` | |
+| `postmark` | `server_token`, `message_stream` (default `outbound`) | |
+| `sendgrid` | `api_key`, `region` (`global`, `eu`) | `eu` uses `api.eu.sendgrid.com` |
+| `mailgun` | `api_key`, `domain`, `region` (`us`, `eu`) | `eu` uses `api.eu.mailgun.net` |
+| `ses` | `access_key_id`, `secret_access_key`, `session_token`?, `region`, `configuration_set`? | SES v2, SigV4 |
+| `smtp` | `host`, `port`?, `tls` (`starttls`, `implicit`, `none`), `username`/`password`?, `envelope_from`, `helo`? | |
+| `log` | none | development |
+
+Every setting also accepts `base_url` (SES and SNS: `endpoint`) for a private
+relay or a regional endpoint. 429 and 5xx answers are retried by the job queue
+with backoff (5 attempts); other 4xx answers fail the delivery with the
+provider's reason in the delivery log, which also shows the provider's
+message id. `DELETE .../provider?realm=` removes a configuration: the realm
+falls back to the instance's, then to the log provider.
+
+**SMS** (`twilio`, `webhook`, `vonage`, `messagebird`, `bird`, `sns`,
+`plivo`, `dev`): per realm over `PUT /api/auth/realms/{realm}/sms`, or the
+instance's in `<data_dir>/auth/sms.json` (keep it `0600`; it holds the
+secrets in clear):
+
+```json
+{"provider": "vonage", "api_key": "...", "api_secret": "...", "from": "Acme"}
+{"provider": "messagebird", "api_key": "...", "from": "Acme"}
+{"provider": "bird", "api_key": "...", "workspace_id": "...", "channel_id": "..."}
+{"provider": "sns", "access_key_id": "AKIA...", "secret_access_key": "...", "region": "us-east-1", "sender_id": "Acme", "sms_type": "Transactional"}
+{"provider": "plivo", "auth_id": "MA...", "auth_token": "...", "from": "+15550100"}
+```
+
+Numbers must be E.164 (`+4915112345678`). 429 and 5xx answers are retried
+twice, briefly; if the gateway still throttles, the phone endpoints answer
+`429` with `Retry-After`. Amazon SNS needs an account out of the SMS sandbox
+and an origination identity for the destination country.
+
+**Login providers** (`google`, `github`, `apple`, `facebook`, `wechat`,
+`discord`, `oidc`, and `microsoft`, `gitlab`, `slack`, `linkedin`, `twitch`,
+`bitbucket`, `spotify`, `keycloak`): `oauth-providers.json` or
+`PUT /api/auth/realms/{realm}/oauth-providers/{id}`. The redirect URI to
+register at the provider is `<public_url>/api/auth/oauth/<id>/callback`
+(`server.public_url` must be set). Examples:
+
+```json
+{"providers": [
+  {"id": "entra", "kind": "microsoft", "client_id": "...", "client_secret": "...",
+   "tenant": "organizations", "allowed_tenants": ["00000000-0000-0000-0000-000000000000"]},
+  {"id": "gitlab-corp", "kind": "gitlab", "client_id": "...", "client_secret": "...",
+   "base_url": "https://git.example.com"},
+  {"id": "sso", "kind": "keycloak", "client_id": "...", "client_secret": "...",
+   "base_url": "https://sso.example.com", "tenant": "acme"},
+  {"id": "slack", "kind": "slack", "client_id": "...", "client_secret": "...",
+   "authorize_params": {"team": "T0123ABCD"}},
+  {"id": "linkedin", "kind": "linkedin", "client_id": "...", "client_secret": "..."},
+  {"id": "twitch", "kind": "twitch", "client_id": "...", "client_secret": "..."},
+  {"id": "bitbucket", "kind": "bitbucket", "client_id": "...", "client_secret": "..."},
+  {"id": "spotify", "kind": "spotify", "client_id": "...", "client_secret": "..."},
+  {"id": "apple", "kind": "apple", "client_id": "com.example.web",
+   "apple": {"team_id": "ABCDE12345", "key_id": "KEY1234567", "private_key_pem": "-----BEGIN PRIVATE KEY-----\n..."}}
+]}
+```
+
+Provider-side notes: for Microsoft, enable the optional `email` and `xms_edov`
+claims in the app registration if you want people to link to existing local
+accounts by email (without `xms_edov` they get a new account; see
+[security.md](security.md) §4.1); for Apple, register the callback as a
+`form_post` return URL and note Apple sends the name only on the first
+authorization; for Twitch the claims ForgeBase needs are requested for you.
 
 ## 4. Data directory
 
@@ -371,8 +474,11 @@ bundled engine is restarting or has failed.
 └── .forgebase.lock               held by the running server
 ```
 
-Back up with `forgebase backup` (online, consistent; it covers `forgebase.db`,
-`storage/` and `indexes/`). `auth/master.key` is **not** copied unless you pass
+Back up with `forgebase backup` (online, consistent; it covers the database,
+`storage/` and `indexes/`). The database is copied with the engine's own tool:
+`forgebase.db` with `VACUUM INTO` on SQLite, the cluster and `roles.secret`
+with `pg_basebackup` on the bundled PostgreSQL, a `pg_dump` of the ForgeBase
+schemas on an external server. `auth/master.key` is **not** copied unless you pass
 `--include-master-key`: losing it makes the stored secrets unreadable, so keep
 one copy of it apart from the backups. Schedule snapshots with cron or a
 systemd timer, for example `forgebase backup --keep-last 14 --max-age-days 30`.
@@ -615,16 +721,25 @@ Migrations run automatically on `serve`. Before you upgrade:
 5. Run `forgebase doctor` on the stopped data directory.
 6. Replace the binary, or pull the new image.
 7. Start the server. Pending migrations run. Before the first pending migration
-   the server writes `backups/pre-migrate-v<N>-<time>.db`.
+   the server writes a pre-migration snapshot: `backups/pre-migrate-v<N>-<time>.db`
+   on SQLite, the directory `backups/pre-migrate-v<N>-<time>/` (a
+   `pg_basebackup` of the cluster) on the bundled PostgreSQL. If that snapshot
+   fails, nothing is migrated. An external PostgreSQL server gets none; the
+   snapshot of step 4 is its rollback.
 8. Check `GET /health/ready` and `forgebase status`.
 
 **Rollback.** A database migrated by a newer binary is refused by an older one.
 To roll back:
 
 1. Stop the server.
-2. Restore the snapshot you took (`forgebase restore <id> --force`), or copy
-   `backups/pre-migrate-v<N>-<time>.db` over `forgebase.db` and delete
-   `forgebase.db-wal` and `forgebase.db-shm`.
+2. Restore the snapshot you took (`forgebase restore <id> --force`), or the
+   pre-migration snapshot:
+   - SQLite: copy `backups/pre-migrate-v<N>-<time>.db` over `forgebase.db`
+     and delete `forgebase.db-wal` and `forgebase.db-shm`.
+   - Bundled PostgreSQL: `forgebase restore backups/pre-migrate-v<N>-<time> --force`.
+     It puts the cluster back (the replaced one goes to
+     `backups/pre-restore-<time>/`) and leaves storage and keys alone.
+     PostgreSQL replays the copied WAL at the next start.
 3. Start the previous binary.
 
 Migrations are forward-only, so the snapshot is the only rollback path.
@@ -646,7 +761,7 @@ Keys in the TOML file, with defaults. Ranges are the accepted values.
 | `database.postgres.mode` | `"managed"` | `managed` (bundled engine), `external` (`FORGEBASE_DATABASE_URL`). Not editable in the dashboard. |
 | `database.postgres.url` | unset | External only; a secret: set `FORGEBASE_DATABASE_URL`. |
 | `database.postgres.pool_size` | `16` | `1`–`64` read connections; one writer. |
-| `database.postgres.listen` | `""` | `""` (Unix socket only) or a loopback `host:port`. |
+| `database.postgres.listen` | `""` | `""` (Unix socket only; loopback TCP on a free port on Windows) or an address with a port, such as `127.0.0.1:5433` or `0.0.0.0:5433`. TCP logins then require TLS. |
 | `database.postgres.engine_dir` | `""` | An installed PostgreSQL 17+ instead of the bundled engine. |
 | `database.postgres.native_rls` | `"logins"` | `off`, `logins`, `enforce` (FB-152). |
 | `database.postgres.settings` | `{}` | Extra `postgresql.conf` parameters; ForgeBase's own (listening, preload libraries, replication, anything that runs a program) are refused at start. File only. |

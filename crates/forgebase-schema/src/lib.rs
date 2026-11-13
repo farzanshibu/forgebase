@@ -11,8 +11,8 @@ pub mod values;
 
 pub use model::{
     ArrayItems, Collection, CollectionType, Field, FieldKind, POSTGRES_MAX_IDENT, POSTGRES_SYSTEM_COLUMNS,
-    SYSTEM_FIELDS, SchemaError, SchemaMode, Storage, is_reserved_field_name, validate_collection_name,
-    validate_field_name, validate_postgres_collection_name, validate_postgres_field_name,
+    SYSTEM_FIELDS, SchemaError, SchemaMode, Storage, field_option_keys, is_reserved_field_name, unknown_field_keys,
+    validate_collection_name, validate_field_name, validate_postgres_collection_name, validate_postgres_field_name,
 };
 pub use values::{FieldError, ValidationErrors, normalize_date, normalize_value};
 

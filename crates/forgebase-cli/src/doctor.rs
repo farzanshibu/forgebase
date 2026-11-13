@@ -640,7 +640,16 @@ async fn check_blobs(r: &mut Report, db: &Database, layout: &DataLayout) {
         .await
     {
         Ok(rows) => rows,
-        Err(_) => return, // storage tables not created yet
+        // Every migrated database has the table: an error here means the
+        // check did not run, which must not read as "all blobs present".
+        Err(e) => {
+            r.push(
+                "storage_blobs",
+                Level::Warn,
+                format!("could not read the blob metadata, so missing blobs were not checked: {e}"),
+            );
+            return;
+        }
     };
     let mut known: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
     for row in &rows.rows {
@@ -708,6 +717,18 @@ async fn check_database(r: &mut Report, primary: &PrimaryDatabase, layout: &Data
                 format!("{check_name} found {} problem(s): {}", problems.len(), shown.join("; ")),
             );
         }
+        // A server you run without amcheck: the index check is skipped, the
+        // foreign keys are still checked.
+        (Err(forgebase_db::DbError::Unsupported(why)), Ok(0), Ok(info)) if !sqlite => r.push(
+            "database",
+            Level::Warn,
+            format!(
+                "{} reachable ({} bytes, PostgreSQL {}, foreign keys clean); index check skipped: {why}",
+                crate::commands::database_line(primary, layout),
+                info.size_bytes,
+                info.server_version
+            ),
+        ),
         (Err(e), _, _) => r.push("database", Level::Fail, format!("{check_name} failed: {e}")),
         (Ok(_), Ok(n), _) if n > 0 => r.push("database", Level::Fail, format!("{n} foreign-key violation(s)")),
         (Ok(_), Err(e), _) => r.push("database", Level::Fail, format!("foreign_key_check failed: {e}")),

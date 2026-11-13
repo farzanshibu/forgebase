@@ -117,6 +117,7 @@ impl Backend for SqliteDatabase {
 
     fn fetch_all<'a>(&'a self, stmt: &'a Statement) -> BoxFuture<'a, Result<Rows, DbError>> {
         Box::pin(async move {
+            crate::backend::refuse_nul(stmt)?;
             let started = Instant::now();
             let rows = bind(stmt)
                 .fetch_all(&self.inner.reader)
@@ -333,6 +334,7 @@ impl WriteTx for SqliteTx {
         Box::pin(async move {
             let db = self.db.clone();
             let started = Instant::now();
+            crate::backend::refuse_nul(stmt)?;
             if !self.ddl && changes_schema(&stmt.sql) {
                 self.ddl = true;
             }
@@ -353,6 +355,7 @@ impl WriteTx for SqliteTx {
     fn fetch_all<'a>(&'a mut self, stmt: &'a Statement) -> BoxFuture<'a, Result<Rows, DbError>> {
         Box::pin(async move {
             let db = self.db.clone();
+            crate::backend::refuse_nul(stmt)?;
             let started = Instant::now();
             let rows = bind(stmt)
                 .fetch_all(&mut **self.conn()?)

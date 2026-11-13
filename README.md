@@ -7,14 +7,17 @@ functions and billing. SQLite is the optional one-file alternative.
 ## What is in this repository
 
 - `forgebase` binary: `init`, `serve`, `migrate`, `status`, `doctor`, `backup`,
-  `restore`, `export`, `import`, `version`, `admin`, `functions`.
+  `restore`, `export`, `import`, `version`, `admin`, `functions`, `queues`,
+  `jobs`, `db`, `node`.
 - PostgreSQL 18 as the default database: the engine is embedded in the
   standard release, runs as a child of `forgebase serve` and listens on a Unix
-  socket only (TCP is off). Or point ForgeBase at your own PostgreSQL server.
+  socket only (TCP is off; Windows, which has no socket, uses loopback TCP).
+  Or point ForgeBase at your own PostgreSQL server.
 - SQLite (one file, WAL mode, one writer and a read pool) when you pick it with
   `forgebase init --database sqlite`; it is the default of the `-lite` release,
   which leaves the PostgreSQL engine out.
-- Checksummed system migrations and pre-migration snapshots on both engines.
+- Checksummed system migrations on both engines, and pre-migration snapshots
+  on SQLite and the bundled PostgreSQL.
 - HTTP API: health probes, Prometheus metrics, `/api/system/*`, `/api/auth/*`,
   `/api/v1/*` (collections, KV, graph, vector, storage, jobs, realtime,
   credits, billing, customization) and the OpenAPI document at
@@ -97,26 +100,27 @@ moves it. See [Upgrading to 0.3](docs/release-notes/0.3.md#upgrading-to-03).
 
 ## Commands
 
-Output of `forgebase --help` (this list predates the `admin` and `functions`
-commands; run `forgebase --help` for the current one):
+Commands and global options, as `forgebase --help` lists them:
 
 ```text
-ForgeBase: a single-binary backend with an embedded database
-
-Usage: forgebase [OPTIONS] <COMMAND>
-
 Commands:
-  init     Create a project: config file, data directory and migrated database
-  serve    Start the server and serve until Ctrl-C / SIGTERM
-  migrate  Apply pending system migrations
-  status   Show project, database and server state
-  doctor   Check config, permissions, disk, database, migrations, indexes, blobs, key, snapshots and port
-  backup   Online backup or snapshot (list, verify, prune, delete)
-  restore  Verified restore of a backup or snapshot into a stopped data directory
-  export   Export collections, records or the configuration
-  import   Import collections, records or a configuration file
-  version  Print version information
-  help     Print this message or the help of the given subcommand(s)
+  init       Create a project: config file, data directory and migrated database
+  serve      Start the server and serve until Ctrl-C / SIGTERM
+  migrate    Apply pending system migrations
+  status     Show project, database and server state
+  doctor     Check configuration, permissions, disk, database integrity, migrations, indexes, storage blobs, master key, snapshots and port
+  backup     Back up the data directory online (a snapshot, or a directory you name)
+  restore    Restore a verified backup or snapshot into a stopped data directory
+  export     Export collections, records or the configuration
+  import     Import collections, records or a configuration file
+  version    Print version information
+  admin      Manage administrator (superuser) accounts
+  functions  Deploy WebAssembly functions and read their logs on a running server
+  queues     Publish to durable topics, pull from subscriptions and follow a topic on a running server
+  jobs       Follow long-running jobs on a running server
+  db         The database engine: status, and psql on the bundled PostgreSQL
+  node       Run this host's PostgreSQL as a managed replica of a ForgeBase server (engine only: no API, no services)
+  help       Print this message or the help of the given subcommand(s)
 
 Options:
       --config <FILE>        Config file [default: ./forgebase.toml if it exists] [env: FORGEBASE_CONFIG]
@@ -125,6 +129,11 @@ Options:
       --port <PORT>          Bind port; 0 picks a free port [default: 8090] [env: FORGEBASE_PORT]
       --log-level <FILTER>   Log filter, e.g. `info` or `forgebase=debug` [env: FORGEBASE_LOG_LEVEL]
       --log-format <FORMAT>  Log format: pretty or json [env: FORGEBASE_LOG_FORMAT]
+      --resp                 Also serve the Redis protocol (RESP2/RESP3) for the built-in KV engine [env: FORGEBASE_RESP_ENABLED]
+      --resp-host <HOST>     RESP bind host [default: 127.0.0.1] [env: FORGEBASE_RESP_HOST]
+      --resp-port <PORT>     RESP bind port; 0 picks a free port [default: 6380] [env: FORGEBASE_RESP_PORT]
+      --billing              Mount billing (on by default; set the env var/config to false to turn off) [env: FORGEBASE_BILLING_ENABLED]
+      --mcp                  Open the MCP server for AI agents at /api/mcp (off by default) [env: FORGEBASE_MCP_ENABLED]
   -h, --help                 Print help
   -V, --version              Print version
 ```
@@ -133,7 +142,9 @@ Subcommand options: `migrate --status` lists applied and pending migrations
 without changing anything; `status --json`, `doctor --json` and
 `version --json` print JSON. `doctor` exits with code 1 if any check fails.
 Backup, restore, export and import are described in
-[docs/database.md §5](docs/database.md#5-backups-and-rollback).
+[docs/database.md §5](docs/database.md#5-backups-and-rollback); `db`
+(`status`, `psql`, `dump`, `convert`, `login`) in
+[docs/deployment.md §3.5](docs/deployment.md#35-database-postgresql-or-sqlite).
 
 Subcommand flags: `forgebase <command> --help`.
 
@@ -162,21 +173,29 @@ file is ignored in production; it is listed in `.gitignore` and
 ## Data directory layout
 
 ```text
-<data_dir>/                    created 0700 on Unix
-├── forgebase.db (+ -wal/-shm) canonical: all structured data; created 0600
-├── storage/                   canonical: object blobs (when storage is used)
-├── auth/master.key            root key for auth secrets; back it up with the database
-├── indexes/                   derived: rebuildable indexes
-├── backups/                   pre-migration snapshots
-├── tmp/                       staging for in-flight writes; safe to delete when stopped
-└── .forgebase.lock            held by the running server
+<data_dir>/                       created 0700 on Unix
+├── forgebase.backend             which engine this directory holds
+├── forgebase.db (+ -wal/-shm)    SQLite only: all structured data; created 0600
+├── postgres/                     bundled PostgreSQL only: engine/, data/ (the cluster), run/ (socket), roles.secret
+├── topology.json                 PostgreSQL: database sets and nodes
+├── storage/                      canonical: object blobs (when storage is used)
+├── auth/master.key               root key for auth secrets; keep a copy apart from the backups
+├── indexes/                      derived: rebuildable indexes
+├── backups/                      pre-migration snapshots; snapshots/ of `forgebase backup`
+├── tmp/                          staging for in-flight writes; safe to delete when stopped
+└── .forgebase.lock               held by the running server
 ```
 
-Back up the database file and `storage/` (when it exists). `indexes/` can be
+`forgebase backup` copies the database, `storage/` and `indexes/` while the
+server runs: SQLite with `VACUUM INTO`, the bundled PostgreSQL with
+`pg_basebackup`, an external server with `pg_dump`. `forgebase restore`
+puts a verified backup back into a stopped data directory. `indexes/` can be
 deleted and rebuilt. Only one server may use a data directory at a time.
 
 Restoring a pre-migration snapshot from `backups/` is the rollback for a bad
-migration. Full backup and restore commands come later.
+migration (SQLite and the bundled PostgreSQL; take a backup before you
+upgrade an external server). See
+[docs/database.md §5](docs/database.md#5-backups-and-rollback).
 
 ## Docker
 

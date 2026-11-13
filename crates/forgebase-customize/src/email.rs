@@ -120,7 +120,7 @@ fn validate_input(i: &TemplateInput) -> Result<()> {
     Ok(())
 }
 
-const DELIVERY_COLUMNS: &str = "id, realm, template, recipient, subject, status, attempts, last_error, provider, job_id, created_at, updated_at, sent_at";
+const DELIVERY_COLUMNS: &str = "id, realm, template, recipient, subject, status, attempts, last_error, provider, job_id, created_at, updated_at, sent_at, provider_message_id";
 
 fn delivery_row(r: &[Value]) -> Delivery {
     Delivery {
@@ -137,6 +137,7 @@ fn delivery_row(r: &[Value]) -> Delivery {
         created_at: int(r, 10),
         updated_at: int(r, 11),
         sent_at: opt_int(r, 12),
+        provider_message_id: opt_text(r, 13),
     }
 }
 
@@ -461,35 +462,47 @@ impl CustomizeService {
                 attempt,
                 Some("the message body is no longer stored"),
                 "none",
+                None,
             )
             .await?;
             return Ok(Attempt::Failed("the message body is no longer stored".into()));
         };
-        let display = self.branding_of(&realm).await?.display_name.unwrap_or_default();
+        let branding = self.branding_of(&realm).await?;
+        let display = branding.display_name.unwrap_or_default();
+        let (provider, from_override) = self.mail_for(&realm);
+        let from_address = from_override.unwrap_or_else(|| self.inner.cfg.from_address.clone());
         let mail = OutMail {
             id: delivery_id.to_owned(),
             realm,
             to: text(r, 1),
-            from: from_header(&display, &self.inner.cfg.from_address),
+            from: from_header(&display, &from_address),
             subject: text(r, 2),
             text: body,
             html,
+            // Replies go to the realm's support address when it has one.
+            reply_to: branding.support_email.filter(|e| valid_address(e)),
         };
-        let provider = self.provider();
         let name = provider.name();
         match provider.send(&mail).await {
-            Ok(()) => {
-                self.finish(delivery_id, DeliveryStatus::Sent, attempt, None, name)
-                    .await?;
+            Ok(receipt) => {
+                self.finish(
+                    delivery_id,
+                    DeliveryStatus::Sent,
+                    attempt,
+                    None,
+                    name,
+                    receipt.message_id.as_deref(),
+                )
+                .await?;
                 Ok(Attempt::Sent)
             }
             Err(SendError::Transient(m)) if !last => {
-                self.finish(delivery_id, DeliveryStatus::Retrying, attempt, Some(&m), name)
+                self.finish(delivery_id, DeliveryStatus::Retrying, attempt, Some(&m), name, None)
                     .await?;
                 Ok(Attempt::Retry(m))
             }
             Err(SendError::Transient(m) | SendError::Permanent(m)) => {
-                self.finish(delivery_id, DeliveryStatus::Failed, attempt, Some(&m), name)
+                self.finish(delivery_id, DeliveryStatus::Failed, attempt, Some(&m), name, None)
                     .await?;
                 Ok(Attempt::Failed(m))
             }
@@ -503,15 +516,17 @@ impl CustomizeService {
         attempt: i64,
         error: Option<&str>,
         provider: &str,
+        message_id: Option<&str>,
     ) -> Result<()> {
         let now = self.now();
         let mut tx = self.begin().await?;
         let sql = if status == DeliveryStatus::Sent {
             "UPDATE _forgebase_email_deliveries SET status = ?2, attempts = ?3, last_error = ?4, provider = ?5,
-                 updated_at = ?6, sent_at = ?6, text_body = NULL, html_body = NULL WHERE id = ?1"
+                 updated_at = ?6, sent_at = ?6, text_body = NULL, html_body = NULL,
+                 provider_message_id = ?7 WHERE id = ?1"
         } else {
             "UPDATE _forgebase_email_deliveries SET status = ?2, attempts = ?3, last_error = ?4, provider = ?5,
-                 updated_at = ?6 WHERE id = ?1"
+                 updated_at = ?6, provider_message_id = COALESCE(?7, provider_message_id) WHERE id = ?1"
         };
         tx.exec(
             sql,
@@ -522,6 +537,7 @@ impl CustomizeService {
                 error.map(|e| e.chars().take(500).collect::<String>()).into(),
                 provider.into(),
                 now.into(),
+                message_id.map(|m| m.chars().take(300).collect::<String>()).into(),
             ],
         )
         .await?;

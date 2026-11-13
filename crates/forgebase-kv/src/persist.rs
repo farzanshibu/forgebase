@@ -1,4 +1,4 @@
-//! SQLite write-behind persistence (ADR-0004-kv).
+//! Write-behind persistence on the database, SQLite or PostgreSQL (ADR-0004-kv).
 //!
 //! Values are serialised as JSON with binary parts in base64, one row per key
 //! in `_forgebase_kv_entries`. The store tracks which keys changed; the

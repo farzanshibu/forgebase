@@ -663,3 +663,100 @@ async fn scenario_5_and_6_composite_index_and_plans() {
         .await;
     assert_eq!(r.status, StatusCode::CONFLICT, "{}", r.text());
 }
+
+/// Field definitions: keys a field type does not have (a misspelt option,
+/// an `options` object, another type's option) are refused instead of
+/// dropped, on create and on replace.
+#[tokio::test]
+async fn unknown_field_keys_are_refused() {
+    let api = Api::admin().await;
+    let r = api
+        .post(
+            "/api/v1/collections",
+            json!({"name": "notes", "fields": [
+                {"name": "title", "type": "text", "options": {"max_length": 200}},
+                {"name": "body", "type": "text", "max_lenght": 10},
+            ]}),
+        )
+        .await
+        .expect(StatusCode::BAD_REQUEST)
+        .json();
+    assert_eq!(r["error"]["code"], "invalid_body", "{r}");
+    let fields = &r["error"]["details"]["fields"];
+    assert!(
+        fields["title"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("sit beside `type`"),
+        "{r}"
+    );
+    assert!(
+        fields["body"]["message"].as_str().unwrap().contains("max_lenght"),
+        "{r}"
+    );
+    api.get("/api/v1/collections/notes").await.expect(StatusCode::NOT_FOUND);
+
+    // The flat form is the definition.
+    let c = api
+        .post(
+            "/api/v1/collections",
+            json!({"name": "notes", "fields": [{"name": "title", "type": "text", "max_length": 5}]}),
+        )
+        .await
+        .expect(StatusCode::CREATED)
+        .json();
+    assert_eq!(c["fields"][0]["max_length"], 5);
+    api.post("/api/v1/collections/notes/records", json!({"title": "too long"}))
+        .await
+        .expect(StatusCode::BAD_REQUEST);
+
+    // Replace: an option of another type is refused too.
+    let mut def = c.clone();
+    def["fields"][0]["values"] = json!(["a"]);
+    let r = api
+        .call(axum::http::Method::PUT, "/api/v1/collections/notes", Some(def))
+        .await
+        .expect(StatusCode::BAD_REQUEST)
+        .json();
+    assert!(
+        r["error"]["details"]["fields"]["title"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("values"),
+        "{r}"
+    );
+}
+
+/// `/system/extensions` answers who may call before what the backend has:
+/// 401 without credentials, 403 for a user, then the backend's answer.
+#[tokio::test]
+async fn extensions_check_the_caller_before_the_backend() {
+    let anon = Api::anonymous().await;
+    assert_eq!(
+        anon.get("/api/v1/system/extensions")
+            .await
+            .expect(StatusCode::UNAUTHORIZED)
+            .code(),
+        "unauthenticated"
+    );
+    let user = Api::with(
+        Some(forgebase_data::AccessContext::user("users", "u1")),
+        std::sync::Arc::new(forgebase_data::DefaultAuthorizer),
+        forgebase_api::RouterOptions::default(),
+    )
+    .await;
+    assert_eq!(
+        user.get("/api/v1/system/extensions")
+            .await
+            .expect(StatusCode::FORBIDDEN)
+            .code(),
+        "forbidden"
+    );
+    let admin = Api::admin().await;
+    let r = admin.get("/api/v1/system/extensions").await;
+    if admin.db.kind() == forgebase_db::BackendKind::Sqlite {
+        assert_eq!(r.expect(StatusCode::BAD_REQUEST).code(), "extensions_unavailable");
+    } else {
+        r.expect(StatusCode::OK);
+    }
+}

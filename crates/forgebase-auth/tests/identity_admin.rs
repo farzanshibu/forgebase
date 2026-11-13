@@ -454,3 +454,132 @@ async fn sms_gateway_per_realm_is_write_only_and_used_by_that_realm_only() {
     assert_eq!(h.get(sms, Some(&admin)).await.json["configured"], false);
     assert_error(&h.delete(sms, Some(&admin)).await, StatusCode::NOT_FOUND, "not_found");
 }
+
+#[tokio::test]
+async fn new_sms_gateways_seal_their_secrets_and_validate_config() {
+    let h = harness(|_| {}).await;
+    let admin = h.root_token().await;
+    make_realm(&h, &admin, "acme", json!({"methods": {"phone": true}})).await;
+    let sms = "/api/auth/realms/acme/sms";
+    for (cfg, secrets, needle) in [
+        (
+            json!({"provider": "vonage", "api_key": "vkey-visible", "api_secret": "vonage-sec-1", "from": "Acme"}),
+            vec!["api_secret", "api_key"],
+            "vonage-sec-1",
+        ),
+        (
+            json!({"provider": "sns", "access_key_id": "AKIAEXAMPLE", "secret_access_key": "sns-sec-1", "session_token": "sns-tok-1", "region": "us-east-1"}),
+            vec!["secret_access_key", "session_token"],
+            "sns-sec-1",
+        ),
+        (
+            json!({"provider": "plivo", "auth_id": "MAXXXX", "auth_token": "plivo-sec-1", "from": "+15550100"}),
+            vec!["auth_token"],
+            "plivo-sec-1",
+        ),
+        (
+            json!({"provider": "messagebird", "api_key": "mb-sec-1", "from": "Acme"}),
+            vec!["api_key"],
+            "mb-sec-1",
+        ),
+        (
+            json!({"provider": "bird", "api_key": "bird-sec-1", "workspace_id": "w1", "channel_id": "c1"}),
+            vec!["api_key"],
+            "bird-sec-1",
+        ),
+    ] {
+        let r = put(&h, sms, &admin, cfg).await;
+        assert_eq!(r.status, StatusCode::OK, "{}", r.json);
+        for s in &secrets {
+            assert_eq!(r.json["config"][*s], MASK, "{s}");
+        }
+        assert!(!r.json.to_string().contains(needle));
+        assert_eq!(
+            h.count(&format!(
+                "SELECT count(*) FROM _forgebase_sms_config WHERE CAST(config AS TEXT) LIKE '%{needle}%'"
+            ))
+            .await,
+            0,
+            "{needle} sealed at rest"
+        );
+        // Sending the mask back keeps the stored secret.
+        let again = r.json["config"].clone();
+        let r2 = put(&h, sms, &admin, again).await;
+        assert_eq!(r2.status, StatusCode::OK, "{}", r2.json);
+    }
+    // Bad configuration is refused.
+    for bad in [
+        json!({"provider": "vonage", "api_key": "k", "api_secret": "s"}),
+        json!({"provider": "sns", "access_key_id": "a", "secret_access_key": "s", "region": "US EAST"}),
+        json!({"provider": "plivo", "auth_id": "bad/id", "auth_token": "t", "from": "+1555"}),
+        json!({"provider": "vonage", "api_key": "k", "api_secret": "s", "from": "A", "base_url": "ftp://x"}),
+    ] {
+        let r = put(&h, sms, &admin, bad.clone()).await;
+        assert_error(&r, StatusCode::BAD_REQUEST, "invalid_input");
+    }
+}
+
+#[tokio::test]
+async fn new_provider_kinds_and_fields_work_over_the_admin_api() {
+    let h = harness(|_| {}).await;
+    let admin = h.root_token().await;
+    make_realm(&h, &admin, "acme", json!({})).await;
+    let base = "/api/auth/realms/acme/oauth-providers";
+    let cfg = |kind: &str, extra: Value| {
+        let mut v = json!({"kind": kind, "client_id": "cid", "client_secret": "super-secret-1"});
+        for (k, val) in extra.as_object().unwrap() {
+            v[k] = val.clone();
+        }
+        v
+    };
+    for (id, kind, extra) in [
+        (
+            "entra",
+            "microsoft",
+            json!({"tenant": "organizations", "allowed_tenants": ["11111111-aaaa-4aaa-8aaa-111111111111"]}),
+        ),
+        ("gl", "gitlab", json!({"base_url": "https://git.example.com"})),
+        (
+            "kc",
+            "keycloak",
+            json!({"base_url": "https://sso.example.com", "tenant": "acme"}),
+        ),
+        ("sl", "slack", json!({"authorize_params": {"team": "T1"}})),
+        ("li", "linkedin", json!({})),
+        ("tw", "twitch", json!({})),
+        ("bb", "bitbucket", json!({})),
+        ("sp", "spotify", json!({})),
+    ] {
+        let r = put(&h, &format!("{base}/{id}"), &admin, cfg(kind, extra.clone())).await;
+        assert_eq!(r.status, StatusCode::OK, "{kind}: {}", r.json);
+        assert_eq!(r.json["kind"], kind);
+        assert_eq!(r.json["client_secret"], MASK);
+        assert!(!r.json.to_string().contains("super-secret-1"));
+    }
+    // The realm's login page offers them.
+    let info = h
+        .send(
+            axum::http::Method::GET,
+            "/api/auth/realm",
+            None,
+            None,
+            &[("x-forgebase-realm", "acme")],
+        )
+        .await;
+    assert_eq!(
+        info.json["oauth_providers"].as_array().unwrap().len(),
+        8,
+        "{}",
+        info.json
+    );
+    // Bad settings are refused with the field named.
+    for (kind, extra) in [
+        ("microsoft", json!({"tenant": "contoso.com"})),
+        ("keycloak", json!({})),
+        ("gitlab", json!({"base_url": "javascript:alert(1)"})),
+        ("slack", json!({"authorize_params": {"state": "x"}})),
+    ] {
+        let r = put(&h, &format!("{base}/bad"), &admin, cfg(kind, extra)).await;
+        assert_error(&r, StatusCode::BAD_REQUEST, "invalid_input");
+    }
+}

@@ -277,7 +277,7 @@ async fn search(
     ok(s.search(&ctx, &name, req).await.map_err(api)?)
 }
 
-/// Hybrid search: keyword (FTS5/BM25) and vector rankings fused with Reciprocal Rank Fusion.
+/// Hybrid search: keyword (FTS5/BM25 on SQLite, full-text search on PostgreSQL) and vector rankings fused with Reciprocal Rank Fusion.
 #[utoipa::path(post, path = "/api/v1/vector/collections/{name}/hybrid", tag = "vector", request_body = HybridRequest,
     params(("name" = String, Path, description = "Collection")),
     responses((status = 200, description = "Best items first", body = HybridResponse)))]

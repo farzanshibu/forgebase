@@ -47,6 +47,7 @@ pub mod realm;
 pub mod scopes;
 mod service;
 pub mod setup;
+pub mod sigv4;
 pub mod sms;
 pub mod social;
 pub mod store;

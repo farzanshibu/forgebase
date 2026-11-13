@@ -420,7 +420,7 @@ pub enum TextOperator {
     And,
 }
 
-/// A hybrid search: keyword (FTS5, BM25) and vector rankings fused with
+/// A hybrid search: keyword (FTS5 and BM25 on SQLite, `tsvector` on PostgreSQL) and vector rankings fused with
 /// Reciprocal Rank Fusion: `score = Σ weight / (rrf_k + rank)`.
 #[derive(Debug, Clone, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]

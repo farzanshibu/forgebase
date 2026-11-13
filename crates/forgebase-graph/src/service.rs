@@ -1583,6 +1583,12 @@ fn check_props(p: Option<Json>) -> Result<Json> {
             "properties must be a JSON object",
         ));
     }
+    if forgebase_core::json_contains_nul(&p) {
+        return Err(GraphError::invalid(
+            "invalid_properties",
+            "property names and values cannot contain the NUL character (U+0000)",
+        ));
+    }
     if p.to_string().len() > MAX_PROPERTIES_BYTES {
         return Err(GraphError::invalid(
             "properties_too_large",

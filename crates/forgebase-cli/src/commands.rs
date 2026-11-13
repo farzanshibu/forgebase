@@ -173,7 +173,49 @@ pub fn prompt_database(input: &mut dyn BufRead, out: &mut dyn Write) -> anyhow::
 
 /// The config file `init` writes: the template with `[database] backend`
 /// (and, for an external server, `mode`) set.
-fn config_text(choice: &Choice) -> String {
+/// What `init`'s flags put in a new `forgebase.toml` besides the backend,
+/// so the next `serve` (without the flags) uses what `init` set up.
+#[derive(Debug, Default)]
+struct InitSettings<'a> {
+    /// `--data-dir`, absolute (as `init` created it).
+    data_dir: Option<&'a Path>,
+    /// `--host`.
+    host: Option<&'a str>,
+    /// `--port`.
+    port: Option<u16>,
+}
+
+fn toml_string(s: &str) -> String {
+    toml_edit::Value::from(s).to_string()
+}
+
+fn config_text(choice: &Choice, set: &InitSettings<'_>) -> String {
+    let mut text = backend_text(choice);
+    if let Some(d) = set.data_dir {
+        text = text.replacen(
+            "data_dir = \"forgebase-data\"",
+            &format!("data_dir = {}", toml_string(&d.display().to_string())),
+            1,
+        );
+    }
+    if let Some(h) = set.host {
+        text = text.replacen(
+            "host = \"127.0.0.1\"          # FORGEBASE_HOST",
+            &format!("{:<27} # FORGEBASE_HOST", format!("host = {}", toml_string(h))),
+            1,
+        );
+    }
+    if let Some(p) = set.port {
+        text = text.replacen(
+            "port = 8090                 # FORGEBASE_PORT",
+            &format!("{:<27} # FORGEBASE_PORT", format!("port = {p}")),
+            1,
+        );
+    }
+    text
+}
+
+fn backend_text(choice: &Choice) -> String {
     let backend = match choice {
         Choice::Sqlite => "sqlite",
         Choice::Managed | Choice::External(_) => "postgres",
@@ -330,7 +372,12 @@ pub async fn init(
     std::fs::create_dir_all(&project).with_context(|| format!("cannot create {}", project.display()))?;
     let created_config = !config_path.exists();
     if created_config {
-        write_private(&config_path, &config_text(&choice))
+        let settings = InitSettings {
+            data_dir: g.data_dir.as_ref().map(|_| data_dir.as_path()),
+            host: g.host.as_deref(),
+            port: g.port,
+        };
+        write_private(&config_path, &config_text(&choice, &settings))
             .with_context(|| format!("cannot write {}", config_path.display()))?;
     }
     let dotenv = match &choice {
@@ -814,7 +861,7 @@ mod tests {
                 DatabaseBackend::Postgres,
             ),
         ] {
-            let text = config_text(&choice);
+            let text = config_text(&choice, &InitSettings::default());
             let tmp = tempfile::tempdir().unwrap();
             std::fs::write(tmp.path().join("forgebase.toml"), &text).unwrap();
             let loaded = forgebase_core::config::ConfigLoader::new(tmp.path()).load().unwrap();
@@ -824,6 +871,28 @@ mod tests {
             assert_eq!(mode == PostgresMode::External, matches!(choice, Choice::External(_)));
             assert!(!text.contains("postgres://"), "the URL never goes to forgebase.toml");
         }
+    }
+
+    #[test]
+    fn init_flags_are_written_to_the_new_config() {
+        let dir = Path::new("/srv/fb \"data\"");
+        let text = config_text(
+            &Choice::Sqlite,
+            &InitSettings {
+                data_dir: Some(dir),
+                host: Some("0.0.0.0"),
+                port: Some(18090),
+            },
+        );
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("forgebase.toml"), &text).unwrap();
+        let loaded = forgebase_core::config::ConfigLoader::new(tmp.path()).load().unwrap();
+        assert_eq!(loaded.config.server.port, 18090, "{text}");
+        assert_eq!(loaded.config.server.host, "0.0.0.0");
+        assert_eq!(loaded.config.data_dir, dir);
+        // Without the flags, the template's defaults stay.
+        let text = config_text(&Choice::Sqlite, &InitSettings::default());
+        assert!(text.contains("port = 8090 "), "{text}");
     }
 
     #[test]

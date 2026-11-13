@@ -517,6 +517,8 @@ async fn start_on(
     let resp_auth = forgebase_resp::KeyAuthenticator::new(auth.clone());
     let (fn_auth, fn_policy) = (auth.clone(), policy.clone());
     let master_key_path = auth.config().master_key_path.clone();
+    // Kept for the mail providers below (the auth service moves into the state).
+    let (mail_http, mail_key_path) = (auth.http_client(), auth.config().master_key_path.clone());
     let state = AppState::from_data(db.clone(), layout.clone(), auth.data().clone())
         .with_auth(auth)
         .with_policy(policy)
@@ -636,6 +638,20 @@ async fn start_on(
     };
     set_schedule_enabled(&jobs, forgebase_billing::MAINTENANCE_SCHEDULE, billing.is_some()).await;
     customize.attach_jobs(jobs.clone());
+    // Mail providers (ADR-0039): the HTTPS client (SSRF-guarded) and the master
+    // key their stored, sealed settings need. A failure leaves the log provider.
+    {
+        let path = mail_key_path;
+        match tokio::task::spawn_blocking(move || forgebase_auth::crypto::Keyring::load_or_create(&path)).await {
+            Ok(Ok(keyring)) => {
+                if let Err(e) = customize.attach_mail_runtime(mail_http, keyring).await {
+                    tracing::warn!(error = %e, "mail providers not loaded");
+                }
+            }
+            Ok(Err(e)) => tracing::warn!(error = %e, "mail providers not loaded: master key unavailable"),
+            Err(e) => tracing::warn!(error = %e, "mail providers not loaded"),
+        }
+    }
     let registry = forgebase_customize::register_jobs(registry, customize.clone());
     // Vector search (FB-50), unless `[vector] enabled = false`.
     let vector = if config.vector.enabled {

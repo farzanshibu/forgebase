@@ -125,6 +125,21 @@ fn backup_verify_and_restore_round_trip() {
         .unwrap();
     assert_eq!(snap["status"], "ok", "{d}");
     assert!(snap["detail"].as_str().unwrap().contains("verified"), "{d}");
+    // Every check reads the system tables, on PostgreSQL through the
+    // superuser's session too: the blob check runs and the journal is read.
+    let check = |name: &str| {
+        d["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["name"] == name)
+            .cloned()
+            .unwrap_or_else(|| panic!("no {name} check: {d}"))
+    };
+    assert_eq!(check("storage_blobs")["status"], "ok", "{d}");
+    if e.is_some() {
+        assert_eq!(check("two_phase")["status"], "ok", "{d}");
+    }
 
     // Change the data, then put the backup back.
     admin(&app, e, "second@example.com");
@@ -290,6 +305,11 @@ fn a_cluster_backup_of_a_single_set_verifies_and_restores_into_an_empty_project(
         text.contains("backups/clusters/") || text.contains("backups\\clusters\\"),
         "{text}"
     );
+    // `backup list` shows it (it is not a snapshot: listed apart).
+    let listed = json(&run(&app, e, &["backup", "list", "--json"]));
+    assert_eq!(listed["cluster_backups"].as_array().unwrap().len(), 1, "{listed}");
+    let text = ok(&run(&app, e, &["backup", "list"]));
+    assert!(text.contains("cluster backup"), "{text}");
 
     // A second, empty project takes it: marker, rows and the pending file come along.
     let other = tmp.path().join("other");

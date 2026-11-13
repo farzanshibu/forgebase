@@ -680,3 +680,71 @@ async fn to_sqlite_brings_extension_data_to_portable_rows() {
     check_services(&back, &back_dir).await;
     back.close().await;
 }
+
+/// A PostgreSQL project whose server has run with Apache AGE (the default
+/// `auto` mode of the bundled engine) holds the graph accelerator's derived
+/// tables, with an AGE `graphid` column. They are rebuilt where AGE runs,
+/// so `--to sqlite` neither refuses them nor copies them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn to_sqlite_skips_the_derived_age_tables() {
+    let Some(pg) = forgebase_db::testing::postgres_test_db().await else {
+        eprintln!("skipped: no PostgreSQL engine configured");
+        return;
+    };
+    // AGE must be loaded in ForgeBase's sessions, as the bundled engine
+    // sets for its roles; a fresh pool picks the setting up.
+    exec(
+        &pg,
+        "DO $fb$ BEGIN EXECUTE format('ALTER DATABASE %I SET session_preload_libraries = %L', \
+         current_database(), '$libdir/plugins/age'); END $fb$",
+        vec![],
+    )
+    .await;
+    let db = Database::open(pg.options()).await.unwrap();
+    db.setup_extensions(&forgebase_db::ExtensionSetup::default())
+        .await
+        .unwrap();
+    if !installed(&db, "age").await {
+        eprintln!("skipped: the engine has no Apache AGE");
+        db.close().await;
+        return;
+    }
+    let derived = db
+        .fetch_all(&Statement::raw(
+            "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace \
+             WHERE n.nspname = 'forgebase' AND c.relname IN ('_forgebase_graph_age_ids', '_forgebase_graph_age_state')",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(derived.scalar().and_then(Value::as_i64), Some(2), "the graph DDL ran");
+
+    let tmp = tempfile::tempdir().unwrap();
+    let (back, back_path) = sqlite_db(tmp.path()).await;
+    let report = convert(
+        Endpoint {
+            db: &db,
+            conn: &Conn::Postgres(pg_url(&pg)),
+        },
+        Endpoint {
+            db: &back,
+            conn: &Conn::Sqlite(back_path),
+        },
+        &|_| {},
+    )
+    .await
+    .unwrap();
+    assert_eq!(report.from, "postgres");
+    let copied = back
+        .fetch_all(&Statement::raw(
+            "SELECT count(*) FROM sqlite_master WHERE name LIKE '%graph_age%'",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        copied.scalar().and_then(Value::as_i64),
+        Some(0),
+        "AGE tables are not copied"
+    );
+    back.close().await;
+    db.close().await;
+}

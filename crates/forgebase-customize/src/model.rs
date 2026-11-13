@@ -359,6 +359,8 @@ pub struct Delivery {
     pub last_error: Option<String>,
     /// Provider that handled it.
     pub provider: Option<String>,
+    /// The provider's id of the message (its own dashboard and logs use it).
+    pub provider_message_id: Option<String>,
     /// Queue job.
     pub job_id: Option<String>,
     /// Queued (epoch ms).

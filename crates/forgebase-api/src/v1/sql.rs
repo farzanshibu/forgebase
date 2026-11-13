@@ -32,7 +32,9 @@ use crate::http::ApiJson;
 use crate::principal::Access;
 
 /// Runs one parameterised SQL statement. Reads return at most 10 000 rows
-/// (`truncated`); transaction control, `ATTACH`, `VACUUM` and writable pragmas are refused.
+/// (`truncated`); transaction control, `ATTACH`, `VACUUM` and writable pragmas (SQLite),
+/// `SET`, `DO` and session settings (PostgreSQL) are refused. On PostgreSQL, write `$1`
+/// placeholders to keep `?`, `?|` and `?&` as the `jsonb` operators.
 /// Secret columns are masked unless the body sets `show_secrets` (audited).
 #[utoipa::path(
     post, path = "/api/v1/sql", tag = "sql",
@@ -118,7 +120,7 @@ pub async fn batch(
     Ok(Json(json!({ "items": items })).into_response())
 }
 
-/// The query plan of a statement (`EXPLAIN QUERY PLAN`), without running it.
+/// The query plan of a statement (`EXPLAIN QUERY PLAN` on SQLite, `EXPLAIN` on PostgreSQL), without running it.
 #[utoipa::path(
     post, path = "/api/v1/sql/explain", operation_id = "sql_explain", tag = "sql",
     request_body = SqlStatementBody,

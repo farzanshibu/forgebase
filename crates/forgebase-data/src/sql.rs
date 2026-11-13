@@ -325,6 +325,46 @@ fn names_secret(sql: &str, secrets: &BTreeSet<String>) -> Option<String> {
         .map(str::to_owned)
 }
 
+/// Whether column `col` of a ForgeBase system table holds a secret, by the
+/// rule `forgebase.is_secret_column` applies on PostgreSQL (migration 0042),
+/// where the editor's role has no `SELECT` on such columns: a `password`,
+/// `secret`, `token` or `sealed` word (not a time or TTL), a `_hash` or
+/// `_enc` suffix, or a `private_` prefix. On SQLite the editor masks them
+/// and refuses statements that name them, like the other secret columns.
+fn is_system_secret_column(col: &str) -> bool {
+    let c = col.to_ascii_lowercase();
+    let word = c
+        .split('_')
+        .any(|w| matches!(w, "password" | "secret" | "token" | "sealed"));
+    (word && !(c.ends_with("_at") || c.ends_with("_ttl")))
+        || c.ends_with("_hash")
+        || c.ends_with("_enc")
+        || c.starts_with("private_")
+}
+
+/// Whether `sql` uses PostgreSQL's `$N` placeholders (outside literals).
+fn uses_dollar_params(sql: &str) -> bool {
+    words(sql)
+        .iter()
+        .any(|w| w.len() > 1 && w.starts_with('$') && w[1..].bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// Whether `sql` names a ForgeBase system table (`_forgebase_*`).
+fn names_system_table(sql: &str) -> bool {
+    words(sql).iter().any(|w| w.starts_with("_forgebase"))
+}
+
+/// The first system-table secret column a statement on system tables names.
+fn names_system_secret(sql: &str) -> Option<String> {
+    let w = words(sql);
+    if !w.iter().any(|x| x.starts_with("_forgebase")) {
+        return None;
+    }
+    w.into_iter()
+        .flat_map(|x| x.split('.').map(str::to_owned).collect::<Vec<_>>())
+        .find(|x| is_system_secret_column(x))
+}
+
 /// Masks the secret keys of a JSON document held in a text cell; `None` when
 /// the text is not such a document or holds no secret key.
 fn mask_json_text(text: &str, secrets: &BTreeSet<String>) -> Option<String> {
@@ -384,11 +424,11 @@ fn mask_json(v: &mut Json, secrets: &BTreeSet<String>) -> bool {
 
 /// Masks secret values in a result: whole columns named like a secret, and
 /// secret keys inside JSON documents.
-fn mask_result(r: &mut SqlResult, secrets: &BTreeSet<String>) {
+fn mask_result(r: &mut SqlResult, secrets: &BTreeSet<String>, system: bool) {
     let secret_col: Vec<bool> = r
         .columns
         .iter()
-        .map(|c| secrets.contains(&c.to_ascii_lowercase()))
+        .map(|c| secrets.contains(&c.to_ascii_lowercase()) || (system && is_system_secret_column(c)))
         .collect();
     for row in &mut r.rows {
         for (i, v) in row.iter_mut().enumerate() {
@@ -454,7 +494,9 @@ impl DataService {
         // Before the engine sees it: a statement naming a secret column is
         // refused whether or not it compiles (no oracle, same answer on both
         // backends).
-        if guard_secrets && let Some(col) = names_secret(sql, &secret_columns(&self.catalog())) {
+        if guard_secrets
+            && let Some(col) = names_secret(sql, &secret_columns(&self.catalog())).or_else(|| names_system_secret(sql))
+        {
             return Err(DataError::Forbidden(format!(
                 "the statement names the secret column {col}: set show_secrets to run it (the use is audited)"
             )));
@@ -462,7 +504,7 @@ impl DataService {
         let mut kind = info.kind;
         if kind == StatementKind::Read {
             // The engine has the final word: e.g. `WITH ... DELETE` writes.
-            let probe = Statement::new(sql.clone(), params.clone()).uncached();
+            let probe = self.editor_statement(sql.clone(), params.clone());
             // A view the editor's role owns is checked with that role's
             // rights even here (the plan needs them).
             if self
@@ -554,11 +596,23 @@ impl DataService {
         self.sql_editor_role().map(|role| forgebase_db::RunAs::new(role, ""))
     }
 
-    /// Masks the secrets of `results`.
-    fn mask_results(&self, results: &mut [SqlResult]) {
+    /// A statement of the editor, not cached. On PostgreSQL, text that uses
+    /// PostgreSQL's `$N` placeholders, or has no parameters, is taken as it
+    /// is: `?`, `?|` and `?&` stay the `jsonb` operators. `?`-placeholders are
+    /// translated only in a statement that has parameters and no `$N`.
+    fn editor_statement(&self, sql: String, params: Vec<Value>) -> Statement {
+        let pg = SqlFlavor::of(self.inner.backend.dialect()) == SqlFlavor::Postgres;
+        let native = pg && (params.is_empty() || uses_dollar_params(&sql));
+        let stmt = Statement::new(sql, params).uncached();
+        if native { stmt.with_native_placeholders() } else { stmt }
+    }
+
+    /// Masks the secrets of `results`, the results of `checked` in order.
+    fn mask_results(&self, results: &mut [SqlResult], checked: &[Checked]) {
         let secrets = secret_columns(&self.catalog());
-        for r in results {
-            mask_result(r, &secrets);
+        for (i, r) in results.iter_mut().enumerate() {
+            let system = checked.get(i).is_none_or(|c| names_system_table(&c.sql));
+            mask_result(r, &secrets, system);
         }
     }
 
@@ -648,7 +702,7 @@ impl DataService {
             } else {
                 c.sql.clone()
             };
-            let stmt = Statement::new(sql, c.params.clone()).uncached();
+            let stmt = self.editor_statement(sql, c.params.clone());
             // FB-171: the node selector picks the set; "Read from replica"
             // reads one of its replicas, still as the editor's role (FB-153;
             // `fetch_routed_as` switches role on the replica as on the
@@ -666,10 +720,10 @@ impl DataService {
                 None => backend.fetch_all(&stmt).await?,
             };
             let mut r = result_from(c.kind, rows, started);
+            let checked = [c];
             if opts.show_secrets || run_as.is_some() {
                 // Shown only once the use is on record.
                 let mut tx = self.begin(TxMode::Normal).await?;
-                let checked = [c];
                 let mut audited = Ok(());
                 if opts.show_secrets {
                     audited = self.audit_show_secrets(ctx, &mut *tx, &checked).await;
@@ -680,7 +734,7 @@ impl DataService {
                 finish(tx, audited).await?;
             }
             if !opts.show_secrets {
-                self.mask_results(std::slice::from_mut(&mut r));
+                self.mask_results(std::slice::from_mut(&mut r), &checked);
             }
             return Ok(r);
         }
@@ -762,7 +816,7 @@ impl DataService {
             let mut ddl = Vec::new();
             for c in &checked {
                 let started = Instant::now();
-                let stmt = Statement::new(c.sql.clone(), c.params.clone()).uncached();
+                let stmt = self.editor_statement(c.sql.clone(), c.params.clone());
                 let returns_rows = c.kind == StatementKind::Read || c.info.identifiers.iter().any(|w| w == "returning");
                 let role = self.statement_role(c, run_as, opts.show_secrets);
                 if returns_rows {
@@ -807,7 +861,7 @@ impl DataService {
             if opts.show_secrets {
                 self.audit_show_secrets(ctx, &mut *tx, &checked).await?;
             } else {
-                self.mask_results(&mut out);
+                self.mask_results(&mut out, &checked);
             }
             Ok(out)
         }
@@ -826,7 +880,7 @@ impl DataService {
         let steps = self
             .inner
             .backend
-            .explain(&Statement::new(c.sql.clone(), c.params).uncached())
+            .explain(&self.editor_statement(c.sql.clone(), c.params))
             .await?;
         Ok(crate::QueryPlan::from_steps(c.sql, steps))
     }

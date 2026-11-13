@@ -410,6 +410,19 @@ async fn snapshots_and_pre_migration_snapshots() {
             .await
             .ok
     );
+    // The service (behind `POST /system/backups/{id}/verify`) uses the
+    // engine's tools it was given, like the CLI.
+    let svc =
+        forgebase_backup::BackupService::new(src.inst.db.clone(), src.inst.layout.clone()).with_pg(src.src.clone());
+    let report = svc.verify(&all[0].path).await;
+    assert!(report.ok, "{report:?}");
+    assert!(
+        !report
+            .warnings
+            .iter()
+            .any(|w| w.contains("pg_verifybackup was not run")),
+        "{report:?}"
+    );
 
     // The pre-migration hook: make the newest migration pending again, so
     // `migrate` has work on a database that holds data. The snapshot is taken
@@ -565,7 +578,9 @@ async fn an_external_server_gets_a_logical_backup_that_restores_in_place() {
     };
     let err = restore::restore(&dest, &layout, opts(false)).await.unwrap_err();
     assert!(matches!(err, BackupError::Conflict(_)), "{err}");
-    restore::restore(&dest, &layout, opts(true)).await.unwrap();
+    let rep = restore::restore(&dest, &layout, opts(true)).await.unwrap();
+    let aside = rep.previous_data.expect("the replaced database is kept");
+    assert!(aside.join("postgres.dump").is_file(), "a dump of the replaced database");
 
     let db = forgebase_db::Database::open(forgebase_db::DbOptions::from_config_target(
         &cfg.database,
@@ -585,6 +600,60 @@ async fn an_external_server_gets_a_logical_backup_that_restores_in_place() {
         data,
     };
     assert_eq!(back.count("books").await, 10);
+
+    // A restore whose file swap fails loads the previous database back.
+    add_books(&back, 10, 14).await;
+    db.close().await;
+    let failing = RestoreOptions {
+        fail_swap: true,
+        ..opts(true)
+    };
+    restore::restore(&dest, &back.layout, failing).await.unwrap_err();
+    let db = forgebase_db::Database::open(forgebase_db::DbOptions::from_config_target(
+        &cfg.database,
+        forgebase_db::DbTarget::postgres(url.expose(), false),
+    ))
+    .await
+    .unwrap();
+    let data = forgebase_data::DataService::new(
+        std::sync::Arc::new(db.clone()),
+        std::sync::Arc::new(forgebase_data::DefaultAuthorizer),
+    )
+    .await
+    .unwrap();
+    let again = common::Instance {
+        layout: back.layout.clone(),
+        db: db.clone(),
+        data,
+    };
+    assert_eq!(again.count("books").await, 14, "the failed restore changed nothing");
     db.close().await;
     host.close().await;
+}
+
+/// A PostgreSQL backup is checked against this build's schema: one made by
+/// a newer ForgeBase is not restorable here.
+#[tokio::test]
+async fn a_backup_of_a_newer_schema_does_not_verify() {
+    let Some(engine) = pg_engine_dir() else { return };
+    let tmp = short_tempdir();
+    let src = seeded(&engine, &tmp.path().join("src")).await;
+    let dest = tmp.path().join("bk");
+    backup::create(&src.inst.db, &src.inst.layout, &dest, src.opts())
+        .await
+        .unwrap();
+    let opts = verify_opts(&src.src, &src.inst.layout);
+    let r = forgebase_backup::verify_with(&dest, &opts).await;
+    assert!(r.ok, "{:?}", r.problems);
+    let path = dest.join("MANIFEST.json");
+    let mut m: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    m["schema_version"] = json!(9999);
+    std::fs::write(&path, m.to_string()).unwrap();
+    let r = forgebase_backup::verify_with(&dest, &opts).await;
+    assert!(!r.ok);
+    assert!(
+        r.problems.iter().any(|p| p.contains("newer ForgeBase")),
+        "{:?}",
+        r.problems
+    );
 }

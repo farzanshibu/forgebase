@@ -278,6 +278,47 @@ pub struct Field {
     pub default: Option<Json>,
 }
 
+/// Keys every field definition may have, besides its type's options.
+const FIELD_KEYS: &[&str] = &[
+    "id", "name", "type", "required", "unique", "hidden", "system", "default",
+];
+
+/// The option keys of field type `type_name` (`None` for an unknown type).
+pub fn field_option_keys(type_name: &str) -> Option<&'static [&'static str]> {
+    Some(match type_name {
+        "text" => &["min_length", "max_length"],
+        "number" => &["min", "max", "integer"],
+        "bool" | "date" | "email" | "url" | "geo" => &[],
+        "select" => &["values", "max_select"],
+        "json" => &["max_size"],
+        "array" => &["items", "min_items", "max_items"],
+        "relation" => &["collection_id", "max_select", "cascade_delete"],
+        "file" => &["max_select"],
+        "password" => &["min_length"],
+        "vector" => &["dimensions"],
+        _ => return None,
+    })
+}
+
+/// The keys of a field definition (as JSON) that are neither a field key nor
+/// an option of its type. Deserialising a [`Field`] ignores them, so the API
+/// refuses them instead: a typo or an `options` object would otherwise be
+/// dropped without a word (type options sit beside `type`).
+pub fn unknown_field_keys(field: &Json) -> Vec<String> {
+    let Some(map) = field.as_object() else {
+        return Vec::new();
+    };
+    let options = map
+        .get("type")
+        .and_then(Json::as_str)
+        .and_then(field_option_keys)
+        .unwrap_or(&[]);
+    map.keys()
+        .filter(|k| !FIELD_KEYS.contains(&k.as_str()) && !options.contains(&k.as_str()))
+        .cloned()
+        .collect()
+}
+
 impl Field {
     /// A field with default options.
     pub fn new(name: impl Into<String>, kind: FieldKind) -> Self {
@@ -721,6 +762,68 @@ impl ErrorCode for SchemaError {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn every_option_a_field_kind_serialises_is_a_known_key() {
+        // Every variant with every option set: the allowed lists cannot drift
+        // from `FieldKind`.
+        let kinds = [
+            FieldKind::Text {
+                min_length: Some(1),
+                max_length: Some(2),
+            },
+            FieldKind::Number {
+                min: Some(0.0),
+                max: Some(1.0),
+                integer: true,
+            },
+            FieldKind::Bool,
+            FieldKind::Date,
+            FieldKind::Email,
+            FieldKind::Url,
+            FieldKind::Select {
+                values: vec!["a".into()],
+                max_select: 2,
+            },
+            FieldKind::Json { max_size: Some(10) },
+            FieldKind::Array {
+                items: ArrayItems::Text,
+                min_items: Some(1),
+                max_items: Some(2),
+            },
+            FieldKind::Relation {
+                collection_id: "c".into(),
+                max_select: 2,
+                cascade_delete: true,
+            },
+            FieldKind::File { max_select: 2 },
+            FieldKind::Password { min_length: 9 },
+            FieldKind::Geo,
+            FieldKind::Vector { dimensions: 3 },
+        ];
+        for kind in kinds {
+            let mut f = Field::new("f", kind);
+            f.default = Some(json!(null));
+            let v = serde_json::to_value(&f).unwrap();
+            assert_eq!(unknown_field_keys(&v), Vec::<String>::new(), "{v}");
+            assert!(field_option_keys(f.kind.type_name()).is_some(), "{v}");
+        }
+    }
+
+    #[test]
+    fn unknown_field_keys_are_found() {
+        let f = json!({"name": "t", "type": "text", "options": {"max_length": 5}, "max_lenght": 5, "max_length": 5});
+        assert_eq!(
+            unknown_field_keys(&f),
+            vec!["max_lenght".to_owned(), "options".to_owned()]
+        );
+        let f = json!({"name": "s", "type": "select", "values": ["a"], "max_length": 5});
+        assert_eq!(
+            unknown_field_keys(&f),
+            vec!["max_length".to_owned()],
+            "an option of another type"
+        );
+    }
 
     #[test]
     fn definitions_round_trip_through_json() {

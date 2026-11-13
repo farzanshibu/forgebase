@@ -59,8 +59,8 @@ pub use native::NativePolicies;
 pub use records::{GetOptions, Record, RecordVersion, UpdateOptions};
 pub use shards::{CrossShardRule, RELATION_CROSSES_SHARDS, RelationDeletes, RelationFanout, TENANT_REQUIRED_SHARDED};
 pub use sql::{
-    ColumnInfo, LOGIN_GROUP, LOGIN_WRITE_GROUP, RUN_AS_EVENT, SQL_ADMIN_ROLE, SqlOptions, SqlResult, SqlRunAs,
-    SqlStatement, TableInfo,
+    ColumnInfo, LOGIN_GROUP, LOGIN_WRITE_GROUP, RUN_AS_EVENT, SECRET_MASK, SQL_ADMIN_ROLE, SqlOptions, SqlResult,
+    SqlRunAs, SqlStatement, TableInfo,
 };
 
 pub use forgebase_db as db;

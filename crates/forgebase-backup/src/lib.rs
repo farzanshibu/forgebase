@@ -88,6 +88,20 @@ impl BackupService {
         self.store.dir().to_path_buf()
     }
 
+    /// Verifies the backup at `dir` with the engine's tools when the service
+    /// has them (`pg_verifybackup` or `pg_restore --list` on PostgreSQL), like
+    /// `forgebase backup verify`.
+    pub async fn verify(&self, dir: &std::path::Path) -> VerifyReport {
+        verify_with(
+            dir,
+            &VerifyOptions {
+                pg: self.pg.clone(),
+                tmp: Some(self.layout.tmp_dir()),
+            },
+        )
+        .await
+    }
+
     /// Takes a snapshot now and applies `retention`.
     pub async fn snapshot(&self, mut opts: BackupOptions, retention: Option<Retention>) -> Result<Manifest> {
         if opts.pg.is_none() {

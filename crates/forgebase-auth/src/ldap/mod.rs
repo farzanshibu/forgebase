@@ -577,6 +577,7 @@ impl AuthService {
             email_verified: settings.trust_email && email.is_some(),
             email,
             name: user.name.clone(),
+            picture: None,
         };
         let (collection, uid) = match self
             .identity_by_subject(&realm.realm, PROVIDER, &profile.subject)

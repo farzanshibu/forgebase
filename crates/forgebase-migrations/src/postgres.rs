@@ -165,6 +165,16 @@ pub static POSTGRES_MIGRATIONS: &[Migration] = &[
         "portable_trigram",
         include_str!("../../../migrations/postgres/0056_portable_trigram.sql"),
     ),
+    Migration::new(
+        65,
+        "oauth_identity_avatar",
+        include_str!("../../../migrations/postgres/0065_oauth_identity_avatar.sql"),
+    ),
+    Migration::new(
+        66,
+        "email_providers",
+        include_str!("../../../migrations/postgres/0066_email_providers.sql"),
+    ),
 ];
 
 /// The SQLite migrations the baseline stands for (versions up to

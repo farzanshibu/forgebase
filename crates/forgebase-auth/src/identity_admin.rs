@@ -44,7 +44,7 @@ pub struct AdminConsent {
 /// Secret paths inside a provider configuration.
 const PROVIDER_SECRETS: &[&[&str]] = &[&["client_secret"], &["apple", "private_key_pem"]];
 /// Secret fields of an SMS gateway configuration.
-const SMS_SECRETS: &[&str] = &["auth_token", "bearer_token"];
+const SMS_SECRETS: &[&str] = crate::sms::SMS_SECRET_FIELDS;
 
 fn aad(kind: &str, realm: &str, id: &str, path: &str) -> Vec<u8> {
     format!("{kind}:{realm}:{id}:{path}").into_bytes()
@@ -554,7 +554,8 @@ impl AuthService {
 
     /// Sets the realm's SMS gateway: `{provider: "dev"}`, `{provider:
     /// "twilio", account_sid, auth_token, from | messaging_service_sid,
-    /// base_url?}` or `{provider: "webhook", url, bearer_token?}`
+    /// base_url?}`, `{provider: "webhook", url, bearer_token?}`, or one of
+    /// `vonage`, `messagebird`, `bird`, `sns`, `plivo` (see [`crate::sms`])
     /// (administrators). Takes effect at once.
     pub async fn put_realm_sms(
         &self,

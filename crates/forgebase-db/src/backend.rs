@@ -123,6 +123,11 @@ pub struct Statement {
     /// Keep the prepared statement in the per-connection cache. `false` for
     /// one-off statements (SQL editor, DDL).
     pub cache: bool,
+    /// PostgreSQL: the text already uses PostgreSQL's own `$N` placeholders,
+    /// so `?` is left as it is (the `jsonb` operators `?`, `?|`, `?&`)
+    /// instead of being read as a SQLite placeholder. For SQL written by
+    /// people (the SQL editor); ForgeBase's own SQL keeps `?N`.
+    pub native_placeholders: bool,
 }
 
 impl Statement {
@@ -133,6 +138,7 @@ impl Statement {
             params,
             label: None,
             cache: true,
+            native_placeholders: false,
         }
     }
 
@@ -143,6 +149,7 @@ impl Statement {
             params: Vec::new(),
             label: None,
             cache: false,
+            native_placeholders: false,
         }
     }
 
@@ -157,6 +164,29 @@ impl Statement {
         self.cache = false;
         self
     }
+
+    /// Same statement with PostgreSQL's `$N` placeholders only (see
+    /// [`Statement::native_placeholders`]). No effect on SQLite.
+    pub fn with_native_placeholders(mut self) -> Self {
+        self.native_placeholders = true;
+        self
+    }
+}
+
+/// PostgreSQL's `text` cannot hold U+0000. Both engines refuse a statement
+/// with such a value before running it, with the same error, so they answer
+/// alike and the data stays convertible between them.
+pub(crate) fn refuse_nul(stmt: &Statement) -> Result<(), DbError> {
+    if stmt
+        .params
+        .iter()
+        .any(|p| matches!(p, Value::Text(s) if s.contains('\0')))
+    {
+        return Err(DbError::Statement(
+            "text values cannot contain the NUL character (U+0000)".into(),
+        ));
+    }
+    Ok(())
 }
 
 /// Result rows.

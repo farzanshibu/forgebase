@@ -53,7 +53,10 @@ impl SqliteDatabase {
             .filename(path)
             .foreign_keys(true)
             .busy_timeout(opts.busy_timeout)
-            .synchronous(synchronous);
+            .synchronous(synchronous)
+            // `REGEXP` for the filter language's `~` with a non-ASCII value
+            // (`Dialect::regexp_ci`): SQLite's `LIKE` folds ASCII only.
+            .with_regexp();
 
         let writer_opts = if opts.read_only {
             base.clone().read_only(true)

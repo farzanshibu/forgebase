@@ -19,7 +19,10 @@ Rules:
    run in a transaction (`VACUUM`, `PRAGMA journal_mode`, ...) are not allowed.
 5. Migrations are forward-only. Rollback = restore the automatic snapshot that
    is written to `<data_dir>/backups/` before pending migrations are applied to an
-   existing database (SQLite; PostgreSQL has no automatic snapshot yet: take a backup).
+   existing database: `pre-migrate-v<N>-<time>.db` on SQLite, a `pg_basebackup`
+   directory `pre-migrate-v<N>-<time>/` on the bundled PostgreSQL (restore it with
+   `forgebase restore <dir> --force`; if the snapshot fails, nothing is migrated).
+   An external PostgreSQL server gets no automatic snapshot: take a backup.
 
 ## PostgreSQL
 

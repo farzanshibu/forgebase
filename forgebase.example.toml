@@ -349,3 +349,34 @@ eab_kid = ""
 # PEM root of a private CA's own HTTPS endpoint (step-ca, Pebble); "" = the
 # public roots only. Env: FORGEBASE_TLS_ACME_CA_FILE
 ca_file = ""
+
+# ---------------------------------------------------------------------------
+# Email, SMS and login providers (ADR-0039)
+#
+# These carry secrets and differ per realm, so they are not keys of this file.
+# Set them with the REST API (secrets are sealed under auth/master.key) or, for
+# SMS and login providers, with files in <data_dir>/auth/ (keep them 0600).
+# See docs/deployment.md section 3.6. Examples:
+#
+#   Email (PUT /api/v1/customize/email/provider?realm=*), then POST .../test
+#     {"provider": "resend",   "api_key": "re_...", "from_address": "no-reply@example.com"}
+#     {"provider": "postmark", "server_token": "...", "message_stream": "outbound"}
+#     {"provider": "sendgrid", "api_key": "SG....", "region": "eu"}
+#     {"provider": "mailgun",  "api_key": "...", "domain": "mg.example.com", "region": "eu"}
+#     {"provider": "ses",      "access_key_id": "AKIA...", "secret_access_key": "...", "region": "eu-west-1"}
+#     {"provider": "smtp",     "host": "smtp.example.com", "tls": "starttls", "username": "u",
+#                              "password": "p", "envelope_from": "bounces@example.com"}
+#
+#   SMS (auth/sms.json, or PUT /api/auth/realms/{realm}/sms)
+#     {"provider": "vonage",      "api_key": "...", "api_secret": "...", "from": "Acme"}
+#     {"provider": "messagebird", "api_key": "...", "from": "Acme"}
+#     {"provider": "bird",        "api_key": "...", "workspace_id": "...", "channel_id": "..."}
+#     {"provider": "sns",         "access_key_id": "AKIA...", "secret_access_key": "...", "region": "us-east-1"}
+#     {"provider": "plivo",       "auth_id": "MA...", "auth_token": "...", "from": "+15550100"}
+#
+#   Login (auth/oauth-providers.json: {"providers": [...]}), callback URL
+#   <server.public_url>/api/auth/oauth/<id>/callback
+#     {"id": "entra", "kind": "microsoft", "client_id": "...", "client_secret": "...", "tenant": "organizations"}
+#     {"id": "gitlab", "kind": "gitlab", "client_id": "...", "client_secret": "...", "base_url": "https://git.example.com"}
+#     {"id": "sso", "kind": "keycloak", "client_id": "...", "client_secret": "...", "base_url": "https://sso.example.com", "tenant": "acme"}
+#     kinds: google github apple facebook wechat discord oidc microsoft gitlab slack linkedin twitch bitbucket spotify keycloak

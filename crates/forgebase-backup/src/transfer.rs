@@ -17,7 +17,7 @@
 //! collections are not exported (password hashes never leave the database);
 //! views carry their definition only.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::Path;
 
@@ -341,7 +341,10 @@ pub async fn import_bundle(data: &DataService, src: &Path, opts: ImportOptions) 
             }
         }
     }
-    let mut known: HashMap<String, bool> = HashMap::new();
+    // Read every definition and find every existing collection before
+    // writing anything: a conflict found halfway used to leave the
+    // collections before it imported.
+    let mut planned: Vec<(&BundleCollection, Collection, bool)> = Vec::new();
     for entry in &bundle.collections {
         if wanted.as_ref().is_some_and(|w| !w.contains(entry.name.as_str())) {
             continue;
@@ -351,13 +354,60 @@ pub async fn import_bundle(data: &DataService, src: &Path, opts: ImportOptions) 
         let def: Collection =
             serde_json::from_str(&text).map_err(|e| BackupError::Format(format!("{}: {e}", schema_path.display())))?;
         let exists = data.get_collection(&ctx, &entry.name).await.is_ok();
-        known.insert(entry.name.clone(), exists);
-        if exists && opts.on_conflict == OnConflict::Fail {
+        planned.push((entry, def, exists));
+    }
+    if opts.on_conflict == OnConflict::Fail {
+        let existing: Vec<&str> = planned
+            .iter()
+            .filter(|(_, _, exists)| *exists)
+            .map(|(e, _, _)| e.name.as_str())
+            .collect();
+        if !existing.is_empty() {
+            let auth = planned.iter().any(|(e, _, exists)| *exists && e.kind == "auth");
             return Err(BackupError::Conflict(format!(
-                "collection {} already exists (use --on-conflict skip to merge into it)",
-                entry.name
+                "{} {} already exist{}; nothing was imported (use --on-conflict skip to merge into existing collections{})",
+                if existing.len() == 1 {
+                    "collection"
+                } else {
+                    "collections"
+                },
+                existing.join(", "),
+                if existing.len() == 1 { "s" } else { "" },
+                if auth {
+                    "; the server creates the auth collection `users` on its first start"
+                } else {
+                    ""
+                }
             )));
         }
+    }
+    let mut created: Vec<String> = Vec::new();
+    match import_planned(data, &ctx, src, &opts, planned, &mut report, &mut created).await {
+        Ok(()) => Ok(report),
+        Err(e) => {
+            // All or nothing for the collections this run made (newest first:
+            // a relation's target is created before the collections that
+            // point to it). Records merged into existing collections stay.
+            for name in created.iter().rev() {
+                if let Err(drop) = data.delete_collection(&ctx, name).await {
+                    tracing::warn!(collection = %name, error = %drop, "import: could not remove a collection it created");
+                }
+            }
+            Err(e)
+        }
+    }
+}
+
+async fn import_planned(
+    data: &DataService,
+    ctx: &AccessContext,
+    src: &Path,
+    opts: &ImportOptions,
+    planned: Vec<(&BundleCollection, Collection, bool)>,
+    report: &mut ImportReport,
+    created: &mut Vec<String>,
+) -> Result<()> {
+    for (entry, def, exists) in planned {
         let mut item = ImportedCollection {
             name: entry.name.clone(),
             created: false,
@@ -371,18 +421,19 @@ pub async fn import_bundle(data: &DataService, src: &Path, opts: ImportOptions) 
             continue;
         }
         if !exists {
-            data.create_collection(&ctx, def).await?;
+            data.create_collection(ctx, def).await?;
+            created.push(entry.name.clone());
             item.created = true;
         }
         if entry.kind == "base" {
             let path = src.join("collections").join(format!("{}.ndjson", entry.name));
-            let (n, skipped) = import_records(data, &ctx, &entry.name, &path, opts.on_conflict).await?;
+            let (n, skipped) = import_records(data, ctx, &entry.name, &path, opts.on_conflict).await?;
             item.records = n;
             item.skipped = skipped;
         }
         report.collections.push(item);
     }
-    Ok(report)
+    Ok(())
 }
 
 fn clean(mut rec: Map<String, Json>) -> Json {
