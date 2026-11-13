@@ -278,3 +278,63 @@ enabled = true
 # (ADR-0008). Off, the API is gone but stored rules are still enforced.
 # Env: FORGEBASE_ACCESS_ENABLED
 enabled = true
+
+[observability]
+# Tracing (ADR-0035, docs/observability.md). Whether a caller's W3C
+# traceparent continues its trace: auto (trusted callers, behind
+# auth.trust_forwarded_for or on loopback, decide sampling; others keep their
+# trace id but this server's sampler decides), always, never.
+# Env: FORGEBASE_TRUST_INCOMING_TRACE
+trust_incoming_trace = "auto"
+
+[observability.otlp]
+# OpenTelemetry export of traces (and optionally logs) over OTLP/HTTP to a
+# collector: Grafana Tempo, Jaeger, Honeycomb, an OpenTelemetry Collector.
+# Off by default; metrics stay on /metrics. Env: FORGEBASE_OTLP_ENABLED
+enabled = false
+# Base address; /v1/traces and /v1/logs are appended. Env: FORGEBASE_OTLP_ENDPOINT
+endpoint = "http://127.0.0.1:4318"
+# http/protobuf or http/json (no gRPC). Env: FORGEBASE_OTLP_PROTOCOL
+protocol = "http/protobuf"
+# Extra headers; a value env:NAME is read from the environment variable NAME.
+# Secret headers: FORGEBASE_OTLP_HEADERS="authorization=Bearer%20abc,x-key=v".
+headers = {}
+# headers = { "x-honeycomb-team" = "env:HONEYCOMB_API_KEY" }
+service_name = "forgebase"
+# Empty: a random id per process.
+service_instance_id = ""
+resource_attributes = {}
+# resource_attributes = { "deployment.environment.name" = "production" }
+# Share of new traces recorded (0 to 1); a sampled parent is always followed.
+sampling_ratio = 1.0
+export_traces = true
+# Log lines at log.level, with their trace ids (they can hold personal data).
+export_logs = false
+timeout_secs = 10
+# PEM certificate authority of an https:// collector with a private certificate.
+ca_file = ""
+
+[alerts]
+# Alert rules, notifiers, silences and SLOs (/api/v1/alerts, /api/v1/slos).
+# Env: FORGEBASE_ALERTS_ENABLED
+enabled = true
+# Seconds between evaluation rounds.
+evaluation_interval_secs = 30
+# Built-in rules that never run, by id (GET /api/v1/alerts/rules lists them).
+disabled_rules = []
+# Allow http:// webhook, Slack and PagerDuty URLs (default https:// only).
+allow_http = false
+# Days resolved alerts and notification deliveries are kept.
+history_retention_days = 30
+# Gauge with the Unix time a TLS certificate expires (the certificate rules).
+tls_cert_expiry_metric = "forgebase_tls_certificate_expiry_timestamp_seconds"
+# Custom rules (also through POST /api/v1/alerts/rules):
+# [[alerts.rules]]
+# name = "CheckoutSlow"
+# expr = "histogram_quantile(0.95, sum by (le) (rate(forgebase_http_request_duration_seconds_bucket{route=\"/api/v1/functions/checkout/invoke\"}[5m])))"
+# op = ">"
+# threshold = 0.5
+# for = "10m"
+# severity = "critical"
+# labels = { team = "payments" }
+# annotations = { summary = "Checkout p95 is {{ $value }} s" }

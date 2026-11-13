@@ -462,6 +462,24 @@ Notes:
 * Series appear once the subsystem has something to report. Counters and
   histograms (HTTP, database, functions, RESP) appear after their first event.
 
+### 5.2 Tracing, alerts and SLOs
+
+Trace export to an OpenTelemetry collector (`[observability.otlp]`, off by
+default), the alerting engine with its built-in rules and notifiers
+(`[alerts]`, on), and SLOs are described in
+[observability.md](observability.md). They add these series to `/metrics`:
+
+| Metric | Type | Labels |
+|---|---|---|
+| `forgebase_otlp_exported_total`, `forgebase_otlp_dropped_total` | counter | `signal` (`traces`, `logs`); dropped also `reason` (`queue_full`, `export_failed`) |
+| `forgebase_jobs_completed_total` | counter | `queue`, `outcome` = `succeeded`, `failed`, `dead`, `cancelled` |
+| `forgebase_alerts` | gauge | `state` = `pending`, `firing`; `severity` |
+| `forgebase_alert_notifications_total` | counter | `notifier_type`, `outcome` = `sent`, `failed` |
+| `forgebase_slo_sli_ratio`, `forgebase_slo_objective_ratio`, `forgebase_slo_error_budget_remaining_ratio` | gauge | `slo` |
+| `forgebase_slo_burn_rate` | gauge | `slo`, `window` |
+
+With `log.format = "json"`, every line carries `trace_id` and `span_id`.
+
 ## 6. Upgrades
 
 Migrations run automatically on `serve`. Before you upgrade:
@@ -545,6 +563,11 @@ Keys in the TOML file, with defaults. Ranges are the accepted values.
 | `storage.enabled`, `functions.enabled`, `queue.enabled`, `realtime.enabled`, `vector.enabled`, `graph.enabled`, `identity.enabled`, `access.enabled` | `true` | Switch a module off: its routes answer `404 feature_disabled` and its workers do not start ([architecture.md §6](architecture.md#6-feature-flags), ADR-0026). |
 | `auth.trust_forwarded_for` | `false` | Client address from the last `X-Forwarded-For` entry. Only behind your own proxy (§5). |
 | `auth.allow_private_outbound` | `false` | The auth service's outbound HTTPS (OAuth/OIDC providers, SMS gateways, Turnstile) refuses loopback, private, link-local and metadata addresses unless this is `true` (an identity provider on your own network). LDAP and S3 endpoints are not affected. |
+| `observability.trust_incoming_trace` | `"auto"` | `auto`, `always`, `never` ([observability.md §1.5](observability.md#15-how-context-travels)). |
+| `observability.otlp.enabled` | `false` | Export traces (and with `export_logs`, logs) over OTLP/HTTP. |
+| `observability.otlp.endpoint`, `protocol`, `headers`, `service_name`, `service_instance_id`, `resource_attributes`, `sampling_ratio`, `export_traces`, `export_logs`, `timeout_secs`, `ca_file` | `"http://127.0.0.1:4318"`, `"http/protobuf"`, `{}`, `"forgebase"`, `""`, `{}`, `1.0`, `true`, `false`, `10`, `""` | See [observability.md §1.2](observability.md#12-turning-on-export). Secret headers: `FORGEBASE_OTLP_HEADERS`. |
+| `alerts.enabled` | `true` | `/api/v1/alerts`, `/api/v1/slos` and rule evaluation. |
+| `alerts.evaluation_interval_secs`, `disabled_rules`, `allow_http`, `history_retention_days`, `tls_cert_expiry_metric` | `30`, `[]`, `false`, `30`, `"forgebase_tls_certificate_expiry_timestamp_seconds"` | `1`–`3600` s; built-in rule ids; `http://` notifier URLs; `1`–`3650` days; a gauge name. `[[alerts.rules]]`: custom rules ([observability.md §2.4](observability.md#24-custom-rules)). |
 
 Example `[billing]` section (turns billing off):
 

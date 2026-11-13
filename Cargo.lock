@@ -1155,6 +1155,43 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
 
 [[package]]
+name = "forgebase-alerts"
+version = "0.3.5"
+dependencies = [
+ "axum",
+ "forgebase-api",
+ "forgebase-auth",
+ "forgebase-backup",
+ "forgebase-core",
+ "forgebase-customize",
+ "forgebase-data",
+ "forgebase-db",
+ "forgebase-entitlements",
+ "forgebase-functions",
+ "forgebase-jobs",
+ "forgebase-kv",
+ "forgebase-observability",
+ "forgebase-policy",
+ "forgebase-queue",
+ "forgebase-realtime",
+ "fs4",
+ "metrics",
+ "regex",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "tempfile",
+ "thiserror",
+ "time",
+ "tokio",
+ "tower",
+ "tracing",
+ "url",
+ "utoipa",
+ "uuid",
+]
+
+[[package]]
 name = "forgebase-api"
 version = "0.3.5"
 dependencies = [
@@ -1820,6 +1857,7 @@ version = "0.3.5"
 dependencies = [
  "axum",
  "base64 0.22.1",
+ "forgebase-alerts",
  "forgebase-api",
  "forgebase-auth",
  "forgebase-backup",

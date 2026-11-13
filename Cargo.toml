@@ -39,6 +39,7 @@ forgebase-customize = { path = "crates/forgebase-customize" }
 forgebase-queue = { path = "crates/forgebase-queue" }
 forgebase-backup = { path = "crates/forgebase-backup" }
 forgebase-convert = { path = "crates/forgebase-convert" }
+forgebase-alerts = { path = "crates/forgebase-alerts" }
 
 # third party (versions and licences recorded in docs/adr/0002-dependencies.md)
 anyhow = "1.0.104"
@@ -62,6 +63,9 @@ redis = { version = "=0.32.7", default-features = false }
 metrics-exporter-prometheus = { version = "0.18.3", default-features = false }
 mime_guess = { version = "2.0.5", default-features = false }
 rust-embed = { version = "8.13.0", features = ["debug-embed"] }
+# Label matchers and SLO route patterns of the alerting engine (ADR-0035).
+# Already in the tree through sqlx; MIT OR Apache-2.0.
+regex = { version = "1.13.1", default-features = false, features = ["std", "perf", "unicode"] }
 rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
 # Store receipt and notification signatures (FB-72, ADR-0021 §9): already in the
 # tree through rustls; used directly for ECDSA/RSA, AES-GCM and X.509 chains.
