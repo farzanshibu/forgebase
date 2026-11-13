@@ -18,10 +18,12 @@
 //!   enters a hidden node. Callers without a tenant: privileged only
 //!   (`tenant_required`).
 //! * **REST** ([`router`], [`openapi`]): mounted at `/api/v1/graph`.
-//! * **openCypher** (ADR-0029 §1.5, FB-163; PostgreSQL with Apache AGE):
-//!   `POST /graph/cypher` runs read-only queries on a derived per-tenant AGE
-//!   graph ([`age`]) that every write keeps in step; label and edge-type
-//!   rules apply inside the query. Elsewhere `400 cypher_unsupported`.
+//! * **openCypher** (ADR-0029 §1.5, FB-163; ADR-0034): `POST /graph/cypher`
+//!   runs read-only queries, on PostgreSQL with Apache AGE on a derived
+//!   per-tenant AGE graph ([`age`]) that every write keeps in step, and
+//!   everywhere else on the portable engine ([`portable`]), which compiles a
+//!   subset of openCypher to SQL over the canonical tables; label and
+//!   edge-type rules apply inside the query on both.
 //! * **Shards** ([`GraphService::attach_router`]): every call runs on its
 //!   tenant's database set.
 //!
@@ -35,6 +37,7 @@ mod cypher;
 mod error;
 mod http;
 mod model;
+pub mod portable;
 mod routed;
 mod service;
 
