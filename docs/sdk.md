@@ -11,7 +11,7 @@ does not repeat it.
 |---|---|---|
 | JavaScript / TypeScript (`@forgebase/sdk`) | [`sdk/js`](../sdk/js) | Version 0.1.0. Covers auth, collections and records, realtime, entitlements, billing, jobs and queues. |
 | Rust (`forgebase-sdk`) | [`sdk/rust`](../sdk/rust) | Version 0.1.0 (FB-82), its own Cargo workspace. Covers auth, records, KV, storage, realtime, functions, jobs, queues, billing and entitlements. See [sdk/rust/README.md](../sdk/rust/README.md). |
-| Dart / Flutter | Not planned for this release | Skipped by decision on 2026-11-10. |
+| Dart / Flutter (`forgebase`) | [`sdk/dart`](../sdk/dart) | Version 0.1.0 (requested after the 2026-11-10 skip). Pure Dart, so it runs in Flutter and on servers. Covers auth, records, realtime, storage, KV, functions, queues, jobs, entitlements and store billing. See [§8](#8-dart--flutter-sdk) and [sdk/dart/README.md](../sdk/dart/README.md). |
 
 ## 2. JavaScript / TypeScript SDK
 
@@ -188,3 +188,71 @@ The SDK follows the API's versioning rules. Within `/api/v1` the server only add
 fields, endpoints and optional parameters. Clients must ignore unknown fields
 ([api.md §2](api.md#2-versioning)). A breaking change to the server means a new
 `/api/v2` path and a new SDK major version.
+
+## 8. Dart / Flutter SDK
+
+The `forgebase` package in [`sdk/dart`](../sdk/dart) is pure Dart: no Flutter
+dependency, no `dart:io` or `dart:html`, so one package serves iOS, Android, web,
+desktop and server-side Dart. It needs Dart 3.3 or newer and depends on
+`package:http`, `package:web_socket_channel` and `package:crypto`. The detailed
+reference is [sdk/dart/README.md](../sdk/dart/README.md).
+
+```yaml
+dependencies:
+  forgebase:
+    git:
+      url: https://github.com/farzanshibu/forgebase
+      path: sdk/dart
+```
+
+```dart
+import 'package:forgebase/forgebase.dart';
+
+final fb = ForgeBase('http://localhost:8090', storage: SecureTokenStorage());
+await fb.auth.signIn(email: 'ada@example.com', password: '...');
+final page = await fb.collection('posts').list(const ListOptions(sort: '-created'));
+```
+
+### 8.1 What it covers
+
+| Area | Entry point | Notes |
+|---|---|---|
+| Authentication | `fb.auth` | Same flows as the JS SDK except cookie mode. Automatic refresh with rotation, shared across concurrent calls. The session lives in a `TokenStorage`: in memory by default, or your adapter ([README](../sdk/dart/README.md#token-storage) shows `flutter_secure_storage`). |
+| Collections and records | `fb.collection(name)`, `fb.collectionOf<T>` | Filters with typed params, pagination as streams, optimistic `version:` (`If-Match`), export and import. |
+| Realtime | `fb.realtime` | WebSocket only. Reconnects with backoff and resumes each subscription from its last cursor. Channels, presence, publish, `watch` as a `Stream`. |
+| Storage | `fb.storage` | Buckets, objects, ranges, streaming download, signed URLs, multipart and resumable uploads. |
+| Key-value | `fb.kv(namespace)` | Strings, bytes, counters, hashes, lists, sets, sorted sets, streams, raw commands, pub/sub. |
+| Functions | `fb.functions` | Invoke (JSON or raw), deploy, logs, versions, secrets. |
+| Queues and jobs | `fb.queues`, `fb.jobs` | Same as the JS SDK: streaming pull with reconnect, workflows, progress over realtime. |
+| Entitlements, billing | `fb.entitlements`, `fb.billing.store` | Quota calls and App Store / Google Play / Creem purchase verification. |
+| Raw requests | `fb.request(path, ...)` | For routes the SDK does not wrap yet. |
+
+Retries, consistency tokens and the error mapping behave as in
+[§2.3](#23-retries-and-errors). The exception classes use Dart names
+(`ForgeBaseException`, `ValidationException`, `NotFoundException`, ...); the
+README has the table.
+
+### 8.2 Differences from the JavaScript SDK
+
+- No cookie mode (bearer sessions only) and no SSE fallback for realtime.
+- No `AbortSignal`: cancel a stream by cancelling its subscription.
+- Server objects are `Map<String, dynamic>`; typed classes cover sessions, pages,
+  storage objects, jobs, queue messages and realtime events. They are written by
+  hand against the OpenAPI document and covered by tests. There is no generated
+  types file.
+- Vector, graph, SQL, credits and organization-admin routes are not wrapped; use
+  `fb.request`.
+
+### 8.3 Development and tests
+
+```sh
+cd sdk/dart
+dart pub get
+dart analyze --fatal-infos && dart format --set-exit-if-changed . && dart test
+```
+
+`dart test` uses `package:http`'s `MockClient` and a fake `WebSocketChannel`, and
+skips `test/live_test.dart`. Set `FORGEBASE_LIVE_URL`,
+`FORGEBASE_LIVE_ADMIN_EMAIL` and `FORGEBASE_LIVE_ADMIN_PASSWORD` to run the live
+test against a server. CI runs analysis, the format check and the unit tests in
+the `sdk-dart` job.
