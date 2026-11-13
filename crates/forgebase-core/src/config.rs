@@ -2537,6 +2537,21 @@ mod tests {
     }
 
     #[test]
+    fn project_cli_variables_are_not_configuration() {
+        let vars = [
+            "FORGEBASE_URL",
+            "FORGEBASE_TOKEN",
+            "FORGEBASE_ADMIN_EMAIL",
+            "FORGEBASE_ADMIN_PASSWORD",
+            "FORGEBASE_CA_FILE",
+        ]
+        .map(|k| (k.to_owned(), "x".to_owned()));
+        let o = ConfigOverrides::from_env(vars).expect("ADR-0037 variables are accepted");
+        assert!(o.secrets_set.is_empty());
+        assert!(ConfigOverrides::from_env([("FORGEBASE_TOKENS".to_owned(), "x".to_owned())]).is_err());
+    }
+
+    #[test]
     fn unknown_keys_and_bad_values_are_rejected() {
         let tmp = tempfile::tempdir().unwrap();
         std::fs::write(tmp.path().join("forgebase.toml"), "[server]\nprot = 1\n").unwrap();

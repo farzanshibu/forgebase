@@ -418,6 +418,60 @@ async fn access_modes_rollback_and_error_statuses_over_http() {
     assert_eq!(list["items"].as_array().unwrap().len(), 4);
 }
 
+/// `forgebase project pull` (ADR-0037) downloads a WebAssembly version's module.
+#[tokio::test]
+async fn a_webassembly_version_module_can_be_downloaded() {
+    use base64::Engine as _;
+    let h = harness().await;
+    let app = app(&h);
+    let wasm = constant(r#"{"body":"m"}"#);
+    let body = json!({"name": "mod", "wasm": wasm, "access": "public"});
+    let r = call(&app, Method::POST, "/api/v1/functions", Some("admin"), Some(body)).await;
+    assert_eq!(r.status, StatusCode::CREATED, "{}", String::from_utf8_lossy(&r.body));
+    let r = call(
+        &app,
+        Method::GET,
+        "/api/v1/functions/mod/versions/1/module",
+        Some("admin"),
+        None,
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert_eq!(r.headers.get("content-type").unwrap(), "application/wasm");
+    let sent = base64::engine::general_purpose::STANDARD.decode(&wasm).unwrap();
+    assert_eq!(r.body, sent);
+    let v = call(&app, Method::GET, "/api/v1/functions/mod/versions", Some("admin"), None).await;
+    assert_eq!(
+        v.json()["items"][0]["sha256"].as_str().unwrap().len(),
+        64,
+        "the module's digest is what the CLI compares"
+    );
+    let r = call(
+        &app,
+        Method::GET,
+        "/api/v1/functions/mod/versions/7/module",
+        Some("admin"),
+        None,
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::NOT_FOUND);
+    let r = call(&app, Method::GET, "/api/v1/functions/mod/versions/1/module", None, None).await;
+    assert_eq!(r.status, StatusCode::UNAUTHORIZED);
+    let js = json!({"name": "script", "source": "import { serve } from \"forgebase\";\nserve(() => new Response(\"x\"));\n", "language": "javascript"});
+    let r = call(&app, Method::POST, "/api/v1/functions", Some("admin"), Some(js)).await;
+    assert_eq!(r.status, StatusCode::CREATED, "{}", String::from_utf8_lossy(&r.body));
+    let r = call(
+        &app,
+        Method::GET,
+        "/api/v1/functions/script/versions/1/module",
+        Some("admin"),
+        None,
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::NOT_FOUND);
+    assert_eq!(r.json()["error"]["code"], "function_source_not_found");
+}
+
 #[tokio::test]
 async fn http_input_carries_method_and_raw_bodies() {
     let h = harness().await;
