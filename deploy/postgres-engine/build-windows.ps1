@@ -115,6 +115,22 @@ if (-not (Test-Path "$Deps\bin\zstd.exe")) {
 }
 Get-ChildItem "$Deps\bin\*.dll", "$Deps\lib\*.lib" | ForEach-Object { "  $($_.Name)" }
 
+# The pack step runs this zstd (engine.py pack --zstd). engine-pg18.6-r3 reached
+# the pack step with no $Deps\bin\zstd.exe (FileNotFoundError) although the zstd
+# step had run. Find it wherever CMake left it, or say what is there.
+if (-not (Test-Path "$Deps\bin\zstd.exe")) {
+  $found = Get-ChildItem -Path $Deps, $Build -Recurse -Filter zstd.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+  if (-not $found) {
+    Write-Host "::error::zstd.exe not found; zstd-related files:"
+    Get-ChildItem -Path $Deps, $Build -Recurse -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '^zstd' -and -not $_.PSIsContainer -and $_.Extension -match 'exe|dll|lib' } | ForEach-Object { "  $($_.FullName)" }
+    throw "the zstd CLI was not built"
+  }
+  Write-Host "  zstd.exe was not installed; using $($found.FullName)"
+  New-Item -ItemType Directory -Force -Path "$Deps\bin" | Out-Null
+  Copy-Item $found.FullName "$Deps\bin\zstd.exe"
+}
+& "$Deps\bin\zstd.exe" --version
+
 Log "PostgreSQL $PgVer (meson)"
 $pg = Unpack "postgresql"
 $env:PKG_CONFIG_PATH = "$Deps\lib\pkgconfig"

@@ -32,6 +32,7 @@ import struct
 import subprocess
 import sys
 import tarfile
+import time
 import tomllib
 import urllib.request
 from pathlib import Path, PurePosixPath
@@ -104,7 +105,11 @@ def cmd_fetch(args) -> None:
             except OSError as e:
                 if attempt == 3:
                     die(f"download {url}: {e}")
-                print(f"  retry after: {e}")
+                # Back off: engine-pg18.6-r3 lost an aarch64 build to a network
+                # outage that four instant retries all hit.
+                wait = 5 * 3 ** attempt
+                print(f"  retry in {wait}s after: {e}")
+                time.sleep(wait)
         got = sha256_file(tmp)
         if got != want:
             tmp.unlink()
