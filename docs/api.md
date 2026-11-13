@@ -235,3 +235,14 @@ A refused anonymous request gets `401`, a signed-in non-administrator `403`.
 For `/metrics`, a scoped API key needs the scope `system:read`.
 `/health` and `/health/ready` are never gated.
 
+### 11.4 Capabilities (`/api/system/capabilities`)
+
+`GET /api/system/capabilities` lists every feature of the server (`vector`,
+`graph`, `opencypher`, `fulltext`, `fuzzy`, `queue`, `cron`, `kv`,
+`realtime`, `read_replicas`, `sharding`) with the `engine` it runs on,
+whether that is a PostgreSQL extension (`accelerated`), its `state`
+(`active`, `portable`, `off`, `native`, `unavailable`), the configured
+`mode`, a `reason` and its `limits` (ADR-0034). `GET /api/system/info`
+carries the same list as `database.capabilities`. Access as in
+[§11.3](#113-operational-endpoints-ops_access). The cross-backend table is
+[feature-parity.md](feature-parity.md).
