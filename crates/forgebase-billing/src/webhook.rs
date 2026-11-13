@@ -15,11 +15,14 @@
 //!    follows (fulfillment, entitlement sync) is idempotent and retried by
 //!    the maintenance job.
 
+use std::time::Instant;
+
 use forgebase_data::AccessContext;
 use serde_json::json;
 use sha2::{Digest, Sha256};
 
 use crate::error::Result;
+use crate::inspector::{Duplicate, Handled, Incoming, Links, Mode, Verified};
 use crate::model::{PaymentStatus, RefundStatus, WebhookEvent, WebhookOutcome};
 use crate::money::hex;
 use crate::provider::{ChargeResult, EventAction, ProviderEvent, SavedMethod};
@@ -31,6 +34,8 @@ struct Applied {
     detail: Option<String>,
     paid_invoice: Option<String>,
     subscription: Option<String>,
+    /// Internal objects the event touched (recorded by the inspector).
+    links: Links,
 }
 
 impl Applied {
@@ -40,6 +45,7 @@ impl Applied {
             detail: Some(detail.to_owned()),
             paid_invoice: None,
             subscription: None,
+            links: Links::default(),
         }
     }
 
@@ -49,41 +55,143 @@ impl Applied {
             detail: detail.map(str::to_owned),
             paid_invoice: None,
             subscription: None,
+            links: Links::default(),
         }
     }
+
+    fn with(mut self, links: Links) -> Self {
+        self.links = links;
+        self
+    }
+}
+
+/// A prior row of `_forgebase_billing_webhook_events`.
+struct Prior {
+    id: String,
+    status: String,
+    hash: String,
+}
+
+/// The dedup row of an event.
+async fn prior_event(t: &mut Tx<'_>, provider: &str, event_id: &str) -> Result<Option<Prior>> {
+    let rows = t
+        .fetch(
+            "SELECT id, status, payload_hash FROM _forgebase_billing_webhook_events WHERE provider = ?1 AND event_id = ?2",
+            vec![provider.into(), event_id.into()],
+        )
+        .await?;
+    Ok(rows.rows.first().map(|r| Prior {
+        id: text(r, 0),
+        status: text(r, 1),
+        hash: text(r, 2),
+    }))
+}
+
+/// Inside the write transaction: what the event-processing step found.
+enum Step {
+    /// Another delivery of the event was handled first.
+    Duplicate(Prior),
+    /// Applied (or ignored) and recorded under this event row id.
+    Applied(Box<Applied>, String),
 }
 
 impl BillingService {
     /// Handles one webhook delivery of `provider` (anonymous: the signature
-    /// is the authentication).
+    /// is the authentication). Every delivery is recorded by the webhook
+    /// inspector (ADR-0032), which never changes the answer.
     pub async fn handle_webhook(
         &self,
         provider: &str,
         headers: &[(String, String)],
         body: &[u8],
     ) -> Result<WebhookOutcome> {
+        self.receive_webhook(provider, headers, body, None).await
+    }
+
+    /// [`Self::handle_webhook`] with the client address the HTTP layer saw
+    /// (recorded with the delivery).
+    pub async fn receive_webhook(
+        &self,
+        provider: &str,
+        headers: &[(String, String)],
+        body: &[u8],
+        client_addr: Option<String>,
+    ) -> Result<WebhookOutcome> {
+        let received_at = self.now();
+        let started = Instant::now();
+        let handled = self
+            .process_delivery(provider, headers, body, received_at, Mode::Live)
+            .await;
+        let incoming = Incoming {
+            provider,
+            headers,
+            body,
+            client_addr,
+            received_at,
+        };
+        self.log_delivery(&incoming, &handled, started.elapsed()).await;
+        handled.outcome
+    }
+
+    /// Verifies and processes one delivery. `verify_at` is the time the
+    /// signature timestamp and the replay window are checked against: now for
+    /// a live delivery, the time it was received for a stored one.
+    pub(crate) async fn process_delivery(
+        &self,
+        provider: &str,
+        headers: &[(String, String)],
+        body: &[u8],
+        verify_at: i64,
+        mode: Mode,
+    ) -> Handled {
         // App Store, Google Play and Creem notifications (FB-72).
         if let Some(store) = self.store(provider) {
-            return self.handle_store_notification(store, headers, body).await;
+            return self
+                .handle_store_notification(store, headers, body, verify_at, mode)
+                .await;
         }
-        let driver = self.provider(provider)?;
-        let settings = self.settings().await?;
-        let now = self.now();
-        let ev = driver.verify_webhook(headers, body, now, settings.webhook_tolerance_secs)?;
+        let driver = match self.provider(provider) {
+            Ok(d) => d,
+            Err(e) => return Handled::unverified(e, None),
+        };
+        let account = driver.account();
+        let settings = match self.settings().await {
+            Ok(s) => s,
+            Err(e) => return Handled::unverified(e, account),
+        };
+        let ev = match driver.verify_webhook(headers, body, verify_at, settings.webhook_tolerance_secs) {
+            Ok(ev) => ev,
+            Err(e) => return Handled::unverified(e, account),
+        };
+        let delivery = Verified::new(account, &ev.id, &ev.event_type);
         let hash = hex(&Sha256::digest(body));
-        if let Some(dup) = self.replayed(provider, &ev.id, &hash).await? {
-            return Ok(dup);
+        match self.replayed(provider, &ev.id, &hash, mode == Mode::Live).await {
+            Ok(Some(dup)) => return delivery.duplicate(dup),
+            Ok(None) => {}
+            Err(e) => return delivery.failed(e, None),
         }
-        let too_old = ev.created_at < now - settings.webhook_max_age_secs * 1000;
-        let mut tx = self.begin().await?;
+        let now = self.now();
+        let too_old = ev.created_at < verify_at - settings.webhook_max_age_secs * 1000;
+        let mut tx = match self.begin().await {
+            Ok(tx) => tx,
+            Err(e) => return delivery.failed(e, None),
+        };
         let res = async {
             let mut t = Tx(tx.as_mut());
+            // Dedup again inside the write transaction: writes are serialised,
+            // so two deliveries of one event that both passed the check above
+            // (a provider retry racing an operator re-verification) apply once.
+            if let Some(p) = prior_event(&mut t, provider, &ev.id).await?
+                && p.status != "failed"
+            {
+                return Ok((Step::Duplicate(p), false));
+            }
             let applied = if too_old {
                 Applied::ignored("too_old")
             } else {
                 self.apply_event(&mut t, provider, &ev, now).await?
             };
-            record(
+            let id = record(
                 &mut t,
                 provider,
                 &ev,
@@ -93,23 +201,40 @@ impl BillingService {
                 now,
             )
             .await?;
-            Ok((applied, true))
+            Ok((Step::Applied(Box::new(applied), id), true))
         }
         .await;
-        let applied = match self.end(tx, res).await {
-            Ok(a) => a,
+        let (applied, event_row) = match self.end(tx, res).await {
+            Ok(Step::Applied(a, id)) => (*a, id),
+            Ok(Step::Duplicate(p)) => {
+                return delivery.duplicate(Duplicate {
+                    outcome: WebhookOutcome {
+                        result: "duplicate".into(),
+                        detail: (p.hash != hash).then(|| "payload_differs".to_owned()),
+                        event_id: ev.id.clone(),
+                    },
+                    prior: p.status,
+                    event_row: p.id,
+                });
+            }
             Err(e) => {
                 // Durable failure record; the provider's redelivery retries it.
                 let msg = e.to_string();
-                let mut tx = self.begin().await?;
-                let res = async {
-                    let mut t = Tx(tx.as_mut());
-                    record(&mut t, provider, &ev, &hash, "failed", Some(&msg), now).await?;
-                    Ok(((), true))
+                let failed = async {
+                    let mut tx = self.begin().await?;
+                    let res = async {
+                        let mut t = Tx(tx.as_mut());
+                        let id = record(&mut t, provider, &ev, &hash, "failed", Some(&msg), now).await?;
+                        Ok((id, true))
+                    }
+                    .await;
+                    self.end(tx, res).await
                 }
                 .await;
-                self.end(tx, res).await?;
-                return Err(e);
+                return match failed {
+                    Ok(id) => delivery.failed(e, Some(id)),
+                    Err(e2) => delivery.failed(e2, None),
+                };
             }
         };
         if let Some(inv) = &applied.paid_invoice {
@@ -118,41 +243,52 @@ impl BillingService {
         if let Some(s) = &applied.subscription {
             self.sync_logged(s).await;
         }
-        Ok(WebhookOutcome {
-            result: applied.status.to_owned(),
-            detail: applied.detail,
-            event_id: ev.id,
-        })
+        let mut links = applied.links;
+        links.webhook_event = Some(event_row);
+        delivery.done(applied.status, applied.detail, links)
     }
 
-    /// A delivery of an event already processed or ignored: counted and
-    /// answered `duplicate` without effect (a failed one is processed again).
-    pub(crate) async fn replayed(&self, provider: &str, event_id: &str, hash: &str) -> Result<Option<WebhookOutcome>> {
+    /// A delivery of an event already processed or ignored: counted (when
+    /// `count`) and answered `duplicate` without effect (a failed one is
+    /// processed again).
+    pub(crate) async fn replayed(
+        &self,
+        provider: &str,
+        event_id: &str,
+        hash: &str,
+        count: bool,
+    ) -> Result<Option<Duplicate>> {
         let prior = self
             .fetch(
-                "SELECT status, payload_hash FROM _forgebase_billing_webhook_events WHERE provider = ?1 AND event_id = ?2",
+                "SELECT id, status, payload_hash FROM _forgebase_billing_webhook_events WHERE provider = ?1 AND event_id = ?2",
                 vec![provider.into(), event_id.into()],
             )
             .await?;
-        let Some(r) = prior.rows.first().filter(|r| text(r, 0) != "failed") else {
+        let Some(r) = prior.rows.first().filter(|r| text(r, 1) != "failed") else {
             return Ok(None);
         };
-        let mut tx = self.begin().await?;
-        let res = async {
-            let mut t = Tx(tx.as_mut());
-            t.exec(
-                "UPDATE _forgebase_billing_webhook_events SET attempts = attempts + 1 WHERE provider = ?1 AND event_id = ?2",
-                vec![provider.into(), event_id.into()],
-            )
-            .await?;
-            Ok(((), true))
+        if count {
+            let mut tx = self.begin().await?;
+            let res = async {
+                let mut t = Tx(tx.as_mut());
+                t.exec(
+                    "UPDATE _forgebase_billing_webhook_events SET attempts = attempts + 1 WHERE provider = ?1 AND event_id = ?2",
+                    vec![provider.into(), event_id.into()],
+                )
+                .await?;
+                Ok(((), true))
+            }
+            .await;
+            self.end(tx, res).await?;
         }
-        .await;
-        self.end(tx, res).await?;
-        Ok(Some(WebhookOutcome {
-            result: "duplicate".into(),
-            detail: (text(r, 1) != hash).then(|| "payload_differs".to_owned()),
-            event_id: event_id.to_owned(),
+        Ok(Some(Duplicate {
+            outcome: WebhookOutcome {
+                result: "duplicate".into(),
+                detail: (text(r, 2) != hash).then(|| "payload_differs".to_owned()),
+                event_id: event_id.to_owned(),
+            },
+            prior: text(r, 1),
+            event_row: text(r, 0),
         }))
     }
 
@@ -223,7 +359,10 @@ impl BillingService {
                     return Ok(Applied::ignored("unknown_customer"));
                 };
                 save_method(t, &text(r, 0), provider, provider_customer.as_deref(), method, now).await?;
-                Ok(Applied::processed(Some("payment_method_saved")))
+                Ok(Applied::processed(Some("payment_method_saved")).with(Links {
+                    customer: Some(text(r, 0)),
+                    ..Links::default()
+                }))
             }
             EventAction::Other => Ok(Applied::ignored("unhandled_type")),
         }
@@ -280,11 +419,16 @@ impl BillingService {
         let found = self.find_payment(t, provider, invoice_id, payment_ref).await?;
         let (payment_id, inv_id) = match found {
             Some((id, inv, status, last)) => {
+                let links = Links {
+                    payment: Some(id.clone()),
+                    invoice: Some(inv.clone()),
+                    ..Links::default()
+                };
                 if last.is_some_and(|l| ev.created_at < l) {
-                    return Ok(Applied::ignored("stale"));
+                    return Ok(Applied::ignored("stale").with(links));
                 }
                 if status == "succeeded" {
-                    return Ok(Applied::ignored("already_succeeded"));
+                    return Ok(Applied::ignored("already_succeeded").with(links));
                 }
                 (id, inv)
             }
@@ -338,6 +482,13 @@ impl BillingService {
             return Ok(Applied::ignored("currency_mismatch"));
         }
         let (customer_id, subscription) = (text(ir, 1), opt_text(ir, 2));
+        let links = Links {
+            customer: Some(customer_id.clone()),
+            subscription: subscription.clone(),
+            invoice: Some(inv_id.clone()),
+            payment: Some(payment_id.clone()),
+            ..Links::default()
+        };
         let was_open = matches!(text(ir, 3).as_str(), "open" | "uncollectible");
         let paid = self
             .apply_charge_tx(
@@ -371,6 +522,7 @@ impl BillingService {
                 detail: Some("invoice_already_paid".into()),
                 paid_invoice: None,
                 subscription: None,
+                links,
             });
         }
         Ok(Applied {
@@ -378,6 +530,7 @@ impl BillingService {
             detail: Some("invoice_paid".into()),
             paid_invoice: paid.then_some(inv_id),
             subscription,
+            links,
         })
     }
 
@@ -397,14 +550,19 @@ impl BillingService {
         else {
             return Ok(Applied::ignored("unknown_payment"));
         };
+        let links = Links {
+            payment: Some(payment_id.clone()),
+            invoice: Some(inv_id.clone()),
+            ..Links::default()
+        };
         if last.is_some_and(|l| ev.created_at < l) {
-            return Ok(Applied::ignored("stale"));
+            return Ok(Applied::ignored("stale").with(links));
         }
         if status == "succeeded" {
-            return Ok(Applied::ignored("already_succeeded"));
+            return Ok(Applied::ignored("already_succeeded").with(links));
         }
         if status == "failed" {
-            return Ok(Applied::ignored("already_failed"));
+            return Ok(Applied::ignored("already_failed").with(links));
         }
         let sub = t
             .fetch(
@@ -432,7 +590,11 @@ impl BillingService {
             status: "processed",
             detail: Some("payment_failed".into()),
             paid_invoice: None,
-            subscription: sub,
+            subscription: sub.clone(),
+            links: Links {
+                subscription: sub,
+                ..links
+            },
         })
     }
 
@@ -474,13 +636,28 @@ impl BillingService {
         let Some(id) = id else {
             return Ok(Applied::ignored("unknown_refund"));
         };
+        let links = t
+            .fetch(
+                "SELECT payment_id, invoice_id FROM _forgebase_billing_refunds WHERE id = ?1",
+                vec![id.clone().into()],
+            )
+            .await?
+            .rows
+            .first()
+            .map(|r| Links {
+                refund: Some(id.clone()),
+                payment: opt_text(r, 0),
+                invoice: opt_text(r, 1),
+                ..Links::default()
+            })
+            .unwrap_or_default();
         if status == RefundStatus::Pending {
             t.exec(
                 "UPDATE _forgebase_billing_refunds SET provider_ref = COALESCE(provider_ref, ?2) WHERE id = ?1",
                 vec![id.into(), refund_ref.into()],
             )
             .await?;
-            return Ok(Applied::processed(Some("refund_pending")));
+            return Ok(Applied::processed(Some("refund_pending")).with(links));
         }
         if self
             .set_refund_tx(t, &id, status, Some(refund_ref.to_owned()), Some(ev.created_at), now)
@@ -489,9 +666,10 @@ impl BillingService {
             Ok(Applied::processed(Some(match status {
                 RefundStatus::Succeeded => "refund_succeeded",
                 _ => "refund_failed",
-            })))
+            }))
+            .with(links))
         } else {
-            Ok(Applied::ignored("stale"))
+            Ok(Applied::ignored("stale").with(links))
         }
     }
 
@@ -557,25 +735,27 @@ pub(crate) async fn record(
     status: &str,
     detail: Option<&str>,
     now: i64,
-) -> Result<()> {
-    t.exec(
-        "INSERT INTO _forgebase_billing_webhook_events (id, provider, event_id, event_type, event_at, received_at,
-             payload_hash, status, result, processed_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?6)
-         ON CONFLICT (provider, event_id) DO UPDATE SET status = excluded.status, result = excluded.result,
-             attempts = _forgebase_billing_webhook_events.attempts + 1, processed_at = excluded.processed_at",
-        vec![
-            new_id("whe").into(),
-            provider.into(),
-            ev.id.clone().into(),
-            ev.event_type.clone().into(),
-            ev.created_at.into(),
-            now.into(),
-            hash.into(),
-            status.into(),
-            detail.map(str::to_owned).into(),
-        ],
-    )
-    .await?;
-    Ok(())
+) -> Result<String> {
+    let rows = t
+        .fetch(
+            "INSERT INTO _forgebase_billing_webhook_events (id, provider, event_id, event_type, event_at, received_at,
+                 payload_hash, status, result, processed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?6)
+             ON CONFLICT (provider, event_id) DO UPDATE SET status = excluded.status, result = excluded.result,
+                 attempts = _forgebase_billing_webhook_events.attempts + 1, processed_at = excluded.processed_at
+             RETURNING id",
+            vec![
+                new_id("whe").into(),
+                provider.into(),
+                ev.id.clone().into(),
+                ev.event_type.clone().into(),
+                ev.created_at.into(),
+                now.into(),
+                hash.into(),
+                status.into(),
+                detail.map(str::to_owned).into(),
+            ],
+        )
+        .await?;
+    Ok(rows.rows.first().map(|r| text(r, 0)).unwrap_or_default())
 }

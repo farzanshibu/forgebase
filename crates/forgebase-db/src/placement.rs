@@ -308,6 +308,7 @@ pub static TABLES: &[TablePlacement] = &[
     control("_forgebase_billing_sync_events"),
     control("_forgebase_billing_tax_rates"),
     control("_forgebase_billing_usage_records"),
+    control("_forgebase_billing_webhook_deliveries"),
     control("_forgebase_billing_webhook_events"),
     control("_forgebase_credit_accounts"),
     control("_forgebase_credit_allocations"),

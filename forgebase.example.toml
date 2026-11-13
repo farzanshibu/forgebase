@@ -205,6 +205,9 @@ enabled = false
 # /api/v1/billing. On by default, test mode only: live provider keys are
 # refused. Set false to turn it off. Env: FORGEBASE_BILLING_ENABLED
 enabled = true
+# Days the webhook inspector keeps each incoming provider webhook (ADR-0032).
+# Env: FORGEBASE_BILLING_WEBHOOK_LOG_RETENTION_DAYS
+webhook_log_retention_days = 30
 
 [queue]
 # Durable topics and queues (ADR-0022): /api/v1/queues and its background task.

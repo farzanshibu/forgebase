@@ -375,6 +375,112 @@ impl GooglePlayProvider {
         found.ok_or_else(|| BillingError::webhook("invalid_signature", "the push token key is unknown"))
     }
 
+    /// Reads a Pub/Sub push body (after [`Self::check_push`], or for a
+    /// delivery that was verified when it arrived): the purchase state is
+    /// always read back from the Play Developer API, never taken from the push.
+    async fn read_notification(&self, body: &[u8], now_ms: i64) -> Result<StoreNotification> {
+        let v = json_body(body)?;
+        let msg = v.get("message").cloned().unwrap_or(Json::Null);
+        let id = str_at(&msg, &["messageId"])
+            .or_else(|| str_at(&msg, &["message_id"]))
+            .ok_or_else(|| BillingError::webhook("invalid_payload", "no Pub/Sub message id"))?
+            .to_owned();
+        let data = str_at(&msg, &["data"])
+            .and_then(|d| base64::engine::general_purpose::STANDARD.decode(d).ok())
+            .and_then(|d| serde_json::from_slice::<Json>(&d).ok())
+            .ok_or_else(|| BillingError::webhook("invalid_payload", "the message data is not base64 JSON"))?;
+        if str_at(&data, &["packageName"]) != Some(self.cfg.package_name.as_str()) {
+            return Err(BillingError::invalid(
+                "wrong_app",
+                "the notification belongs to another app",
+            ));
+        }
+        let created_at = match data.get("eventTimeMillis") {
+            Some(Json::String(s)) => s.parse().unwrap_or(now_ms),
+            Some(n) => n.as_i64().unwrap_or(now_ms),
+            None => now_ms,
+        };
+        let done = |event_type: &str, purchase| StoreNotification {
+            id: id.clone(),
+            event_type: event_type.to_owned(),
+            created_at,
+            purchase,
+        };
+        if let Some(n) = data.get("subscriptionNotification") {
+            let kind = sub_type(n.get("notificationType").and_then(Json::as_i64).unwrap_or(0));
+            let token = str_at(n, &["purchaseToken"])
+                .ok_or_else(|| BillingError::webhook("invalid_payload", "no purchaseToken"))?;
+            let mut p = self.subscription(token, None).await?;
+            if kind == "SUBSCRIPTION_REVOKED" {
+                p.state = StoreState::Revoked;
+                p.auto_renew = false;
+                p.refund = p.transaction_id.clone().map(|o| StoreRefund {
+                    refund_ref: format!("{o}:revoked"),
+                    transaction_id: o,
+                    amount: None,
+                });
+            }
+            return Ok(done(kind, Some(p)));
+        }
+        if let Some(n) = data.get("oneTimeProductNotification") {
+            let token = str_at(n, &["purchaseToken"])
+                .ok_or_else(|| BillingError::webhook("invalid_payload", "no purchaseToken"))?;
+            let sku = str_at(n, &["sku"]).unwrap_or_default();
+            let kind = match n.get("notificationType").and_then(Json::as_i64) {
+                Some(1) => "ONE_TIME_PRODUCT_PURCHASED",
+                Some(2) => "ONE_TIME_PRODUCT_CANCELED",
+                _ => "ONE_TIME_PRODUCT_UNKNOWN",
+            };
+            let p = self.product(token, sku).await?;
+            return Ok(done(kind, Some(p)));
+        }
+        if let Some(n) = data.get("voidedPurchaseNotification") {
+            let token = str_at(n, &["purchaseToken"])
+                .ok_or_else(|| BillingError::webhook("invalid_payload", "no purchaseToken"))?;
+            let order = str_at(n, &["orderId"]).unwrap_or_default().to_owned();
+            let kind = if n.get("productType").and_then(Json::as_i64) == Some(1) {
+                PurchaseKind::Subscription
+            } else {
+                PurchaseKind::OneTime
+            };
+            // The product is the one on record for the token.
+            let p = StorePurchase {
+                purchase_id: token.to_owned(),
+                transaction_id: Some(order.clone()),
+                product_id: String::new(),
+                kind,
+                state: StoreState::Refunded,
+                auto_renew: false,
+                period_start: None,
+                expires_at: None,
+                purchased_at: created_at,
+                amount: None,
+                currency: None,
+                quantity: 1,
+                test: true,
+                subject_hint: None,
+                replaces: None,
+                refund: Some(StoreRefund {
+                    refund_ref: format!("{order}:voided"),
+                    transaction_id: order,
+                    amount: None,
+                }),
+                refund_only: false,
+                observed_at: created_at,
+                needs_ack: false,
+            };
+            return Ok(done("VOIDED_PURCHASE", Some(p)));
+        }
+        Ok(done(
+            if data.get("testNotification").is_some() {
+                "TEST_NOTIFICATION"
+            } else {
+                "UNKNOWN"
+            },
+            None,
+        ))
+    }
+
     /// Verifies the Pub/Sub push OIDC token.
     async fn check_push(&self, headers: &[(String, String)], now: i64) -> Result<()> {
         let forged = |m: &str| BillingError::webhook("invalid_signature", m.to_owned());
@@ -485,107 +591,20 @@ impl StoreProvider for GooglePlayProvider {
     ) -> BoxFuture<'a, Result<StoreNotification>> {
         Box::pin(async move {
             self.check_push(headers, now_ms).await?;
-            let v = json_body(body)?;
-            let msg = v.get("message").cloned().unwrap_or(Json::Null);
-            let id = str_at(&msg, &["messageId"])
-                .or_else(|| str_at(&msg, &["message_id"]))
-                .ok_or_else(|| BillingError::webhook("invalid_payload", "no Pub/Sub message id"))?
-                .to_owned();
-            let data = str_at(&msg, &["data"])
-                .and_then(|d| base64::engine::general_purpose::STANDARD.decode(d).ok())
-                .and_then(|d| serde_json::from_slice::<Json>(&d).ok())
-                .ok_or_else(|| BillingError::webhook("invalid_payload", "the message data is not base64 JSON"))?;
-            if str_at(&data, &["packageName"]) != Some(self.cfg.package_name.as_str()) {
-                return Err(BillingError::invalid(
-                    "wrong_app",
-                    "the notification belongs to another app",
-                ));
-            }
-            let created_at = match data.get("eventTimeMillis") {
-                Some(Json::String(s)) => s.parse().unwrap_or(now_ms),
-                Some(n) => n.as_i64().unwrap_or(now_ms),
-                None => now_ms,
-            };
-            let done = |event_type: &str, purchase| StoreNotification {
-                id: id.clone(),
-                event_type: event_type.to_owned(),
-                created_at,
-                purchase,
-            };
-            if let Some(n) = data.get("subscriptionNotification") {
-                let kind = sub_type(n.get("notificationType").and_then(Json::as_i64).unwrap_or(0));
-                let token = str_at(n, &["purchaseToken"])
-                    .ok_or_else(|| BillingError::webhook("invalid_payload", "no purchaseToken"))?;
-                let mut p = self.subscription(token, None).await?;
-                if kind == "SUBSCRIPTION_REVOKED" {
-                    p.state = StoreState::Revoked;
-                    p.auto_renew = false;
-                    p.refund = p.transaction_id.clone().map(|o| StoreRefund {
-                        refund_ref: format!("{o}:revoked"),
-                        transaction_id: o,
-                        amount: None,
-                    });
-                }
-                return Ok(done(kind, Some(p)));
-            }
-            if let Some(n) = data.get("oneTimeProductNotification") {
-                let token = str_at(n, &["purchaseToken"])
-                    .ok_or_else(|| BillingError::webhook("invalid_payload", "no purchaseToken"))?;
-                let sku = str_at(n, &["sku"]).unwrap_or_default();
-                let kind = match n.get("notificationType").and_then(Json::as_i64) {
-                    Some(1) => "ONE_TIME_PRODUCT_PURCHASED",
-                    Some(2) => "ONE_TIME_PRODUCT_CANCELED",
-                    _ => "ONE_TIME_PRODUCT_UNKNOWN",
-                };
-                let p = self.product(token, sku).await?;
-                return Ok(done(kind, Some(p)));
-            }
-            if let Some(n) = data.get("voidedPurchaseNotification") {
-                let token = str_at(n, &["purchaseToken"])
-                    .ok_or_else(|| BillingError::webhook("invalid_payload", "no purchaseToken"))?;
-                let order = str_at(n, &["orderId"]).unwrap_or_default().to_owned();
-                let kind = if n.get("productType").and_then(Json::as_i64) == Some(1) {
-                    PurchaseKind::Subscription
-                } else {
-                    PurchaseKind::OneTime
-                };
-                // The product is the one on record for the token.
-                let p = StorePurchase {
-                    purchase_id: token.to_owned(),
-                    transaction_id: Some(order.clone()),
-                    product_id: String::new(),
-                    kind,
-                    state: StoreState::Refunded,
-                    auto_renew: false,
-                    period_start: None,
-                    expires_at: None,
-                    purchased_at: created_at,
-                    amount: None,
-                    currency: None,
-                    quantity: 1,
-                    test: true,
-                    subject_hint: None,
-                    replaces: None,
-                    refund: Some(StoreRefund {
-                        refund_ref: format!("{order}:voided"),
-                        transaction_id: order,
-                        amount: None,
-                    }),
-                    refund_only: false,
-                    observed_at: created_at,
-                    needs_ack: false,
-                };
-                return Ok(done("VOIDED_PURCHASE", Some(p)));
-            }
-            Ok(done(
-                if data.get("testNotification").is_some() {
-                    "TEST_NOTIFICATION"
-                } else {
-                    "UNKNOWN"
-                },
-                None,
-            ))
+            self.read_notification(body, now_ms).await
         })
+    }
+
+    fn account(&self) -> Option<String> {
+        Some(self.cfg.package_name.clone())
+    }
+
+    fn reread_notification<'a>(
+        &'a self,
+        body: &'a [u8],
+        now_ms: i64,
+    ) -> Option<BoxFuture<'a, Result<StoreNotification>>> {
+        Some(Box::pin(self.read_notification(body, now_ms)))
     }
 
     fn acknowledge<'a>(&'a self, p: &'a StorePurchase) -> BoxFuture<'a, Result<()>> {

@@ -1279,6 +1279,12 @@ impl BillingService {
                 Err(e) => tracing::warn!(subscription = %text(r, 0), error = %e, "entitlement sync failed"),
             }
         }
+
+        // Inbound webhook deliveries past their retention (ADR-0032).
+        match self.prune_webhook_deliveries().await {
+            Ok(n) => rep.webhook_deliveries_pruned = n,
+            Err(e) => tracing::warn!(error = %e, "webhook delivery prune failed"),
+        }
         Ok(rep)
     }
 

@@ -267,6 +267,7 @@ stops startup with an error.
 | `FORGEBASE_RESP_ENABLED`, `FORGEBASE_RESP_HOST`, `FORGEBASE_RESP_PORT` | Redis protocol listener. |
 | `FORGEBASE_RESP_MAX_CONNECTIONS`, `FORGEBASE_RESP_MAX_BULK_BYTES`, `FORGEBASE_RESP_IDLE_TIMEOUT_SECS` | Redis protocol limits. |
 | `FORGEBASE_BILLING_ENABLED` | Mount the billing API. |
+| `FORGEBASE_BILLING_WEBHOOK_LOG_RETENTION_DAYS` | Days the billing webhook inspector keeps a delivery (default 30). |
 | `FORGEBASE_STORAGE_ENABLED`, `FORGEBASE_FUNCTIONS_ENABLED`, `FORGEBASE_QUEUE_ENABLED`, `FORGEBASE_REALTIME_ENABLED`, `FORGEBASE_VECTOR_ENABLED`, `FORGEBASE_GRAPH_ENABLED`, `FORGEBASE_IDENTITY_ENABLED`, `FORGEBASE_ACCESS_ENABLED` | Switch a module on or off (default on; ADR-0026, [architecture.md §6](architecture.md#6-feature-flags)). |
 | `FORGEBASE_REALTIME_MAX_CONNECTIONS_PER_PRINCIPAL` | Most realtime connections one user or key may hold (default 32). |
 | `FORGEBASE_STORAGE_S3_ACCESS_KEY`, `FORGEBASE_STORAGE_S3_SECRET_KEY`, `FORGEBASE_STORAGE_S3_SESSION_TOKEN` | S3 credentials, read from the environment only (the storage driver reads them; the config loader only notes that they are set). |
@@ -438,6 +439,9 @@ Scrape every 15 s or so; each scrape refreshes the gauges below.
 | `forgebase_kv_keys`, `forgebase_kv_memory_bytes` | gauge | none |
 | `forgebase_queue_deliveries` | gauge | `state` = `ready`, `delayed`, `in_flight` (only when `[queue]` is enabled) |
 | `forgebase_queue_messages` | gauge | none (only when `[queue]` is enabled) |
+| `forgebase_billing_webhook_deliveries_total` | counter | `provider` (a known provider or `other`), `outcome` = `applied`, `ignored`, `duplicate`, `failed`, `signature_invalid`, `timestamp_out_of_tolerance`, `unknown_provider`, `malformed`, `rejected`, `error` (only when `[billing]` is enabled; ADR-0032) |
+| `forgebase_billing_webhook_processing_seconds` | histogram | `provider` (verification plus processing of a billing webhook, replays and re-verifications included) |
+| `forgebase_billing_webhook_log_dropped_total` | counter | `provider`, `kind` = `body` (stored without body) or `delivery` (not stored): unverified webhooks over the inspector budget |
 
 Notes:
 
@@ -521,6 +525,7 @@ Keys in the TOML file, with defaults. Ranges are the accepted values.
 | `storage.s3_endpoint`, `s3_region`, `s3_bucket`, `s3_prefix`, `s3_part_size` | unset / `""` / `8388608` | S3 only. Credentials come from the environment (§3.3). |
 | `realtime.max_connections_per_principal` | `32` | `1`–`1000000`. Most simultaneous realtime (WebSocket) connections for one user or API key; the next one gets `429 too_many_connections`. Raise it for a shared service identity that fans out many subscribers. |
 | `billing.enabled` | `true` | Mounts `/api/v1/billing/*` and the provider webhooks. |
+| `billing.webhook_log_retention_days` | `30` | Days the billing webhook inspector keeps each incoming provider webhook (headers, body, outcome) before `billing.maintenance` deletes it (ADR-0032). Bodies hold customer personal data ([security.md §4.9](security.md#49-billing-webhooks-and-store-receipts-forgebase-billing-adr-0021)). |
 | `storage.enabled`, `functions.enabled`, `queue.enabled`, `realtime.enabled`, `vector.enabled`, `graph.enabled`, `identity.enabled`, `access.enabled` | `true` | Switch a module off: its routes answer `404 feature_disabled` and its workers do not start ([architecture.md §6](architecture.md#6-feature-flags), ADR-0026). |
 | `auth.trust_forwarded_for` | `false` | Client address from the last `X-Forwarded-For` entry. Only behind your own proxy (§5). |
 | `auth.allow_private_outbound` | `false` | The auth service's outbound HTTPS (OAuth/OIDC providers, SMS gateways, Turnstile) refuses loopback, private, link-local and metadata addresses unless this is `true` (an identity provider on your own network). LDAP and S3 endpoints are not affected. |

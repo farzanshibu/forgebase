@@ -235,3 +235,32 @@ A refused anonymous request gets `401`, a signed-in non-administrator `403`.
 For `/metrics`, a scoped API key needs the scope `system:read`.
 `/health` and `/health/ready` are never gated.
 
+### 11.4 Billing webhook inspector (`/api/v1/billing/webhook-deliveries`)
+
+Every request to `POST /api/v1/billing/webhooks/{provider}` is recorded, verified or not
+([ADR-0032](adr/0032-billing-webhook-inspector.md)): provider and account, received time, client address,
+allowlisted headers (never `authorization`, cookies or API keys), the raw body (up to 256 KiB), the
+verification outcome with a safe reason, the provider event id and type, the processing outcome, the billing
+objects it touched and the latency. Unverified deliveries are stored only within a per-provider budget, and the
+answer to the provider never changes. Rows are deleted after `[billing] webhook_log_retention_days` (default 30).
+Platform administrators only: a signed-in non-administrator gets `403`, an anonymous caller `401`.
+
+| Route | Purpose |
+|---|---|
+| `GET /billing/webhook-deliveries` | Newest first: `{"items": [...], "total", "limit", "offset"}`. Filters `provider`, `outcome`, `event_type`, `event_id`, `from`, `to` (RFC 3339, `to` exclusive); `limit` 1–500 (default 50), `offset`. No bodies. |
+| `GET /billing/webhook-deliveries/{id}` | One delivery with `headers` (object) and `body` (`body_encoding` `utf8`, or `base64` for binary bodies; `null` when the budget dropped it). |
+| `POST /billing/webhook-deliveries/{id}/replay` | Processes a verified delivery again through the normal path. The stored body is verified again with the current secrets as of the time it was received; the event dedup decides. |
+| `POST /billing/webhook-deliveries/{id}/reverify` | Verifies a refused delivery again with the current secrets (after fixing a webhook secret) and processes it if it now verifies, exactly once. |
+
+`outcome` is the processing outcome of a verified delivery (`applied`, `ignored`, `duplicate`, `failed`) or the
+verification outcome of a refused one (`signature_invalid`, `timestamp_out_of_tolerance`, `unknown_provider`,
+`malformed`, `rejected`, `error`). `links` holds `webhook_event_id`, `customer_id`, `subscription_id`,
+`order_id`, `invoice_id`, `payment_id`, `refund_id` and `store_purchase_id`.
+
+Replay and re-verify answer `{"result", "detail", "delivery"}`. `result` is `applied`, `ignored` or `failed`
+(processed now), `already_applied` or `already_ignored` (the event was handled before: nothing changed), or
+`unverified` (the stored body does not verify with the current secrets: nothing was processed). Both are written
+to the billing audit log. Errors: `409 delivery_not_verified` (replay of a refused delivery: re-verify it),
+`409 delivery_already_verified` (re-verify of a verified one: replay it), `409 reverify_in_progress`,
+`409 body_not_stored` (dropped by the budget or cut at the size limit) and `409 not_reverifiable` (Google Play:
+its push token is not stored; Pub/Sub redelivers unacknowledged pushes).
