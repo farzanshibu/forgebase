@@ -221,6 +221,11 @@ pub static SYSTEM_MIGRATIONS: &[Migration] = &[
         "db_node_agents",
         include_str!("../../../migrations/system/0043_db_node_agents.sql"),
     ),
+    Migration::new(
+        53,
+        "billing_webhook_deliveries",
+        include_str!("../../../migrations/system/0053_billing_webhook_deliveries.sql"),
+    ),
 ];
 
 /// A migration recorded as applied in the database.
