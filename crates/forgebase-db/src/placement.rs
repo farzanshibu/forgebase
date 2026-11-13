@@ -352,6 +352,10 @@ pub static TABLES: &[TablePlacement] = &[
     // --- Node bookkeeping (per set) ---
     per_set("_forgebase_meta", MoveStrategy::Stay),
     per_set("_forgebase_migrations", MoveStrategy::Stay),
+    // Reference tables of the portable trigram engine (ADR-0034, migration
+    // 0056): the same seed rows on every node.
+    per_set("_forgebase_trgm_fold", MoveStrategy::Stay),
+    per_set("_forgebase_trgm_positions", MoveStrategy::Stay),
     // Each set's change log; `tenant` says whose change it was. A move
     // resets the tenant's live subscriptions (`tenant_moved`).
     per_set("_forgebase_realtime_outbox", MoveStrategy::Stay),

@@ -140,6 +140,11 @@ pub static POSTGRES_MIGRATIONS: &[Migration] = &[
         "db_node_agents",
         include_str!("../../../migrations/postgres/0043_db_node_agents.sql"),
     ),
+    Migration::new(
+        56,
+        "portable_trigram",
+        include_str!("../../../migrations/postgres/0056_portable_trigram.sql"),
+    ),
 ];
 
 /// The SQLite migrations the baseline stands for (versions up to
