@@ -143,10 +143,23 @@ impl AuthService {
             },
             secret: code,
         };
-        self.sms_for(coll).send(&sms).await.map_err(|e| {
-            tracing::warn!(to = %mask_phone(phone), error = %e, "SMS delivery failed");
-            AuthError::Provider("could not send the SMS".into())
-        })
+        match self.sms_for(coll).send(&sms).await {
+            Ok(receipt) => {
+                tracing::debug!(to = %mask_phone(phone), message_id = ?receipt.id, "SMS accepted by the gateway");
+                Ok(())
+            }
+            Err(e) => {
+                tracing::warn!(to = %mask_phone(phone), error = %e, "SMS delivery failed");
+                // The gateway's own throttle is the caller's to wait out; every
+                // other failure is an operator problem the caller cannot fix.
+                Err(match e {
+                    crate::sms::SmsError::RateLimited { retry_after_secs } => AuthError::RateLimited {
+                        retry_after: retry_after_secs.unwrap_or(30).clamp(1, 3600),
+                    },
+                    _ => AuthError::Provider("could not send the SMS".into()),
+                })
+            }
+        }
     }
 
     /// Checks and consumes the latest code; wrong guesses count and burn it.

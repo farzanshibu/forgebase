@@ -454,3 +454,67 @@ async fn sms_gateway_per_realm_is_write_only_and_used_by_that_realm_only() {
     assert_eq!(h.get(sms, Some(&admin)).await.json["configured"], false);
     assert_error(&h.delete(sms, Some(&admin)).await, StatusCode::NOT_FOUND, "not_found");
 }
+
+#[tokio::test]
+async fn new_sms_gateways_seal_their_secrets_and_validate_config() {
+    let h = harness(|_| {}).await;
+    let admin = h.root_token().await;
+    make_realm(&h, &admin, "acme", json!({"methods": {"phone": true}})).await;
+    let sms = "/api/auth/realms/acme/sms";
+    for (cfg, secrets, needle) in [
+        (
+            json!({"provider": "vonage", "api_key": "vkey-visible", "api_secret": "vonage-sec-1", "from": "Acme"}),
+            vec!["api_secret", "api_key"],
+            "vonage-sec-1",
+        ),
+        (
+            json!({"provider": "sns", "access_key_id": "AKIAEXAMPLE", "secret_access_key": "sns-sec-1", "session_token": "sns-tok-1", "region": "us-east-1"}),
+            vec!["secret_access_key", "session_token"],
+            "sns-sec-1",
+        ),
+        (
+            json!({"provider": "plivo", "auth_id": "MAXXXX", "auth_token": "plivo-sec-1", "from": "+15550100"}),
+            vec!["auth_token"],
+            "plivo-sec-1",
+        ),
+        (
+            json!({"provider": "messagebird", "api_key": "mb-sec-1", "from": "Acme"}),
+            vec!["api_key"],
+            "mb-sec-1",
+        ),
+        (
+            json!({"provider": "bird", "api_key": "bird-sec-1", "workspace_id": "w1", "channel_id": "c1"}),
+            vec!["api_key"],
+            "bird-sec-1",
+        ),
+    ] {
+        let r = put(&h, sms, &admin, cfg).await;
+        assert_eq!(r.status, StatusCode::OK, "{}", r.json);
+        for s in &secrets {
+            assert_eq!(r.json["config"][*s], MASK, "{s}");
+        }
+        assert!(!r.json.to_string().contains(needle));
+        assert_eq!(
+            h.count(&format!(
+                "SELECT count(*) FROM _forgebase_sms_config WHERE CAST(config AS TEXT) LIKE '%{needle}%'"
+            ))
+            .await,
+            0,
+            "{needle} sealed at rest"
+        );
+        // Sending the mask back keeps the stored secret.
+        let again = r.json["config"].clone();
+        let r2 = put(&h, sms, &admin, again).await;
+        assert_eq!(r2.status, StatusCode::OK, "{}", r2.json);
+    }
+    // Bad configuration is refused.
+    for bad in [
+        json!({"provider": "vonage", "api_key": "k", "api_secret": "s"}),
+        json!({"provider": "sns", "access_key_id": "a", "secret_access_key": "s", "region": "US EAST"}),
+        json!({"provider": "plivo", "auth_id": "bad/id", "auth_token": "t", "from": "+1555"}),
+        json!({"provider": "vonage", "api_key": "k", "api_secret": "s", "from": "A", "base_url": "ftp://x"}),
+    ] {
+        let r = put(&h, sms, &admin, bad.clone()).await;
+        assert_error(&r, StatusCode::BAD_REQUEST, "invalid_input");
+    }
+}

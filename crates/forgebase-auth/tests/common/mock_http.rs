@@ -40,6 +40,17 @@ impl MockHttp {
 }
 
 pub async fn start(handler: impl Fn(&Seen) -> (u16, String) + Send + Sync + 'static) -> MockHttp {
+    start_ext(move |r| {
+        let (status, body) = handler(r);
+        (status, Vec::new(), body)
+    })
+    .await
+}
+
+/// Like [`start`], with response headers (`Retry-After`, ...).
+pub async fn start_ext(
+    handler: impl Fn(&Seen) -> (u16, Vec<(String, String)>, String) + Send + Sync + 'static,
+) -> MockHttp {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
     let seen = Arc::new(Mutex::new(Vec::new()));
@@ -90,10 +101,11 @@ pub async fn start(handler: impl Fn(&Seen) -> (u16, String) + Send + Sync + 'sta
                     headers,
                     body,
                 };
-                let (status, out) = handler(&req);
+                let (status, extra, out) = handler(&req);
                 seen.lock().unwrap().push(req);
+                let extra: String = extra.iter().map(|(k, v)| format!("{k}: {v}\r\n")).collect();
                 let resp = format!(
-                    "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{out}",
+                    "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\n{extra}Content-Length: {}\r\nConnection: close\r\n\r\n{out}",
                     out.len()
                 );
                 let _ = s.write_all(resp.as_bytes()).await;

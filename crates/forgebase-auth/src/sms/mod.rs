@@ -1,18 +1,32 @@
-//! Outgoing SMS (FB-25, ADR-0015 §4): the pluggable [`SmsProvider`] trait,
-//! a development provider, and two gateways over the auth service's HTTPS
-//! client (Twilio's Messages API and a generic JSON webhook).
+//! Outgoing SMS (FB-25, ADR-0015 §4, ADR-0039): the pluggable [`SmsProvider`]
+//! trait, a development provider, and gateways over the auth service's HTTPS
+//! client: Twilio, a generic JSON webhook, Vonage, MessageBird, Bird, Amazon
+//! SNS and Plivo (the last five in [`providers`]).
 //!
 //! The provider comes from `<data_dir>/auth/sms.json` when present (it holds
-//! gateway credentials; keep it 0600):
+//! gateway credentials; keep it 0600), or per realm from the REST API where
+//! the secrets are sealed with the keyring:
 //!
 //! ```json
 //! {"provider": "twilio", "account_sid": "AC…", "auth_token": "…", "from": "+15550100"}
 //! {"provider": "webhook", "url": "https://sms.example/send", "bearer_token": "…"}
+//! {"provider": "vonage", "api_key": "…", "api_secret": "…", "from": "Acme"}
+//! {"provider": "messagebird", "api_key": "…", "from": "Acme"}
+//! {"provider": "bird", "api_key": "…", "workspace_id": "…", "channel_id": "…"}
+//! {"provider": "sns", "access_key_id": "AKIA…", "secret_access_key": "…", "region": "us-east-1"}
+//! {"provider": "plivo", "auth_id": "MA…", "auth_token": "…", "from": "+15550100"}
 //! {"provider": "dev"}
 //! ```
 //!
+//! Every gateway checks the recipient is E.164, retries 429 and 5xx a couple
+//! of times (honouring `Retry-After`, capped), returns the gateway's message
+//! id and maps its answer to a typed [`SmsError`].
+//!
 //! or from [`AuthService::set_sms_provider`]. Providers never log the text
 //! (it carries the code).
+
+pub mod gateway;
+pub mod providers;
 
 use std::fmt;
 use std::path::PathBuf;
@@ -22,11 +36,14 @@ use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
 
+pub use gateway::{Gateway, RetryPolicy, SmsError, SmsReceipt};
+pub use providers::{BirdSms, MessageBirdSms, PlivoSms, SnsConfig, SnsSms, VonageSms};
+
 use crate::social::{HttpClient, HttpRequest, Secret};
 use crate::{AuthError, AuthService};
 
 /// Boxed future returned by [`SmsProvider::send`].
-pub type SmsFuture<'a> = std::pin::Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>>;
+pub type SmsFuture<'a> = std::pin::Pin<Box<dyn Future<Output = Result<SmsReceipt, SmsError>> + Send + 'a>>;
 
 /// What a message is for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -53,7 +70,7 @@ pub struct Sms {
 
 /// Sends SMS. Implementations must not log `text` or `secret`.
 pub trait SmsProvider: Send + Sync + fmt::Debug {
-    /// Delivers one message.
+    /// Delivers one message; the receipt carries the gateway's message id.
     fn send<'a>(&'a self, sms: &'a Sms) -> SmsFuture<'a>;
 }
 
@@ -121,9 +138,9 @@ impl SmsProvider for DevSmsProvider {
     fn send<'a>(&'a self, sms: &'a Sms) -> SmsFuture<'a> {
         Box::pin(async move {
             tracing::info!(to = %mask_phone(&sms.to), kind = ?sms.kind, "SMS kept by the development provider (not delivered)");
-            self.write_file(sms).map_err(|e| e.to_string())?;
+            self.write_file(sms).map_err(|e| SmsError::Transient(e.to_string()))?;
             self.outbox.lock().unwrap_or_else(|e| e.into_inner()).push(sms.clone());
-            Ok(())
+            Ok(SmsReceipt::default())
         })
     }
 }
@@ -136,7 +153,7 @@ pub struct TwilioSms {
     from: Option<String>,
     messaging_service_sid: Option<String>,
     base_url: String,
-    http: Arc<dyn HttpClient>,
+    gw: Gateway,
 }
 
 impl TwilioSms {
@@ -158,8 +175,38 @@ impl TwilioSms {
             from,
             messaging_service_sid,
             base_url: base_url.unwrap_or_else(|| "https://api.twilio.com".into()),
-            http,
+            gw: Gateway::new(http),
         })
+    }
+
+    /// Replaces the gateway (retry policy).
+    #[must_use]
+    pub fn with_gateway(mut self, gw: Gateway) -> Self {
+        self.gw = gw;
+        self
+    }
+}
+
+/// Twilio's error codes (`{"code": 21211, "message": …}`).
+fn twilio_error(res: &crate::social::HttpResponse) -> SmsError {
+    let v: Json = serde_json::from_slice(&res.body).unwrap_or(Json::Null);
+    let code = v["code"].as_i64().unwrap_or(0);
+    let msg: String = v["message"]
+        .as_str()
+        .unwrap_or("")
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(200)
+        .collect();
+    let m = format!("HTTP {} code {code}: {msg}", res.status);
+    match (res.status, code) {
+        (_, 21211 | 21214 | 21216 | 21217 | 21614) => SmsError::InvalidRecipient(m),
+        (401 | 403, _) | (_, 20003) => SmsError::Auth(m),
+        (429, _) | (_, 20429) => SmsError::RateLimited {
+            retry_after_secs: gateway::retry_after(res),
+        },
+        (500..=599, _) => SmsError::Transient(m),
+        _ => SmsError::Rejected(m),
     }
 }
 
@@ -182,13 +229,20 @@ impl SmsProvider for TwilioSms {
                 self.account_sid,
                 self.auth_token.expose()
             ));
-            let req = HttpRequest::post_form(url, &fields).header("authorization", format!("Basic {basic}"));
-            let res = self.http.send(req).await.map_err(|e| e.to_string())?;
-            if (200..300).contains(&res.status) {
-                Ok(())
-            } else {
-                Err(format!("twilio answered HTTP {}", res.status))
-            }
+            gateway::check_e164(&sms.to)?;
+            self.gw
+                .call(
+                    || HttpRequest::post_form(url.clone(), &fields).header("authorization", format!("Basic {basic}")),
+                    |res| match res.status {
+                        200..=299 => Ok(SmsReceipt {
+                            id: serde_json::from_slice::<Json>(&res.body)
+                                .ok()
+                                .and_then(|v| v["sid"].as_str().map(str::to_owned)),
+                        }),
+                        _ => Err(twilio_error(res)),
+                    },
+                )
+                .await
         })
     }
 }
@@ -199,7 +253,7 @@ impl SmsProvider for TwilioSms {
 pub struct WebhookSms {
     url: String,
     bearer_token: Option<Secret>,
-    http: Arc<dyn HttpClient>,
+    gw: Gateway,
 }
 
 impl WebhookSms {
@@ -208,30 +262,49 @@ impl WebhookSms {
         Self {
             url: url.into(),
             bearer_token: bearer_token.map(Secret::new),
-            http,
+            gw: Gateway::new(http),
         }
+    }
+
+    /// Replaces the gateway (retry policy).
+    #[must_use]
+    pub fn with_gateway(mut self, gw: Gateway) -> Self {
+        self.gw = gw;
+        self
     }
 }
 
 impl SmsProvider for WebhookSms {
     fn send<'a>(&'a self, sms: &'a Sms) -> SmsFuture<'a> {
         Box::pin(async move {
+            gateway::check_e164(&sms.to)?;
             let body = serde_json::json!({"to": sms.to, "text": sms.text, "kind": sms.kind}).to_string();
-            let mut req = HttpRequest {
-                method: "POST",
-                url: self.url.clone(),
-                headers: vec![("content-type".into(), "application/json".into())],
-                body: body.into_bytes(),
-            };
-            if let Some(t) = &self.bearer_token {
-                req = req.header("authorization", format!("Bearer {}", t.expose()));
-            }
-            let res = self.http.send(req).await.map_err(|e| e.to_string())?;
-            if (200..300).contains(&res.status) {
-                Ok(())
-            } else {
-                Err(format!("SMS gateway answered HTTP {}", res.status))
-            }
+            self.gw
+                .call(
+                    || {
+                        let mut req = HttpRequest {
+                            method: "POST",
+                            url: self.url.clone(),
+                            headers: vec![("content-type".into(), "application/json".into())],
+                            body: body.clone().into_bytes(),
+                        };
+                        if let Some(t) = &self.bearer_token {
+                            req = req.header("authorization", format!("Bearer {}", t.expose()));
+                        }
+                        req
+                    },
+                    |res| {
+                        gateway::classify_status(res, || gateway::json_detail(res, &["/error", "/message"]))?;
+                        // A gateway may answer `{"id": …}` or `{"message_id": …}`.
+                        let id = serde_json::from_slice::<Json>(&res.body).ok().and_then(|v| {
+                            ["id", "message_id"]
+                                .iter()
+                                .find_map(|k| v[*k].as_str().map(str::to_owned))
+                        });
+                        Ok(SmsReceipt { id })
+                    },
+                )
+                .await
         })
     }
 }
@@ -255,6 +328,66 @@ enum SmsFile {
         #[serde(default)]
         bearer_token: Option<String>,
     },
+    Vonage {
+        api_key: String,
+        api_secret: String,
+        from: String,
+        #[serde(default)]
+        base_url: Option<String>,
+    },
+    Messagebird {
+        api_key: String,
+        from: String,
+        #[serde(default)]
+        base_url: Option<String>,
+    },
+    Bird {
+        api_key: String,
+        workspace_id: String,
+        channel_id: String,
+        #[serde(default)]
+        base_url: Option<String>,
+    },
+    Sns {
+        access_key_id: String,
+        secret_access_key: String,
+        #[serde(default)]
+        session_token: Option<String>,
+        region: String,
+        #[serde(default)]
+        sender_id: Option<String>,
+        #[serde(default)]
+        sms_type: Option<String>,
+        #[serde(default)]
+        endpoint: Option<String>,
+    },
+    Plivo {
+        auth_id: String,
+        auth_token: String,
+        from: String,
+        #[serde(default)]
+        base_url: Option<String>,
+    },
+}
+
+/// Secret fields of an SMS gateway configuration: sealed at rest, masked in
+/// the API, kept when a `PUT` sends the mask back.
+pub(crate) const SMS_SECRET_FIELDS: &[&str] = &[
+    "auth_token",
+    "bearer_token",
+    "api_secret",
+    "api_key",
+    "secret_access_key",
+    "session_token",
+];
+
+/// Whether `url` may be a gateway base URL (http(s), a host, no credentials).
+fn check_base_url(url: &Option<String>, what: &str) -> Result<(), AuthError> {
+    let Some(u) = url else { return Ok(()) };
+    match url::Url::parse(u) {
+        Ok(p) if matches!(p.scheme(), "http" | "https") && p.host_str().is_some() && p.username().is_empty() => Ok(()),
+        _ => Err(AuthError::invalid(format!("{what}: bad base_url"))),
+    }
 }
 
 impl AuthService {
@@ -282,6 +415,64 @@ impl AuthService {
                     return Err(AuthError::invalid(format!("{what}: bad webhook url")));
                 }
                 Arc::new(WebhookSms::new(url, bearer_token, http))
+            }
+            SmsFile::Vonage {
+                api_key,
+                api_secret,
+                from,
+                base_url,
+            } => {
+                check_base_url(&base_url, what)?;
+                Arc::new(VonageSms::new(api_key, api_secret, from, base_url, http)?)
+            }
+            SmsFile::Messagebird {
+                api_key,
+                from,
+                base_url,
+            } => {
+                check_base_url(&base_url, what)?;
+                Arc::new(MessageBirdSms::new(api_key, from, base_url, http)?)
+            }
+            SmsFile::Bird {
+                api_key,
+                workspace_id,
+                channel_id,
+                base_url,
+            } => {
+                check_base_url(&base_url, what)?;
+                Arc::new(BirdSms::new(api_key, workspace_id, channel_id, base_url, http)?)
+            }
+            SmsFile::Sns {
+                access_key_id,
+                secret_access_key,
+                session_token,
+                region,
+                sender_id,
+                sms_type,
+                endpoint,
+            } => {
+                check_base_url(&endpoint, what)?;
+                Arc::new(SnsSms::new(
+                    SnsConfig {
+                        access_key_id,
+                        secret_access_key,
+                        session_token,
+                        region,
+                        sender_id,
+                        sms_type,
+                        endpoint,
+                    },
+                    http,
+                )?)
+            }
+            SmsFile::Plivo {
+                auth_id,
+                auth_token,
+                from,
+                base_url,
+            } => {
+                check_base_url(&base_url, what)?;
+                Arc::new(PlivoSms::new(auth_id, auth_token, from, base_url, http)?)
             }
         })
     }
