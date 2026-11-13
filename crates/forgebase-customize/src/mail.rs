@@ -5,9 +5,12 @@
 //! * [`SmtpProvider`] speaks SMTP (RFC 5321) itself over `tokio`: plain,
 //!   STARTTLS or implicit TLS (rustls through `forgebase-auth`), `AUTH PLAIN`
 //!   / `AUTH LOGIN`, MIME `multipart/alternative` with base64 bodies.
+//! * The HTTP API transports (Resend, Postmark, SendGrid, Mailgun, Amazon
+//!   SES) are in [`crate::transports`]; [`crate::MailConfig`] selects one.
 //!
 //! A provider says whether a failure is worth retrying ([`SendError`]): 4xx
-//! replies and connection problems are transient, 5xx replies permanent.
+//! replies and connection problems are transient, 5xx replies permanent. A
+//! successful send returns a [`SendReceipt`] with the provider's message id.
 
 use std::fmt;
 use std::sync::{Arc, Mutex};
@@ -37,6 +40,8 @@ pub struct OutMail {
     pub text: String,
     /// HTML body.
     pub html: Option<String>,
+    /// `Reply-To` address (the realm's support email), when it has one.
+    pub reply_to: Option<String>,
 }
 
 impl fmt::Debug for OutMail {
@@ -66,12 +71,29 @@ impl fmt::Display for SendError {
     }
 }
 
+/// What a provider accepted.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SendReceipt {
+    /// The provider's message id (the `Message-ID` for SMTP), for tracing a
+    /// delivery in the provider's own dashboard.
+    pub message_id: Option<String>,
+}
+
+impl SendReceipt {
+    /// A receipt with the provider's id.
+    pub fn with_id(id: impl Into<String>) -> Self {
+        Self {
+            message_id: Some(id.into()),
+        }
+    }
+}
+
 /// Delivers messages. Must not log bodies.
 pub trait MailProvider: Send + Sync + fmt::Debug {
-    /// Short name recorded in the delivery log (`smtp`, `log`).
+    /// Short name recorded in the delivery log (`smtp`, `resend`, `log`).
     fn name(&self) -> &'static str;
     /// Hands one message over.
-    fn send<'a>(&'a self, mail: &'a OutMail) -> BoxFuture<'a, Result<(), SendError>>;
+    fn send<'a>(&'a self, mail: &'a OutMail) -> BoxFuture<'a, Result<SendReceipt, SendError>>;
 }
 
 /// The development provider: logs the envelope, optionally captures messages.
@@ -107,7 +129,7 @@ impl MailProvider for LogProvider {
         "log"
     }
 
-    fn send<'a>(&'a self, mail: &'a OutMail) -> BoxFuture<'a, Result<(), SendError>> {
+    fn send<'a>(&'a self, mail: &'a OutMail) -> BoxFuture<'a, Result<SendReceipt, SendError>> {
         Box::pin(async move {
             tracing::info!(id = %mail.id, realm = %mail.realm, to = %mail.to, subject = %mail.subject, "mail (log provider)");
             if let Some(c) = &self.captured
@@ -115,7 +137,7 @@ impl MailProvider for LogProvider {
             {
                 v.push(mail.clone());
             }
-            Ok(())
+            Ok(SendReceipt::with_id(mail.id.clone()))
         })
     }
 }
@@ -346,6 +368,9 @@ pub fn build_message(m: &OutMail, date: &str, domain: &str) -> String {
     let mut s = String::new();
     s.push_str(&format!("From: {}\r\n", m.from.replace(['\r', '\n'], " ")));
     s.push_str(&format!("To: {}\r\n", m.to));
+    if let Some(r) = m.reply_to.as_deref().filter(|r| valid_address(r)) {
+        s.push_str(&format!("Reply-To: {r}\r\n"));
+    }
     s.push_str(&format!("Subject: {}\r\n", header_text(&m.subject)));
     s.push_str(&format!("Date: {date}\r\n"));
     s.push_str(&format!("Message-ID: <{}@{domain}>\r\n", m.id));
@@ -436,7 +461,7 @@ impl SmtpProvider {
         Ok(BufReader::new(io))
     }
 
-    async fn session(&self, mail: &OutMail) -> Result<(), SendError> {
+    async fn session(&self, mail: &OutMail) -> Result<SendReceipt, SendError> {
         let c = &self.cfg;
         let d = c.timeout;
         if !valid_address(&mail.to) {
@@ -514,7 +539,7 @@ impl SmtpProvider {
         .await?;
         read_reply(&mut conn, d).await?.expect(&[250], "message")?;
         let _ = send_line(&mut conn, d, "QUIT").await;
-        Ok(())
+        Ok(SendReceipt::with_id(format!("<{}@{}>", mail.id, c.helo)))
     }
 }
 
@@ -541,7 +566,7 @@ impl MailProvider for SmtpProvider {
         "smtp"
     }
 
-    fn send<'a>(&'a self, mail: &'a OutMail) -> BoxFuture<'a, Result<(), SendError>> {
+    fn send<'a>(&'a self, mail: &'a OutMail) -> BoxFuture<'a, Result<SendReceipt, SendError>> {
         Box::pin(self.session(mail))
     }
 }

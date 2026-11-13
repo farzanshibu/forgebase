@@ -7,6 +7,7 @@
 //! | White-label branding: name, colours, sign-in text, logo, favicon | [`branding`] |
 //! | Email templates per realm, rendering with escaping, preview | [`render`], [`email`] |
 //! | SMTP and log mail providers | [`mail`] |
+//! | Resend, Postmark, SendGrid, Mailgun and Amazon SES transports; sealed per-realm provider config | [`transports`], [`mailconfig`] |
 //! | Sending through the job queue with retries, delivery log | [`email`], [`jobs`] |
 //! | Versioned legal agreements, acceptance records, re-accept gate | [`agreements`], [`gate`] |
 //! | REST under `/api/v1/customize`, public views, branded API docs page | [`http`] |
@@ -27,9 +28,11 @@ pub mod host;
 pub mod http;
 pub mod jobs;
 pub mod mail;
+pub mod mailconfig;
 pub mod model;
 pub mod render;
 mod service;
+pub mod transports;
 
 pub use agreements::{AcceptSource, AcceptanceQuery};
 pub use dns::{DnsError, DnsResolver, DohResolver, StaticResolver};
@@ -39,6 +42,7 @@ pub use gate::AgreementGate;
 pub use host::{ResolvedHost, route as host_router};
 pub use http::{extension, openapi, router};
 pub use jobs::register_jobs;
-pub use mail::{LogProvider, MailProvider, OutMail, SendError, SmtpConfig, SmtpProvider, SmtpTls};
+pub use mail::{LogProvider, MailProvider, OutMail, SendError, SendReceipt, SmtpConfig, SmtpProvider, SmtpTls};
+pub use mailconfig::{MailConfig, TestMailResult};
 pub use model::*;
 pub use service::{CustomizeConfig, CustomizeService, EMAIL_JOB, READ_PERMISSION, WRITE_PERMISSION};

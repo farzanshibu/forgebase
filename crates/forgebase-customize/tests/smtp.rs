@@ -79,6 +79,7 @@ fn mail(to: &str) -> OutMail {
         subject: "Héllo".into(),
         text: ".leading dot\nsecond line".into(),
         html: Some("<p>hi</p>".into()),
+        reply_to: Some("help@acme.test".into()),
     }
 }
 
@@ -95,11 +96,13 @@ fn provider(port: u16, tls: SmtpTls) -> SmtpProvider {
 #[tokio::test]
 async fn sends_a_multipart_message_with_auth() {
     let (port, seen) = server("250 ok", false).await;
-    provider(port, SmtpTls::None)
+    let receipt = provider(port, SmtpTls::None)
         .send(&mail("ann@example.com"))
         .await
         .unwrap();
+    assert_eq!(receipt.message_id.as_deref(), Some("<eml_1@forgebase.local>"));
     let s = seen.lock().unwrap();
+    assert!(s.data.contains("Reply-To: help@acme.test\r\n"), "{}", s.data);
     let tok = base64::engine::general_purpose::STANDARD.encode("\0user\0pw");
     assert!(
         s.lines.iter().any(|l| l == &format!("AUTH PLAIN {tok}")),

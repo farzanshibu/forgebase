@@ -2,6 +2,8 @@
 //! static DNS resolver, a capturing mail provider and a manual clock.
 #![allow(dead_code, clippy::unwrap_used, clippy::expect_used)]
 
+pub mod mock_http;
+
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
@@ -9,7 +11,7 @@ use std::time::Duration;
 use forgebase_auth::ManualClock;
 use forgebase_core::DataLayout;
 use forgebase_customize::{
-    CustomizeConfig, CustomizeService, LogProvider, MailProvider, OutMail, SendError, StaticResolver,
+    CustomizeConfig, CustomizeService, LogProvider, MailProvider, OutMail, SendError, SendReceipt, StaticResolver,
 };
 use forgebase_data::{AccessContext, DataService};
 use forgebase_db::backend::BoxFuture;
@@ -153,7 +155,7 @@ impl MailProvider for Flaky {
         "flaky"
     }
 
-    fn send<'a>(&'a self, _m: &'a OutMail) -> BoxFuture<'a, Result<(), SendError>> {
+    fn send<'a>(&'a self, _m: &'a OutMail) -> BoxFuture<'a, Result<SendReceipt, SendError>> {
         Box::pin(async move {
             let n = self.calls.fetch_add(1, Ordering::SeqCst);
             if n < self.fail {
@@ -164,7 +166,7 @@ impl MailProvider for Flaky {
                     SendError::Transient(m)
                 })
             } else {
-                Ok(())
+                Ok(SendReceipt::with_id("flaky-1"))
             }
         })
     }

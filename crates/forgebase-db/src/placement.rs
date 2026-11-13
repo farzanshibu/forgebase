@@ -340,6 +340,7 @@ pub static TABLES: &[TablePlacement] = &[
     control("_forgebase_branding_assets"),
     control("_forgebase_domains"),
     control("_forgebase_email_deliveries"),
+    control("_forgebase_email_providers"),
     control("_forgebase_email_templates"),
     // --- Topology (control, FB-170) ---
     control("_forgebase_db_moves"),

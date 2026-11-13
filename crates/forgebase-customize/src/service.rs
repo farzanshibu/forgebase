@@ -16,6 +16,7 @@ use forgebase_policy::{Check, PolicyService};
 use crate::dns::{DnsResolver, StaticResolver};
 use crate::error::{CustomizeError, Result};
 use crate::mail::{LogProvider, MailProvider};
+use crate::mailconfig::{MailRegistry, MailRuntime};
 use crate::model::AgreementRef;
 
 /// Job kind that delivers one queued message.
@@ -90,6 +91,8 @@ pub(crate) struct Inner {
     pub jobs: OnceLock<JobService>,
     pub dns: RwLock<Arc<dyn DnsResolver>>,
     pub provider: RwLock<Arc<dyn MailProvider>>,
+    pub mail: RwLock<MailRegistry>,
+    pub mail_runtime: OnceLock<MailRuntime>,
     pub cache: RwLock<Cache>,
 }
 
@@ -158,6 +161,8 @@ impl CustomizeService {
                 jobs: OnceLock::new(),
                 dns: RwLock::new(Arc::new(StaticResolver::new())),
                 provider: RwLock::new(Arc::new(LogProvider::new())),
+                mail: RwLock::new(MailRegistry::default()),
+                mail_runtime: OnceLock::new(),
                 cache: RwLock::new(Cache::default()),
             }),
         };

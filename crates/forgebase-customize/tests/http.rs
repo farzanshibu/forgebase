@@ -408,3 +408,73 @@ async fn email_endpoints() {
         StatusCode::BAD_REQUEST
     );
 }
+
+#[tokio::test]
+async fn mail_provider_routes_configure_mask_test_and_delete() {
+    use forgebase_auth::crypto::Keyring;
+    let api = Api::new().await;
+    api.env
+        .svc
+        .attach_mail_runtime(
+            std::sync::Arc::new(forgebase_auth::social::PlainHttpClient::default()),
+            Keyring::from_master(b"a-test-master-key-of-32-bytes!!!"),
+        )
+        .await
+        .unwrap();
+    let mock = mock_http::start(|_| (200, json!({"id": "re-77"}).to_string())).await;
+    let a = admin();
+    let uri = "/api/v1/customize/email/provider?realm=*";
+    let r = api.get(Some(&a), uri, None).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.text());
+    assert_eq!(r.json()["configured"], false);
+
+    let r = api
+        .json(
+            &a,
+            Method::PUT,
+            uri,
+            json!({"provider": "resend", "api_key": "re_http_secret", "base_url": mock.url, "from_address": "no-reply@acme.test"}),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.text());
+    assert_eq!(r.json()["config"]["api_key"], "********");
+    assert!(!r.text().contains("re_http_secret"));
+    assert!(!api.get(Some(&a), uri, None).await.text().contains("re_http_secret"));
+
+    let r = api
+        .json(
+            &a,
+            Method::POST,
+            "/api/v1/customize/email/provider/test?realm=*",
+            json!({"to": "ann@example.com"}),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.text());
+    assert_eq!(r.json()["provider"], "resend");
+    assert_eq!(r.json()["message_id"], "re-77");
+    assert_eq!(
+        mock.requests()[0].header("authorization"),
+        Some("Bearer re_http_secret")
+    );
+
+    // A realm operator cannot touch it.
+    let op = api.env.operator("olga", "default").await;
+    let r = api.get(Some(&op), uri, None).await;
+    assert_eq!(r.status, StatusCode::FORBIDDEN, "{}", r.text());
+    // Bad config is a 4xx with a stable code.
+    let r = api
+        .json(&a, Method::PUT, uri, json!({"provider": "resend", "api_key": ""}))
+        .await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST, "{}", r.text());
+    assert_eq!(r.json()["error"]["code"], "invalid_mail_config");
+
+    let r = api
+        .call(Some(a.clone()), Method::DELETE, uri, None, None, Vec::new())
+        .await;
+    assert_eq!(r.status, StatusCode::NO_CONTENT);
+    assert_eq!(api.get(Some(&a), uri, None).await.json()["configured"], false);
+    // The OpenAPI document lists the routes.
+    let doc = api.get(None, "/api/openapi.json", None).await.json();
+    assert!(doc["paths"]["/api/v1/customize/email/provider"]["put"].is_object());
+    assert!(doc["paths"]["/api/v1/customize/email/provider/test"]["post"].is_object());
+}
