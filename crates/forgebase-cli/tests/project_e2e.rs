@@ -737,3 +737,73 @@ fn chat_template_with_rules_buckets_and_oauth_clients() {
     let (out, _) = fb.code(2, &["project", "plan", "--dir", &d], &[]);
     assert!(out.contains("+ bucket avatars"), "{out}");
 }
+
+/// A WebAssembly function round-trips through pull; `--env` targets a
+/// ForgeBase project environment.
+#[test]
+fn webassembly_functions_and_environments() {
+    let fb = Fb::start();
+    let root = fb.root();
+    let dir = root.join("app");
+    let wasm =
+        wat::parse_str(r#"(module (memory (export "memory") 1) (func (export "handle") (result i32) (i32.const 0)))"#)
+            .unwrap();
+    std::fs::create_dir_all(dir.join("functions/tiny")).unwrap();
+    std::fs::write(dir.join("functions/tiny/module.wasm"), &wasm).unwrap();
+    std::fs::write(
+        dir.join("functions/tiny/function.toml"),
+        "access = \"public\"\n[limits]\nfuel = 100000\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(dir.join("storage/buckets")).unwrap();
+    std::fs::write(dir.join("storage/buckets/files.json"), "{}").unwrap();
+    std::fs::write(
+        dir.join("forgebase.project.toml"),
+        "format = 1\nname = \"app\"\nmanage = [\"functions\", \"storage\"]\n\n[environments.staging]\nproject = \"shop\"\n\n[environments.qa]\nproject = \"shop\"\nenvironment = \"nope\"\n",
+    )
+    .unwrap();
+    let d = dir.display().to_string();
+    let out = fb.ok(&["project", "apply", "--dir", &d, "--auto-approve"], &[]);
+    assert!(out.contains("created function tiny"), "{out}");
+    let v = fb.get("/api/v1/functions/tiny/versions");
+    assert_eq!(v["items"][0]["language"], "wasm", "{v}");
+    fb.code(0, &["project", "plan", "--dir", &d], &[]);
+    // pull downloads the module: the pulled project plans clean, byte for byte.
+    fb.ok(&["project", "pull", "--dir", "pulled"], &[]);
+    assert_eq!(
+        std::fs::read(root.join("pulled/functions/tiny/module.wasm")).unwrap(),
+        wasm
+    );
+    fb.code(0, &["project", "plan", "--dir", "pulled"], &[]);
+    // A changed module is a new version.
+    let wasm2 = wat::parse_str(r#"(module (memory (export "memory") 1) (func (export "handle") (result i32) (i32.const 1) (drop) (i32.const 0)))"#).unwrap();
+    std::fs::write(dir.join("functions/tiny/module.wasm"), &wasm2).unwrap();
+    let (out, _) = fb.code(2, &["project", "plan", "--dir", &d], &[]);
+    assert!(
+        out.contains("code.sha256") && out.contains("deploys a new version"),
+        "{out}"
+    );
+    fb.ok(&["project", "apply", "--dir", &d, "--auto-approve"], &[]);
+    assert_eq!(fb.get("/api/v1/functions/tiny")["active_version"], 2);
+
+    // --env: the project's environment is resolved; unknown ones are refused.
+    let (s, org) = fb.api("POST", "/api/v1/orgs", Some(json!({"slug": "acme", "name": "Acme"})));
+    assert_eq!(s, 201, "{org}");
+    let org = org["id"].as_str().unwrap().to_owned();
+    let (s, p) = fb.api(
+        "POST",
+        &format!("/api/v1/orgs/{org}/projects"),
+        Some(json!({"slug": "shop", "name": "Shop"})),
+    );
+    assert_eq!(s, 201, "{p}");
+    let out = fb.ok(
+        &["project", "apply", "--dir", &d, "--env", "staging", "--auto-approve"],
+        &[],
+    );
+    assert!(out.contains("Apply complete") || out.contains("No changes"), "{out}");
+    fb.code(0, &["project", "plan", "--dir", &d, "--env", "staging"], &[]);
+    let (_, err) = fb.code(1, &["project", "plan", "--dir", &d, "--env", "qa"], &[]);
+    assert!(err.contains("has no environment \"nope\""), "{err}");
+    let (_, err) = fb.code(1, &["project", "plan", "--dir", &d, "--env", "unknown"], &[]);
+    assert!(err.contains("no [environments.unknown] table"), "{err}");
+}

@@ -206,14 +206,13 @@ impl Remote {
             .await
         {
             Ok(p) => p,
-            Err(e) if is_not_found(&e) => {
-                let list = self.call("GET", "/api/v1/projects", None).await?;
-                list["items"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .find(|p| p["slug"].as_str() == Some(project))
-                    .cloned()
+            // Not an id (or not one the caller may read by id): look the slug up.
+            Err(e)
+                if e.downcast_ref::<ApiFailure>()
+                    .is_some_and(|f| matches!(f.status, 403 | 404)) =>
+            {
+                self.project_by_slug(project)
+                    .await?
                     .ok_or_else(|| anyhow!("no ForgeBase project {project:?} (id or slug) on {}", self.base))?
             }
             Err(e) => return Err(e),
@@ -242,6 +241,33 @@ impl Remote {
         let id = e["id"].as_str().ok_or_else(|| anyhow!("environment without an id"))?;
         self.headers.push(("X-Forgebase-Tenant".into(), id.to_owned()));
         Ok(())
+    }
+
+    /// A project by slug: the caller's personal projects, then each organization's.
+    async fn project_by_slug(&self, slug: &str) -> anyhow::Result<Option<Value>> {
+        let list_of = |v: &Value| {
+            v.as_array()
+                .or_else(|| v["items"].as_array())
+                .cloned()
+                .unwrap_or_default()
+        };
+        let find = |items: Vec<Value>| items.into_iter().find(|p| p["slug"].as_str() == Some(slug));
+        if let Ok(v) = self.call("GET", "/api/v1/projects", None).await
+            && let Some(p) = find(list_of(&v))
+        {
+            return Ok(Some(p));
+        }
+        let orgs = list_of(&self.call("GET", "/api/v1/orgs", None).await?);
+        for o in orgs {
+            let Some(id) = o["id"].as_str() else { continue };
+            let v = self
+                .call("GET", &format!("/api/v1/orgs/{}/projects", enc(id)), None)
+                .await?;
+            if let Some(p) = find(list_of(&v)) {
+                return Ok(Some(p));
+            }
+        }
+        Ok(None)
     }
 
     /// Whether a credential is configured.
