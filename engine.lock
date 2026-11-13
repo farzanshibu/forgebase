@@ -188,25 +188,22 @@ os = ["linux"]
 # it fails with "engine.lock has no archive entry". After a CI release,
 # replace these tables with the release's engine.lock.archives fragment.
 [archives."aarch64-apple-darwin"]
-file = "forgebase-pg18.6-r1-aarch64-apple-darwin.tar.zst"
-sha256 = "707ab0d5772ceeba9aee693583ed69afa1cb022458d231de3d94a0774d242dcf"
+file = "forgebase-pg18.6-r8-aarch64-apple-darwin.tar.zst"
+sha256 = "69ce85ae57220ac20f71ece3350eda57cab371463912f86076bc21ac49c971db"
 
 [archives."aarch64-unknown-linux-musl"]
-file = "forgebase-pg18.6-r1-aarch64-unknown-linux-musl.tar.zst"
-sha256 = "ce763b0212c1b125f10d2baf6bc72811aae51f5136d0e39a0ccbc834e063ed5e"
+file = "forgebase-pg18.6-r8-aarch64-unknown-linux-musl.tar.zst"
+sha256 = "2796ec7529de140fc8e23fd3a9a561d47cd5b7af606c54de19f1082bd17b7293"
 
 [archives."x86_64-apple-darwin"]
-file = "forgebase-pg18.6-r1-x86_64-apple-darwin.tar.zst"
-sha256 = "6dbb10b9a6fe87a15e1a35c96942cc8bb615b1969618e4486c540c3bc9c31504"
+file = "forgebase-pg18.6-r8-x86_64-apple-darwin.tar.zst"
+sha256 = "76aabf42f1969673ba15822f8e8ebea63ce9d6df60e45423e4093168039d57c1"
+
+[archives."x86_64-pc-windows-msvc"]
+file = "forgebase-pg18.6-r8-x86_64-pc-windows-msvc.tar.zst"
+sha256 = "f1e9f044b8a6f5660fb0ddd7927f08a4118202c2bf8df4cfa811af87a48f753d"
 
 [archives."x86_64-unknown-linux-musl"]
-file = "forgebase-pg18.6-r1-x86_64-unknown-linux-musl.tar.zst"
-sha256 = "a7ea7504da5c4e9f5b857ef8b07c6bef8abd66b795bbb0bd384957a36b059ea0"
+file = "forgebase-pg18.6-r8-x86_64-unknown-linux-musl.tar.zst"
+sha256 = "391808ecc4f076d06c4624dd83791178d5d62684e7bdebfe2d7e577d40f3627c"
 
-# The Windows engine did not finish on CI for engine-pg18.6-r1: the zstd CLI
-# step failed once (fixed), then the PostgreSQL meson step printed nothing for
-# 111 minutes until the 120-minute job limit. build-windows.ps1 now limits and
-# diagnoses that step; the engine ships in a later engine release.
-[archives."x86_64-pc-windows-msvc"]
-file = "forgebase-pg18.6-r1-x86_64-pc-windows-msvc.tar.zst"
-status = "pending-ci"

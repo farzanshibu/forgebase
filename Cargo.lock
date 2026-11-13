@@ -1156,7 +1156,7 @@ checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
 
 [[package]]
 name = "forgebase-api"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -1188,7 +1188,7 @@ dependencies = [
 
 [[package]]
 name = "forgebase-auth"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "argon2",
  "axum",
@@ -1223,7 +1223,7 @@ dependencies = [
 
 [[package]]
 name = "forgebase-backup"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "axum",
  "forgebase-api",
@@ -1248,7 +1248,7 @@ dependencies = [
 
 [[package]]
 name = "forgebase-bench"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "criterion",
  "forgebase-auth",
@@ -1270,7 +1270,7 @@ dependencies = [
 
 [[package]]
 name = "forgebase-billing"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -1304,7 +1304,7 @@ dependencies = [
 
 [[package]]
 name = "forgebase-cli"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "anyhow",
  "axum",
@@ -1339,7 +1339,7 @@ dependencies = [
 
 [[package]]
 name = "forgebase-convert"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "forgebase-auth",
  "forgebase-core",
@@ -1364,7 +1364,7 @@ dependencies = [
 
 [[package]]
 name = "forgebase-core"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "serde",
  "serde_json",
@@ -1377,7 +1377,7 @@ dependencies = [
 
 [[package]]
 name = "forgebase-credits"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "axum",
  "forgebase-api",
@@ -1402,7 +1402,7 @@ dependencies = [
 
 [[package]]
 name = "forgebase-customize"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -1430,7 +1430,7 @@ dependencies = [
 
 [[package]]
 name = "forgebase-data"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "base64 0.22.1",
  "forgebase-core",
@@ -1447,7 +1447,7 @@ dependencies = [
 
 [[package]]
 name = "forgebase-db"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "forgebase-core",
  "forgebase-db",
@@ -1466,7 +1466,7 @@ dependencies = [
 
 [[package]]
 name = "forgebase-entitlements"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "axum",
  "forgebase-api",
@@ -1491,7 +1491,7 @@ dependencies = [
 
 [[package]]
 name = "forgebase-functions"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -1539,7 +1539,7 @@ dependencies = [
 
 [[package]]
 name = "forgebase-graph"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "axum",
  "forgebase-core",
@@ -1563,7 +1563,7 @@ dependencies = [
 
 [[package]]
 name = "forgebase-jobs"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "axum",
  "forgebase-api",
@@ -1588,7 +1588,7 @@ dependencies = [
 
 [[package]]
 name = "forgebase-kv"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -1614,7 +1614,7 @@ dependencies = [
 
 [[package]]
 name = "forgebase-migrations"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "forgebase-core",
  "forgebase-db",
@@ -1629,7 +1629,7 @@ dependencies = [
 
 [[package]]
 name = "forgebase-observability"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "cpu-time",
  "forgebase-core",
@@ -1643,7 +1643,7 @@ dependencies = [
 
 [[package]]
 name = "forgebase-pgengine"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "base64 0.22.1",
  "forgebase-core",
@@ -1670,7 +1670,7 @@ dependencies = [
 
 [[package]]
 name = "forgebase-policy"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -1696,7 +1696,7 @@ dependencies = [
 
 [[package]]
 name = "forgebase-query"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "forgebase-core",
  "forgebase-db",
@@ -1708,7 +1708,7 @@ dependencies = [
 
 [[package]]
 name = "forgebase-queue"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -1745,7 +1745,7 @@ dependencies = [
 
 [[package]]
 name = "forgebase-realtime"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "axum",
  "forgebase-auth",
@@ -1771,7 +1771,7 @@ dependencies = [
 
 [[package]]
 name = "forgebase-resp"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "forgebase-auth",
  "forgebase-core",
@@ -1789,7 +1789,7 @@ dependencies = [
 
 [[package]]
 name = "forgebase-schema"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "forgebase-core",
  "serde",
@@ -1802,7 +1802,7 @@ dependencies = [
 
 [[package]]
 name = "forgebase-server"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -1845,7 +1845,7 @@ dependencies = [
 
 [[package]]
 name = "forgebase-storage"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "axum",
  "forgebase-api",
@@ -1877,7 +1877,7 @@ dependencies = [
 
 [[package]]
 name = "forgebase-topology-tests"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "forgebase-auth",
  "forgebase-core",
@@ -1893,7 +1893,7 @@ dependencies = [
 
 [[package]]
 name = "forgebase-vector"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "axum",
  "forgebase-api",
