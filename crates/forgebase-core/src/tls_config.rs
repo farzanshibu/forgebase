@@ -488,10 +488,7 @@ impl TlsConfig {
             );
         }
         if self.hsts_max_age_secs > 63_072_000 {
-            invalid(
-                "tls.hsts_max_age_secs",
-                whole(0, 63_072_000, "seconds", 31_536_000),
-            );
+            invalid("tls.hsts_max_age_secs", whole(0, 63_072_000, "seconds", 31_536_000));
         }
         if self.plain_listener() && self.http_port != 0 && self.http_port == server_port {
             invalid(
@@ -571,9 +568,7 @@ impl TlsConfig {
                 if a.eab_kid.trim().is_empty() != a.eab_hmac_key.is_none() {
                     invalid(
                         "tls.acme.eab_kid",
-                        format!(
-                            "set eab_kid together with the HMAC key ({ENV_ACME_EAB_HMAC_KEY}), or neither"
-                        ),
+                        format!("set eab_kid together with the HMAC key ({ENV_ACME_EAB_HMAC_KEY}), or neither"),
                     );
                 }
                 if let Some(k) = &a.eab_hmac_key
@@ -651,12 +646,7 @@ mod tests {
         });
         assert_eq!(
             keys,
-            [
-                "tls.mode",
-                "tls.min_version",
-                "tls.acme.domains",
-                "tls.acme.challenges"
-            ]
+            ["tls.mode", "tls.min_version", "tls.acme.domains", "tls.acme.challenges"]
         );
         let mut c = TlsConfig::default();
         c.apply(&o, Path::new("/etc/fb"));
