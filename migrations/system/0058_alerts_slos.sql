@@ -54,7 +54,7 @@ CREATE TABLE _forgebase_alerts (
     last_eval_at     INTEGER NOT NULL,
     updated_at       INTEGER NOT NULL
 ) STRICT;
-CREATE UNIQUE INDEX _forgebase_alerts_open ON _forgebase_alerts (fingerprint) WHERE state IN ('pending', 'firing');
+CREATE UNIQUE INDEX _forgebase_alerts_open ON _forgebase_alerts (fingerprint) WHERE state <> 'resolved';
 CREATE INDEX _forgebase_alerts_state ON _forgebase_alerts (state, active_at);
 CREATE INDEX _forgebase_alerts_resolved ON _forgebase_alerts (resolved_at);
 
