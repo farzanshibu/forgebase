@@ -5,7 +5,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.serialization.json.JsonElement
 import okhttp3.OkHttpClient
 import okhttp3.RequestBody
-import java.time.Duration
+import java.util.concurrent.TimeUnit
 
 /** Options of [ForgeBase]. */
 public class ForgeBaseOptions(
@@ -65,9 +65,9 @@ public class ForgeBase(baseUrl: String, options: ForgeBaseOptions = ForgeBaseOpt
 
     init {
         val base = (options.httpClient ?: OkHttpClient.Builder()
-            .connectTimeout(Duration.ofSeconds(10))
-            .readTimeout(Duration.ofSeconds(30))
-            .writeTimeout(Duration.ofSeconds(60))
+            .connectTimeout(10, TimeUnit.SECONDS)
+            .readTimeout(30, TimeUnit.SECONDS)
+            .writeTimeout(60, TimeUnit.SECONDS)
             .build())
         val http = base.newBuilder().build()
         val headers = LinkedHashMap<String, String>()

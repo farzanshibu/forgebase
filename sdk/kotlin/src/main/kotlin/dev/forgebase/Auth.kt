@@ -23,7 +23,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import java.security.MessageDigest
 import java.security.SecureRandom
-import java.util.Base64
+import okio.ByteString.Companion.toByteString
 
 /** Result of a sign-in: a [Session], or an [MfaChallenge] when a second factor is needed. */
 public sealed interface SignInResult
@@ -365,13 +365,13 @@ public class Pkce(public val verifier: String, public val challenge: String) {
         /** A fresh random verifier (32 bytes, base64url) and its challenge. */
         public fun generate(random: SecureRandom = SecureRandom()): Pkce {
             val bytes = ByteArray(32).also(random::nextBytes)
-            return of(Base64.getUrlEncoder().withoutPadding().encodeToString(bytes))
+            return of(bytes.toByteString().base64Url().trimEnd('='))
         }
 
         /** The challenge of a given verifier: `base64url(sha256(verifier))`. */
         public fun of(verifier: String): Pkce {
             val digest = MessageDigest.getInstance("SHA-256").digest(verifier.toByteArray(Charsets.US_ASCII))
-            return Pkce(verifier, Base64.getUrlEncoder().withoutPadding().encodeToString(digest))
+            return Pkce(verifier, digest.toByteString().base64Url().trimEnd('='))
         }
     }
 }

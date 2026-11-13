@@ -1,10 +1,11 @@
 package dev.forgebase
 
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
-import kotlinx.coroutines.flow.onCompletion
-import kotlinx.coroutines.flow.transformWhile
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.serialization.SerialName
@@ -157,22 +158,30 @@ public class JobsApi internal constructor(private val t: Transport, private val 
      * live update from the `jobs:<id>` realtime channel, and completes once the job reaches a final state.
      */
     public fun progress(id: String, progressOnly: Boolean = false): Flow<JobUpdate> = flow {
-        var seenAt = ""
-        val live = rt.subscribe(SubscribeOptions(channel = "jobs:$id"))
-        val snapshot = get(id).toUpdate()
-        val updates = flow {
-            emit(snapshot)
-            if (snapshot.state?.isFinal == true) return@flow
-            live.collect { e ->
-                if (e is RealtimeEvent.Message) runCatching { e.data.decode<JobUpdate>() }.getOrNull()?.let { emit(it) }
-            }
+        val live = Channel<JobUpdate>(Channel.UNLIMITED)
+        // Subscribe before reading the stored state, so no update falls between the two.
+        val sub = rt.subscribe(SubscribeOptions(channel = "jobs:$id")) { e ->
+            if (e is RealtimeEvent.Message) runCatching { e.data.decode<JobUpdate>() }.getOrNull()?.let { live.trySend(it) }
         }
-        updates.transformWhile { u ->
-            if (u.updatedAt.isNotEmpty() && seenAt.isNotEmpty() && u.updatedAt < seenAt) return@transformWhile true // older than the snapshot
-            if (u.updatedAt.isNotEmpty()) seenAt = u.updatedAt
-            if (!(progressOnly && u.event != "progress")) emit(u)
-            u.state?.isFinal != true
-        }.onCompletion { }.collect { emit(it) }
+        try {
+            var seenAt = ""
+            val snapshot = get(id).toUpdate()
+            var update: JobUpdate? = snapshot
+            while (update != null) {
+                val u: JobUpdate = update
+                // older than what the snapshot already showed: skip
+                val stale = u.updatedAt.isNotEmpty() && seenAt.isNotEmpty() && u.updatedAt < seenAt
+                if (!stale) {
+                    if (u.updatedAt.isNotEmpty()) seenAt = u.updatedAt
+                    if (!(progressOnly && u.event != "progress")) emit(u)
+                    if (u.state?.isFinal == true) break
+                }
+                update = live.receive()
+            }
+        } finally {
+            withContext(NonCancellable) { runCatching { sub.unsubscribe() } }
+            live.close()
+        }
     }
 
     /**

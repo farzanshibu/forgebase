@@ -91,7 +91,7 @@ public class Transport internal constructor(
     public val baseUrl: String = baseUrl.trimEnd('/')
 
     private val streamingHttp: okhttp3.OkHttpClient by lazy {
-        http.newBuilder().readTimeout(java.time.Duration.ofSeconds(90)).callTimeout(java.time.Duration.ZERO).build()
+        http.newBuilder().readTimeout(90, java.util.concurrent.TimeUnit.SECONDS).callTimeout(0, java.util.concurrent.TimeUnit.SECONDS).build()
     }
 
     @Volatile
@@ -179,21 +179,22 @@ public class Transport internal constructor(
             }
 
             val idem = m in IDEMPOTENT
-            val retriable = res.code in cfg.statuses || ((res.code == 502 || res.code == 504) && idem)
+            val status = res.code
+            val hdrs = res.headers
+            // The body is read once: a 429 needs it to tell a quota (never retried) from rate limiting.
+            val text = runCatching { res.readText() }.getOrDefault("")
+            val parsed = if (text.isEmpty()) null else runCatching { ForgeJson.parseToJsonElement(text) }.getOrNull()
+            val error = errorFromResponse(status, parsed, hdrs)
+            val retriable = error !is QuotaExceededException && (status in cfg.statuses || ((status == 502 || status == 504) && idem))
             if (retriable && attempt < cfg.maxRetries && canResend) {
-                val ra = parseRetryAfter(res.headers)
+                val ra = parseRetryAfter(hdrs)
                 if (ra == null || ra <= cfg.maxRetryAfterMs) {
                     attempt++
-                    res.close()
                     cfg.sleep(backoff(attempt, ra, cfg))
                     continue
                 }
             }
-            val status = res.code
-            val hdrs = res.headers
-            val text = runCatching { res.readText() }.getOrDefault("")
-            val parsed = if (text.isEmpty()) null else runCatching { ForgeJson.parseToJsonElement(text) }.getOrNull()
-            throw errorFromResponse(status, parsed, hdrs)
+            throw error
         }
     }
 

@@ -8,7 +8,8 @@ import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
-import java.util.Base64
+import okio.ByteString.Companion.decodeBase64
+import okio.ByteString.Companion.toByteString
 
 /*
  * Key-value engine (`/api/v1/kv`): `fb.kv`.
@@ -40,7 +41,7 @@ public sealed interface KvBin {
 internal fun kvBin(e: JsonElement?): KvBin? = when (e) {
     null, JsonNull -> null
     is JsonPrimitive -> KvBin.Text(e.content)
-    is JsonObject -> e["base64"].str()?.let { KvBin.Bytes(Base64.getDecoder().decode(it)) }
+    is JsonObject -> e["base64"].str()?.decodeBase64()?.let { KvBin.Bytes(it.toByteArray()) }
     else -> null
 }
 
@@ -48,7 +49,7 @@ internal fun kvBin(e: JsonElement?): KvBin? = when (e) {
 private fun wireValue(v: Any?): JsonElement = when (v) {
     is String -> JsonPrimitive(v)
     is Number -> JsonPrimitive(v.toString())
-    is ByteArray -> JsonObject(mapOf("base64" to JsonPrimitive(Base64.getEncoder().encodeToString(v))))
+    is ByteArray -> JsonObject(mapOf("base64" to JsonPrimitive(v.toByteString().base64())))
     is KvBin -> wireValue(if (v is KvBin.Text) v.value else v.toBytes())
     is JsonElement -> v
     else -> throw IllegalArgumentException("KV values are String, ByteArray, Number or KvBin, not ${v?.let { it::class.simpleName }}")
