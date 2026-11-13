@@ -303,3 +303,26 @@ jobs:
         with:
           command: check
           arguments: --all-features
+
+  sdk-swift:
+    name: Swift SDK (build and test)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: swift build
+        working-directory: sdk/swift
+        run: swift build
+      # Offline: URLProtocol mock and a fake WebSocket, no server needed.
+      - name: swift test
+        working-directory: sdk/swift
+        run: swift test
+      # The library also has to compile for the other Apple platforms.
+      - name: xcodebuild (iOS, tvOS, visionOS)
+        working-directory: sdk/swift
+        run: |
+          for platform in iOS tvOS visionOS; do
+            xcodebuild build -scheme ForgeBase -destination "generic/platform=$platform" CODE_SIGNING_ALLOWED=NO -quiet
+          done
+      - name: xcodebuild (watchOS)
+        working-directory: sdk/swift
+        run: xcodebuild build -scheme ForgeBase -destination "generic/platform=watchOS" CODE_SIGNING_ALLOWED=NO -quiet
