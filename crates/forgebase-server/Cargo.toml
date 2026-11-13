@@ -43,9 +43,23 @@ thiserror.workspace = true
 tokio.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
+# Native TLS (ADR-0033): HTTPS and RESP over rustls (ring provider, as FB-25),
+# certificates from files or ACME. Versions and licences in the ADR.
+base64.workspace = true
+bytes = "1.12.1"
+http = "1.5.0"
+http-body-util.workspace = true
+hyper-util = { version = "0.1.21", features = ["tokio", "server", "server-auto", "server-graceful", "service", "http1", "http2"] }
+# RFC 8555 client; no default features: ring instead of aws-lc-rs, and our own
+# HTTPS client (forgebase-auth) instead of hyper-rustls. Apache-2.0.
+instant-acme = { version = "0.8.5", default-features = false, features = ["ring"] }
+ring.workspace = true
+rustls.workspace = true
+serde.workspace = true
+tokio-rustls.workspace = true
+tower.workspace = true
 
 [dev-dependencies]
-base64.workspace = true
 # FB-171: real shard clusters (forgebase_db::shard_testing) in tests/shards_fb171.rs.
 forgebase-db = { workspace = true, features = ["testing"] }
 # FB-153: direct logins over the engine's socket.

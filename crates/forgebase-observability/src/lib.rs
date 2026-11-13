@@ -63,6 +63,19 @@ pub mod names {
     pub const QUEUE_DELIVERIES: &str = "forgebase_queue_deliveries";
     /// Gauge: messages retained across all topics.
     pub const QUEUE_MESSAGES: &str = "forgebase_queue_messages";
+    /// Gauge: seconds until the served TLS certificate expires (negative
+    /// once expired). Only with `[tls] mode` other than `off` (ADR-0033).
+    pub const TLS_CERTIFICATE_EXPIRY_SECONDS: &str = "forgebase_tls_certificate_expiry_seconds";
+    /// Counter: certificates issued over ACME.
+    pub const TLS_RENEWALS_TOTAL: &str = "forgebase_tls_renewals_total";
+    /// Counter: failed ACME certificate requests (each is retried with backoff).
+    pub const TLS_RENEWAL_FAILURES_TOTAL: &str = "forgebase_tls_renewal_failures_total";
+    /// Counter: certificate files loaded again after they changed.
+    pub const TLS_RELOADS_TOTAL: &str = "forgebase_tls_reloads_total";
+    /// Counter: changed certificate files that did not load (the old certificate stays).
+    pub const TLS_RELOAD_FAILURES_TOTAL: &str = "forgebase_tls_reload_failures_total";
+    /// Counter: TLS handshakes that failed or timed out.
+    pub const TLS_HANDSHAKE_FAILURES_TOTAL: &str = "forgebase_tls_handshake_failures_total";
 }
 
 /// Resident memory and CPU time of this process, where the platform reports them.
