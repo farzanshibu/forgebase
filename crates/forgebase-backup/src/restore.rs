@@ -60,6 +60,10 @@ pub struct RestoreOptions {
     /// this many items were moved or installed.
     #[doc(hidden)]
     pub crash_after: Option<usize>,
+    /// Test hook: the file swap fails before moving anything (an ordinary
+    /// error: the restore rolls back).
+    #[doc(hidden)]
+    pub fail_swap: bool,
 }
 
 /// Result of a restore.
@@ -240,17 +244,46 @@ pub async fn restore(backup: &Path, layout: &DataLayout, opts: RestoreOptions) -
     };
     let (files, bytes) = spawn(move || stage(&backup_dir, &m, &st, skip_indexes, provided.as_deref())).await?;
 
-    // A logical backup is loaded first: one transaction, so a failure changes nothing.
-    if logical {
+    // A logical backup is loaded first: one transaction, so a failure changes
+    // nothing. The database it replaces is dumped beside the files it
+    // replaces (`backups/pre-restore-*`) first, so it is kept, and loaded
+    // back when the file swap that follows fails.
+    let previous_dump = if logical {
         let src = opts.pg.as_ref().ok_or_else(|| {
             BackupError::Invalid("restoring a logical backup needs the external server's connection (PgSource)".into())
         })?;
+        mkdir_private(&aside).map_err(io(&aside))?;
+        let previous = aside.join(DUMP_FILE);
+        src.dump(
+            &previous,
+            &layout.tmp_dir(),
+            &crate::pg::DumpPlan {
+                forgebase_schema_only: true,
+                ..crate::pg::DumpPlan::default()
+            },
+        )
+        .await?;
         src.restore_dump(&staging.join(DUMP_FILE), &layout.tmp_dir()).await?;
-    }
+        Some((src, previous))
+    } else {
+        None
+    };
 
     let items = items_of(&manifest, matches!(source, KeySource::Backup | KeySource::Provided(_)));
-    let (lay, st, ad, crash_after) = (layout.clone(), staging.clone(), aside.clone(), opts.crash_after);
-    let swapped = spawn(move || swap(&lay, &st, &ad, items, crash_after)).await;
+    let (lay, st, ad, crash_after, fail_swap) = (
+        layout.clone(),
+        staging.clone(),
+        aside.clone(),
+        opts.crash_after,
+        opts.fail_swap,
+    );
+    let swapped = spawn(move || {
+        if fail_swap {
+            return Err(BackupError::Invalid("test: the file swap failed".into()));
+        }
+        swap(&lay, &st, &ad, items, crash_after)
+    })
+    .await;
     match swapped {
         Ok(moved_any) => {
             if !engine.is_postgres() {
@@ -262,17 +295,31 @@ pub async fn restore(backup: &Path, layout: &DataLayout, opts: RestoreOptions) -
                 schema_version: manifest.schema_version,
                 files,
                 bytes,
-                previous_data: moved_any.then_some(aside),
+                previous_data: (moved_any || previous_dump.is_some()).then_some(aside),
                 master_key: key_note,
                 engine: engine.describe(),
                 warnings,
             })
         }
         Err(e) => {
-            if crash_after.is_none() {
-                let _ = recover(layout);
+            if crash_after.is_some() {
+                return Err(e);
             }
-            Err(e)
+            let _ = recover(layout);
+            let Some((src, previous)) = previous_dump else {
+                return Err(e);
+            };
+            match src.restore_dump(&previous, &layout.tmp_dir()).await {
+                Ok(()) => {
+                    tracing::warn!(error = %e, "restore failed; the database was loaded back from its pre-restore dump");
+                    Err(e)
+                }
+                Err(back) => Err(BackupError::Invalid(format!(
+                    "{e}; loading the previous database back also failed ({back}): it is kept in {}, \
+                     load it with pg_restore --clean --single-transaction",
+                    previous.display()
+                ))),
+            }
         }
     }
 }

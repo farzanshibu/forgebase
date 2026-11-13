@@ -831,3 +831,28 @@ async fn postgres_seams_for_replicas_and_shards() {
     assert_eq!(sqlite.last_commit_lsn(), None);
     assert_eq!(sqlite.current_wal_lsn().await.unwrap(), None);
 }
+
+/// PostgreSQL's `text` cannot hold U+0000: both engines refuse such a value
+/// before running the statement, with the same error (no half-portable data).
+#[tokio::test]
+async fn a_nul_character_in_text_is_refused_alike_on_both_engines() {
+    let test = forgebase_db::testing::test_backend().await;
+    let db: &Database = &test;
+    ddl(db, "CREATE TABLE nul_t (v text)").await;
+    let mut tx = db.begin(TxMode::Normal).await.unwrap();
+    let e = tx
+        .execute(&Statement::new(
+            "INSERT INTO nul_t (v) VALUES (?1)",
+            vec![Value::Text("a\0b".into())],
+        ))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), "invalid_statement", "{e}");
+    assert!(e.to_string().contains("U+0000"), "{e}");
+    tx.rollback().await.unwrap();
+    let e = db
+        .fetch_all(&Statement::new("SELECT ?1 AS v", vec![Value::Text("\0".into())]))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), "invalid_statement", "{e}");
+}

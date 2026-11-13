@@ -103,15 +103,33 @@ pub(crate) async fn is_superuser(conn: &mut PgConnection) -> Result<bool, Conver
     Ok(v == Some(1))
 }
 
+/// [`forgebase_db::placement::EXTENSION_TABLES`] as a SQL list of literals.
+pub(crate) fn extension_tables_sql() -> String {
+    forgebase_db::placement::EXTENSION_TABLES
+        .iter()
+        .map(|t| literal(t))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 /// Base tables of schemas `forgebase` and `public` with their columns and
 /// primary keys: system tables first, then collection tables, by name.
+///
+/// The tables an accelerator's extension DDL creates
+/// ([`forgebase_db::placement::EXTENSION_TABLES`], the Apache AGE id map and
+/// build state) are left out: they are derived, exist only where the
+/// extension runs, and are rebuilt there after a conversion.
 pub(crate) async fn tables(conn: &mut PgConnection) -> Result<Vec<PgTable>, ConvertError> {
     let list = text_rows(
         conn,
-        "SELECT n.nspname::text, c.relname::text, c.oid::bigint::text FROM pg_class c \
-         JOIN pg_namespace n ON n.oid = c.relnamespace \
-         WHERE c.relkind IN ('r', 'p') AND NOT c.relispartition AND n.nspname IN ('forgebase', 'public') \
-         ORDER BY n.nspname = 'public', c.relname COLLATE \"C\"",
+        &format!(
+            "SELECT n.nspname::text, c.relname::text, c.oid::bigint::text FROM pg_class c \
+             JOIN pg_namespace n ON n.oid = c.relnamespace \
+             WHERE c.relkind IN ('r', 'p') AND NOT c.relispartition AND n.nspname IN ('forgebase', 'public') \
+             AND NOT (n.nspname = 'forgebase' AND c.relname IN ({derived})) \
+             ORDER BY n.nspname = 'public', c.relname COLLATE \"C\"",
+            derived = extension_tables_sql()
+        ),
     )
     .await?;
     let mut out = Vec::with_capacity(list.len());

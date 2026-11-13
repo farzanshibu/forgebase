@@ -2537,23 +2537,60 @@ pub struct FieldList {
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct FieldSchema {
+    /// `relation`: delete this record when the referenced record is deleted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cascade_delete: Option<bool>,
+    /// `relation`: the target collection's id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub collection_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default: Option<serde_json::Value>,
+    /// `vector`: number of dimensions (1 to 16 000).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dimensions: Option<i64>,
     pub hidden: bool,
     /// Stable id; renames keep it.
     pub id: String,
-    pub name: String,
-    /// Type options sit beside `type`: `min_length`, `max_length`, `min`, `max`,
-    /// `integer`, `values`, `max_select`, `collection_id`, `cascade_delete`,
-    /// `items`, `min_items`, `max_items`, `dimensions`, `max_size`.
+    /// `number`: integers only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub options: Option<serde_json::Value>,
+    pub integer: Option<bool>,
+    /// `array`: item type, `text`, `number`, `bool` or `json` (default `json`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub items: Option<String>,
+    /// `number`: maximum value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max: Option<f64>,
+    /// `array`: maximum number of items.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_items: Option<i64>,
+    /// `text`: maximum length in characters (default 1 000 000).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_length: Option<i64>,
+    /// `select`, `relation`, `file`: values that may be chosen at once (default 1; above 1 the field holds an array).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_select: Option<i64>,
+    /// `json`: maximum serialised size in bytes (default 1 MiB).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_size: Option<i64>,
+    /// `number`: minimum value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min: Option<f64>,
+    /// `array`: minimum number of items.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_items: Option<i64>,
+    /// `text`: minimum length in characters; `password`: minimum length (default 8).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_length: Option<i64>,
+    pub name: String,
     pub required: bool,
     pub system: bool,
     /// `text`, `number`, `bool`, `date`, `email`, `url`, `select`, `json`,
     /// `array`, `relation`, `file`, `password`, `geo`, `vector`.
     pub r#type: String,
     pub unique: bool,
+    /// `select`: the allowed values.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub values: Option<Vec<String>>,
 }
 
 /// Definition of a vector field, as sent when creating it.
@@ -2879,7 +2916,7 @@ pub struct HybridHit {
     pub vector_rank: Option<i64>,
 }
 
-/// A hybrid search: keyword (FTS5, BM25) and vector rankings fused with
+/// A hybrid search: keyword (FTS5 and BM25 on SQLite, `tsvector` on PostgreSQL) and vector rankings fused with
 /// Reciprocal Rank Fusion: `score = Σ weight / (rrf_k + rank)`.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct HybridRequest {
@@ -4953,14 +4990,14 @@ pub struct KvStats {
     pub max_memory_bytes: i64,
     /// Reads that found nothing.
     pub misses: i64,
-    /// Whether changes are written to SQLite.
+    /// Whether changes are written to the database.
     pub persistent: bool,
     /// `engine` (every tenant) or `tenant` (the caller's tenant only).
     pub scope: String,
     /// The tenant the figures are for (`scope = tenant`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tenant: Option<String>,
-    /// Keys changed in memory and not yet written to SQLite.
+    /// Keys changed in memory and not yet written to the database.
     pub unsaved_keys: i64,
     /// Estimated memory in use, bytes.
     pub used_memory_bytes: i64,

@@ -20,7 +20,7 @@ use crate::backup::BackupOptions;
 use crate::error::BackupError;
 use crate::manifest::Manifest;
 use crate::snapshots::Retention;
-use crate::verify::{VerifyReport, verify};
+use crate::verify::VerifyReport;
 use crate::{BackupService, Snapshot};
 
 type ApiResult = Result<Response, ApiError>;
@@ -159,7 +159,17 @@ async fn create_backup(State(s): State<BackupService>, Access(ctx): Access, body
     responses((status = 200, description = "The snapshot", body = SnapshotView), (status = 404, description = "No such snapshot")))]
 async fn get_backup(State(s): State<BackupService>, Access(ctx): Access, Path(id): Path<String>) -> ApiResult {
     guard(&ctx)?;
-    Ok(Json(SnapshotView::from(s.store().get(&id).map_err(api)?)).into_response())
+    Ok(Json(SnapshotView::from(lookup(&s, &id)?)).into_response())
+}
+
+/// Snapshot `id`, or the newest for `latest` (as the CLI resolves it).
+fn lookup(s: &BackupService, id: &str) -> Result<Snapshot, ApiError> {
+    if id == "latest" {
+        s.store().resolve(id)
+    } else {
+        s.store().get(id)
+    }
+    .map_err(api)
 }
 
 /// Deletes a snapshot.
@@ -168,7 +178,8 @@ async fn get_backup(State(s): State<BackupService>, Access(ctx): Access, Path(id
     responses((status = 204, description = "Deleted"), (status = 404, description = "No such snapshot")))]
 async fn delete_backup(State(s): State<BackupService>, Access(ctx): Access, Path(id): Path<String>) -> ApiResult {
     guard(&ctx)?;
-    s.store().delete(&id).await.map_err(api)?;
+    let snap = lookup(&s, &id)?;
+    s.store().delete(&snap.id).await.map_err(api)?;
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
@@ -178,8 +189,8 @@ async fn delete_backup(State(s): State<BackupService>, Access(ctx): Access, Path
     responses((status = 200, description = "Verification report", body = VerifyReport), (status = 404, description = "No such snapshot")))]
 async fn verify_backup(State(s): State<BackupService>, Access(ctx): Access, Path(id): Path<String>) -> ApiResult {
     guard(&ctx)?;
-    let snap = s.store().get(&id).map_err(api)?;
-    Ok(Json(verify(&snap.path).await).into_response())
+    let snap = lookup(&s, &id)?;
+    Ok(Json(s.verify(&snap.path).await).into_response())
 }
 
 /// Applies a retention policy now.

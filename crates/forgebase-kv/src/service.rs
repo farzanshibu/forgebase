@@ -56,9 +56,9 @@ pub struct KvStats {
     pub evicted_keys: u64,
     /// Live pub/sub channels.
     pub channels: usize,
-    /// Keys changed in memory and not yet written to SQLite.
+    /// Keys changed in memory and not yet written to the database.
     pub unsaved_keys: usize,
-    /// Whether changes are written to SQLite.
+    /// Whether changes are written to the database.
     pub persistent: bool,
 }
 
@@ -615,6 +615,11 @@ impl KvService {
 
     /// Writes `changes` on `backend` in one transaction; on failure (or
     /// cancellation) the keys are dirty again.
+    ///
+    /// When the group's transaction fails, each change is retried on its own
+    /// so that one row the database refuses cannot hold back every other key
+    /// of the set (and lose them all at shutdown). The keys that still fail
+    /// stay dirty and are retried on the next flush.
     async fn write_group(&self, backend: &dyn Backend, changes: Vec<persist::Change>) -> KvResult<usize> {
         let n = changes.len();
         // Cancellation safety: `shutdown` aborts the background flusher, which may
@@ -625,12 +630,41 @@ impl KvService {
             inner: &self.inner,
             ids: changes.iter().map(|(id, _)| id.clone()).collect(),
         };
-        persist::write(backend, &changes).await?;
-        pending.ids.clear();
-        Ok(n)
+        let group_error = match persist::write(backend, &changes).await {
+            Ok(()) => {
+                pending.ids.clear();
+                return Ok(n);
+            }
+            Err(e) if n == 1 => return Err(e),
+            Err(e) => e,
+        };
+        let mut written = 0;
+        let mut failed = Vec::new();
+        let mut last_error = None;
+        for change in changes {
+            match persist::write(backend, std::slice::from_ref(&change)).await {
+                Ok(()) => written += 1,
+                Err(e) => {
+                    tracing::warn!(
+                        tenant = %change.0.scope.tenant,
+                        namespace = %change.0.scope.ns,
+                        error = %e,
+                        "kv key could not be saved; it stays unsaved and is retried"
+                    );
+                    failed.push(change.0);
+                    last_error = Some(e);
+                }
+            }
+        }
+        // Only the keys that failed on their own go back to the dirty set.
+        pending.ids = failed;
+        if written == 0 {
+            return Err(last_error.unwrap_or(group_error));
+        }
+        Ok(written)
     }
 
-    /// Starts the background expiry sweeper and, with a backend, the SQLite
+    /// Starts the background expiry sweeper and, with a backend, the database
     /// flusher. Call [`KvService::shutdown`] to stop them with a final flush.
     pub fn start_background(&self) {
         let mut tasks = lock(&self.inner.tasks);

@@ -597,15 +597,29 @@ impl<'a> Compiler<'a> {
                     ));
                 }
             };
-            let pattern = self.render(b, &Value::Text(format!("%{}%", d.escape_like(&text))))?;
+            // Case-insensitive on every engine: `ILIKE` (Unicode) on
+            // PostgreSQL; on SQLite `LIKE`, which folds ASCII only, or for a
+            // value with other letters a `(?i)` REGEXP (bound queries only).
+            let bound = !self.opts.inline_literals && self.opts.native.is_none();
+            let regexp = bound && !text.is_ascii() && d.regexp_ci("", "").is_some();
+            let pattern = if regexp {
+                self.render(b, &Value::Text(format!("(?i){}", regex_literal(&text))))?
+            } else {
+                self.render(b, &Value::Text(format!("%{}%", d.escape_like(&text))))?
+            };
             let ty = l.ty();
-            // Case-insensitive on every engine: `LIKE` (ASCII) on SQLite,
-            // `ILIKE` (Unicode) on PostgreSQL.
+            let matches = |v: &str| {
+                if regexp {
+                    d.regexp_ci(v, &pattern).unwrap_or_default()
+                } else {
+                    d.like_ci(v, &pattern)
+                }
+            };
             let test = |v: &str| {
                 let v = as_text(d, v, ty);
                 match op {
-                    Op::Like => d.like_ci(&v, &pattern),
-                    _ => format!("NOT ({})", d.like_ci(&format!("coalesce({v}, '')"), &pattern)),
+                    Op::Like => matches(&v),
+                    _ => format!("NOT ({})", matches(&format!("coalesce({v}, '')"))),
                 }
             };
             return Ok(match l {
@@ -1038,6 +1052,23 @@ pub fn query_label(collection: &str, filter: Option<&Expr>, sort: &[SortKey]) ->
     }
 }
 
+/// `text` as a regular expression that matches it literally: the `regex`
+/// crate's meta characters (`regex_syntax::is_meta_character`) escaped.
+/// Nothing else is (`\<` and `\>` are word boundaries there).
+fn regex_literal(text: &str) -> String {
+    let mut out = String::with_capacity(text.len() + 8);
+    for c in text.chars() {
+        if matches!(
+            c,
+            '\\' | '.' | '+' | '*' | '?' | '(' | ')' | '|' | '[' | ']' | '{' | '}' | '^' | '$' | '#' | '&' | '-' | '~'
+        ) {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1216,6 +1247,32 @@ mod tests {
                 want
             );
         }
+    }
+
+    #[test]
+    fn sqlite_contains_folds_unicode_with_a_regexp() {
+        let o = CompileOptions::default();
+        // ASCII values keep `LIKE` (ASCII folding is enough for them).
+        let (sql, _) = compile("p", "title ~ 'Post'", &o).unwrap();
+        assert_eq!(sql, "t.\"title\" LIKE ?1 ESCAPE '\\'");
+        // Other letters: SQLite's `LIKE` would not fold `É` to `é`.
+        let (sql, params) = compile("p", "title ~ 'HÉLLO (1.5)' && title !~ 'Ü<b>'", &o).unwrap();
+        assert_eq!(
+            sql,
+            "(t.\"title\" REGEXP ?1) AND (NOT (coalesce(t.\"title\", '') REGEXP ?2))"
+        );
+        assert_eq!(params[0], Value::Text("(?i)HÉLLO \\(1\\.5\\)".into()));
+        assert_eq!(params[1], Value::Text("(?i)Ü<b>".into()), "< and > stay as they are");
+        // Stored schema never names REGEXP.
+        let inline = CompileOptions {
+            inline_literals: true,
+            ..CompileOptions::default()
+        };
+        let (sql, _) = compile("p", "title ~ 'É'", &inline).unwrap();
+        assert!(sql.contains("LIKE") && !sql.contains("REGEXP"), "{sql}");
+        // PostgreSQL's ILIKE folds Unicode already.
+        let (sql, _) = pg("p", "title ~ 'É'");
+        assert_eq!(sql, "t.\"title\" ILIKE $1 ESCAPE '\\'");
     }
 
     #[test]

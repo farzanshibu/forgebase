@@ -438,3 +438,22 @@ async fn the_router_routes_control_reads_to_checked_replicas() {
     .unwrap();
     assert!(primary_only.control().replicas().is_none());
 }
+
+/// Reads a replica serves are in the set's slow-query log (the replica has
+/// its own handle and log), and the threshold reaches the replicas.
+#[tokio::test]
+async fn slow_reads_on_a_replica_are_in_the_sets_slow_query_log() {
+    let Some((_c, _replicas, handle)) = setup(&[], ReplicaOptions::default()).await else {
+        return;
+    };
+    handle.set_slow_query_threshold(Duration::ZERO);
+    handle.clear_slow_queries();
+    assert_eq!(served(&handle, &replica()).await.0, 1, "the replica served the read");
+    let logged = handle.slow_queries();
+    assert!(
+        logged.iter().any(|q| q.sql == SERVED),
+        "the replica's read is logged: {logged:?}"
+    );
+    handle.clear_slow_queries();
+    assert!(handle.slow_queries().iter().all(|q| q.sql != SERVED), "and cleared");
+}

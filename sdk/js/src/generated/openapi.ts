@@ -7128,7 +7128,9 @@ export interface paths {
         put?: never;
         /**
          * Runs one parameterised SQL statement. Reads return at most 10 000 rows
-         *     (`truncated`); transaction control, `ATTACH`, `VACUUM` and writable pragmas are refused.
+         *     (`truncated`); transaction control, `ATTACH`, `VACUUM` and writable pragmas (SQLite),
+         *     `SET`, `DO` and session settings (PostgreSQL) are refused. On PostgreSQL, write `$1`
+         *     placeholders to keep `?`, `?|` and `?&` as the `jsonb` operators.
          *     Secret columns are masked unless the body sets `show_secrets` (audited).
          */
         post: operations["execute"];
@@ -7167,7 +7169,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** The query plan of a statement (`EXPLAIN QUERY PLAN`), without running it. */
+        /** The query plan of a statement (`EXPLAIN QUERY PLAN` on SQLite, `EXPLAIN` on PostgreSQL), without running it. */
         post: operations["sql_explain"];
         delete?: never;
         options?: never;
@@ -8184,7 +8186,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Hybrid search: keyword (FTS5/BM25) and vector rankings fused with Reciprocal Rank Fusion. */
+        /** Hybrid search: keyword (FTS5/BM25 on SQLite, full-text search on PostgreSQL) and vector rankings fused with Reciprocal Rank Fusion. */
         post: operations["hybrid"];
         delete?: never;
         options?: never;
@@ -10654,17 +10656,64 @@ export interface components {
             items: components["schemas"]["VectorField"][];
         };
         FieldSchema: {
+            /** @description `relation`: delete this record when the referenced record is deleted. */
+            cascade_delete?: boolean | null;
+            /** @description `relation`: the target collection's id. */
+            collection_id?: string | null;
             default?: Record<string, never> | null;
+            /**
+             * Format: int32
+             * @description `vector`: number of dimensions (1 to 16 000).
+             */
+            dimensions?: number | null;
             hidden: boolean;
             /** @description Stable id; renames keep it. */
             id: string;
-            name: string;
+            /** @description `number`: integers only. */
+            integer?: boolean | null;
+            /** @description `array`: item type, `text`, `number`, `bool` or `json` (default `json`). */
+            items?: string | null;
             /**
-             * @description Type options sit beside `type`: `min_length`, `max_length`, `min`, `max`,
-             *     `integer`, `values`, `max_select`, `collection_id`, `cascade_delete`,
-             *     `items`, `min_items`, `max_items`, `dimensions`, `max_size`.
+             * Format: double
+             * @description `number`: maximum value.
              */
-            options?: Record<string, never> | null;
+            max?: number | null;
+            /**
+             * Format: int32
+             * @description `array`: maximum number of items.
+             */
+            max_items?: number | null;
+            /**
+             * Format: int32
+             * @description `text`: maximum length in characters (default 1 000 000).
+             */
+            max_length?: number | null;
+            /**
+             * Format: int32
+             * @description `select`, `relation`, `file`: values that may be chosen at once (default 1; above 1 the field holds an array).
+             */
+            max_select?: number | null;
+            /**
+             * Format: int32
+             * @description `json`: maximum serialised size in bytes (default 1 MiB).
+             */
+            max_size?: number | null;
+            /**
+             * Format: double
+             * @description `number`: minimum value.
+             */
+            min?: number | null;
+            /**
+             * Format: int32
+             * @description `array`: minimum number of items.
+             */
+            min_items?: number | null;
+            /**
+             * Format: int32
+             * @description `text`: minimum length in characters; `password`: minimum length (default 8).
+             */
+            min_length?: number | null;
+            name: string;
             required: boolean;
             system: boolean;
             /**
@@ -10673,6 +10722,8 @@ export interface components {
              */
             type: string;
             unique: boolean;
+            /** @description `select`: the allowed values. */
+            values?: string[] | null;
         };
         /** @description Definition of a vector field, as sent when creating it. */
         FieldSpec: {
@@ -10935,7 +10986,7 @@ export interface components {
             vector_rank?: number | null;
         };
         /**
-         * @description A hybrid search: keyword (FTS5, BM25) and vector rankings fused with
+         * @description A hybrid search: keyword (FTS5 and BM25 on SQLite, `tsvector` on PostgreSQL) and vector rankings fused with
          *     Reciprocal Rank Fusion: `score = Σ weight / (rrf_k + rank)`.
          */
         HybridRequest: {
@@ -12869,13 +12920,13 @@ export interface components {
              * @description Reads that found nothing.
              */
             misses: number;
-            /** @description Whether changes are written to SQLite. */
+            /** @description Whether changes are written to the database. */
             persistent: boolean;
             /** @description `engine` (every tenant) or `tenant` (the caller's tenant only). */
             scope: string;
             /** @description The tenant the figures are for (`scope = tenant`). */
             tenant?: string | null;
-            /** @description Keys changed in memory and not yet written to SQLite. */
+            /** @description Keys changed in memory and not yet written to the database. */
             unsaved_keys: number;
             /** @description Estimated memory in use, bytes. */
             used_memory_bytes: number;

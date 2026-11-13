@@ -142,17 +142,22 @@ pub(crate) async fn check(conn: &mut PgConnection, views: &[String]) -> Result<F
     }
 
     // Columns of extension types (citext is mapped to TEXT COLLATE NOCASE;
-    // the pgvector column is checked with the vector data below).
+    // the pgvector column is checked with the vector data below). The
+    // derived tables of extension DDL (the AGE id map) are not converted.
     for n in names(
         conn,
-        "SELECT format('%I.%I.%I (%s from extension %s)', ns.nspname, c.relname, a.attname, t.typname, e.extname) \
-         FROM pg_attribute a JOIN pg_class c ON c.oid = a.attrelid JOIN pg_namespace ns ON ns.oid = c.relnamespace \
-         JOIN pg_type t ON t.oid = a.atttypid \
-         JOIN pg_depend d ON d.classid = 'pg_type'::regclass AND d.objid = t.oid AND d.deptype = 'e' \
-         JOIN pg_extension e ON e.oid = d.refobjid \
-         WHERE ns.nspname IN ('forgebase', 'public') AND c.relkind IN ('r', 'p') AND a.attnum > 0 \
-         AND NOT a.attisdropped AND e.extname <> 'citext' \
-         AND NOT (c.relname = '_forgebase_vector_values' AND a.attname = 'vec') ORDER BY 1",
+        &format!(
+            "SELECT format('%I.%I.%I (%s from extension %s)', ns.nspname, c.relname, a.attname, t.typname, e.extname) \
+             FROM pg_attribute a JOIN pg_class c ON c.oid = a.attrelid JOIN pg_namespace ns ON ns.oid = c.relnamespace \
+             JOIN pg_type t ON t.oid = a.atttypid \
+             JOIN pg_depend d ON d.classid = 'pg_type'::regclass AND d.objid = t.oid AND d.deptype = 'e' \
+             JOIN pg_extension e ON e.oid = d.refobjid \
+             WHERE ns.nspname IN ('forgebase', 'public') AND c.relkind IN ('r', 'p') AND a.attnum > 0 \
+             AND NOT a.attisdropped AND e.extname <> 'citext' \
+             AND NOT (ns.nspname = 'forgebase' AND c.relname IN ({derived})) \
+             AND NOT (c.relname = '_forgebase_vector_values' AND a.attname = 'vec') ORDER BY 1",
+            derived = crate::pg::extension_tables_sql()
+        ),
     )
     .await?
     {

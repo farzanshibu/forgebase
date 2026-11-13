@@ -6,13 +6,13 @@ use axum::http::StatusCode;
 use axum::http::header::LOCATION;
 use axum::response::{IntoResponse, Response};
 use forgebase_data::schema::Collection;
-use serde_json::json;
+use serde_json::{Value as JsonValue, json};
 
 use super::schemas::{CollectionList, CollectionSchema, CollectionSchemaResponse, SchemaHistory};
 use super::{ApiResult, jsonschema};
-use crate::AppState;
 use crate::http::ApiJson;
 use crate::principal::Access;
+use crate::{ApiError, AppState};
 
 /// Lists collections.
 #[utoipa::path(
@@ -36,8 +36,9 @@ pub async fn list(State(s): State<AppState>, Access(ctx): Access) -> ApiResult<R
 pub async fn create(
     State(s): State<AppState>,
     Access(ctx): Access,
-    ApiJson(def): ApiJson<Collection>,
+    ApiJson(body): ApiJson<JsonValue>,
 ) -> ApiResult<Response> {
+    let def = definition(body)?;
     let created = s.data().create_collection(&ctx, def).await?;
     let location = format!("/api/v1/collections/{}", created.name);
     let mut res = (StatusCode::CREATED, Json(created)).into_response();
@@ -72,9 +73,49 @@ pub async fn update(
     State(s): State<AppState>,
     Access(ctx): Access,
     Path(c): Path<String>,
-    ApiJson(def): ApiJson<Collection>,
+    ApiJson(body): ApiJson<JsonValue>,
 ) -> ApiResult<Response> {
+    let def = definition(body)?;
     Ok(Json(s.data().update_collection(&ctx, &c, def).await?).into_response())
+}
+
+/// A collection definition from a request body. Keys a field definition
+/// does not have are refused: deserialising would drop them silently (an
+/// `options` object, a misspelt option, an option of another type).
+fn definition(body: JsonValue) -> ApiResult<Collection> {
+    let mut unknown = serde_json::Map::new();
+    if let Some(fields) = body.get("fields").and_then(JsonValue::as_array) {
+        for (i, f) in fields.iter().enumerate() {
+            let keys = forgebase_data::schema::unknown_field_keys(f);
+            if keys.is_empty() {
+                continue;
+            }
+            let name = f
+                .get("name")
+                .and_then(JsonValue::as_str)
+                .map_or_else(|| format!("fields[{i}]"), str::to_owned);
+            let hint = if keys.iter().any(|k| k == "options") {
+                "; type options sit beside `type`, e.g. {\"type\": \"text\", \"max_length\": 200}"
+            } else {
+                ""
+            };
+            unknown.insert(
+                name,
+                serde_json::json!({
+                    "code": "unknown_key",
+                    "message": format!("not a key of this field type: {}{hint}", keys.join(", ")),
+                }),
+            );
+        }
+    }
+    if !unknown.is_empty() {
+        let names: Vec<&str> = unknown.keys().map(String::as_str).collect();
+        let message = format!("unknown keys in the definition of field(s) {}", names.join(", "));
+        return Err(ApiError::bad_request("invalid_body", message)
+            .with_details(serde_json::json!({ "fields": JsonValue::Object(unknown) })));
+    }
+    serde_json::from_value(body)
+        .map_err(|e| ApiError::bad_request("invalid_body", format!("invalid collection definition: {e}")))
 }
 
 /// Drops a collection and its records (refused while relations point to it).

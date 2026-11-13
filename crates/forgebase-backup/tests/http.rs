@@ -112,6 +112,15 @@ async fn admin_manages_snapshots_over_http() {
         .await;
     assert_eq!(s, StatusCode::OK);
     assert_eq!(v["ok"], true, "{v}");
+    // `latest` names the newest snapshot, as in the CLI.
+    let (s, newest) = api.call(Method::GET, "/api/v1/system/backups/latest", None).await;
+    assert_eq!(s, StatusCode::OK, "{newest}");
+    assert_eq!(newest["id"], json!(id));
+    let (s, v) = api
+        .call(Method::POST, "/api/v1/system/backups/latest/verify", None)
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["ok"], true, "{v}");
 
     // Retention through the create call and through prune.
     for _ in 0..2 {
@@ -135,10 +144,8 @@ async fn admin_manages_snapshots_over_http() {
     let left = list["items"][0]["id"].as_str().unwrap().to_owned();
     assert_eq!(list["items"].as_array().unwrap().len(), 1);
 
-    let (s, _) = api
-        .call(Method::DELETE, &format!("/api/v1/system/backups/{left}"), None)
-        .await;
-    assert_eq!(s, StatusCode::NO_CONTENT);
+    let (s, _) = api.call(Method::DELETE, "/api/v1/system/backups/latest", None).await;
+    assert_eq!(s, StatusCode::NO_CONTENT, "`latest` deletes the newest ({left})");
     let (s, e) = api
         .call(Method::GET, &format!("/api/v1/system/backups/{left}"), None)
         .await;

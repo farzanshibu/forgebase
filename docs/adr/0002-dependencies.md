@@ -438,3 +438,13 @@ artifact (`crates/forgebase-functions/js/forgebase-js.wasm`): QuickJS
 `crates/forgebase-functions/js/LICENSES.md`. No `rquickjs`/`boa`/V8 crate:
 running QuickJS inside the existing Wasmtime sandbox keeps one trust boundary
 and the ADR-0017 limits.
+
+## Addendum: sqlx `regexp` (database test findings, 2026-11-14)
+
+The workspace `sqlx` gains its `regexp` feature, which registers SQLite's
+`REGEXP` function on ForgeBase's connections, implemented in Rust with
+`regex` 1.13.1 (MIT OR Apache-2.0, already in the tree). The filter
+language's `~` uses it on SQLite for a value with non-ASCII letters, so the
+match ignores case like `ILIKE` on PostgreSQL (SQLite's `LIKE` folds ASCII
+only). It is never written into stored schema (index or view definitions),
+so other SQLite connections to the file need no such function. No new crate.

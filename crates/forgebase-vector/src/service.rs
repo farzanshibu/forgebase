@@ -2030,6 +2030,15 @@ impl VectorService {
                 vectors.insert(field, metric::validate(&f.def.name, f.def.dimension, f.def.metric, &v)?);
             }
             let metadata = item.metadata.unwrap_or_default();
+            if metadata
+                .iter()
+                .any(|(k, v)| k.contains('\0') || forgebase_core::json_contains_nul(v))
+            {
+                return Err(VectorError::invalid(
+                    "invalid_metadata",
+                    format!("metadata of {id:?} cannot contain the NUL character (U+0000)"),
+                ));
+            }
             if serde_json::to_string(&metadata).map(|s| s.len()).unwrap_or(usize::MAX) > MAX_METADATA_BYTES {
                 return Err(VectorError::invalid(
                     "metadata_too_large",
@@ -2716,7 +2725,8 @@ impl VectorService {
         Ok((items, vectors))
     }
 
-    /// Hybrid search: FTS5 keyword ranking and vector ranking fused with RRF.
+    /// Hybrid search: full-text keyword ranking (FTS5 on SQLite, `tsvector` on
+    /// PostgreSQL) and vector ranking fused with RRF.
     /// The caller's list rule filters both rankings; with a
     /// `source_collection`, fused hits whose record the caller may not view
     /// are skipped (within the `candidates` pool).

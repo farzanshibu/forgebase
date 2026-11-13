@@ -187,6 +187,11 @@ struct Prepared {
     relations: Vec<(String, String, Vec<String>)>,
 }
 
+/// U+0000 in a value: PostgreSQL cannot store it, so neither engine does.
+fn nul_error() -> FieldError {
+    FieldError::new("nul_character", "cannot contain the NUL character (U+0000)")
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum WriteMode {
     Create,
@@ -216,6 +221,10 @@ impl DataService {
             };
             if f.required && is_blank(&normalized) {
                 errors.add(f.name.clone(), FieldError::new("required", "cannot be blank"));
+                continue;
+            }
+            if forgebase_core::json_contains_nul(&normalized) {
+                errors.add(f.name.clone(), nul_error());
                 continue;
             }
             let value = match (&f.kind, &normalized) {
@@ -255,6 +264,8 @@ impl DataService {
                     k.clone(),
                     FieldError::new("invalid_key", "document keys cannot be empty or start with _"),
                 );
+            } else if k.contains('\0') || forgebase_core::json_contains_nul(v) {
+                errors.add(k.replace('\0', ""), nul_error());
             } else {
                 dynamic.insert(k.clone(), v.clone());
             }

@@ -430,10 +430,14 @@ pub fn pg_source(
             let secrets = RoleSecrets::load(&el.secrets_file()).ok().flatten()?;
             let password = Password::new(secrets.password(Role::Super)?);
             let (root, version, socket_dir, port) = match (engine, attached) {
+                // The socket directory, or on Windows (no Unix sockets) the
+                // engine's loopback address: the tools take either as `-h`.
                 (Some(e), _) => (
                     Some(e.engine().root.clone()),
                     e.version().text.clone(),
-                    e.socket_dir()?.to_path_buf(),
+                    e.socket_dir()
+                        .map(Path::to_path_buf)
+                        .or_else(|| e.tcp_addr().map(|a| PathBuf::from(a.ip().to_string())))?,
                     e.port(),
                 ),
                 (None, Some(a)) => {
@@ -622,7 +626,8 @@ pub async fn open_attached(
             match DataDirLock::acquire(layout) {
                 Ok(lock) => {
                     let engine = start_engine(config, layout).await?;
-                    let mut opts = pg_options(&config.database, engine.url(role).expose(), true);
+                    let url = session_url(engine.url(role).expose(), role);
+                    let mut opts = pg_options(&config.database, &url, true);
                     opts.read_pool_size = 2;
                     match Database::open(opts).await {
                         Ok(db) => Ok(PrimaryDatabase {
@@ -640,7 +645,7 @@ pub async fn open_attached(
                 }
                 Err(ServerError::Locked { .. }) => {
                     let attached = attach(layout).await?;
-                    let url = attached.url(role)?;
+                    let url = session_url(&attached.url(role)?, role);
                     let mut opts = pg_options(&config.database, &url, true);
                     opts.read_pool_size = 2;
                     Ok(PrimaryDatabase {
@@ -662,6 +667,20 @@ pub async fn open_attached(
             }
         }
     }
+}
+
+/// `url` with the session settings `role` needs to find ForgeBase's tables.
+/// The server and reader roles get `search_path = forgebase, public` as
+/// their role default (migrations, role setup); the superuser does not (its
+/// default decides where extensions land), so its sessions for one-off
+/// commands (`doctor`) set it at connect time.
+fn session_url(url: &str, role: Role) -> String {
+    if role != Role::Super {
+        return url.to_owned();
+    }
+    let sep = if url.contains('?') { '&' } else { '?' };
+    let path = forgebase_db::migrations::postgres::SEARCH_PATH.replace(' ', "");
+    format!("{url}{sep}options=-c%20search_path%3D{}", pct(&path, b""))
 }
 
 /// The bundled engine of a running server, found through `postmaster.pid`.
@@ -732,8 +751,25 @@ pub struct PostmasterInfo {
     pub port: u16,
     /// First Unix socket directory (empty when the engine listens on TCP only).
     pub socket_dir: Option<PathBuf>,
+    /// First TCP listen address (line 6; empty when TCP is off), the way in
+    /// on Windows, where the engine has no Unix socket.
+    pub listen: Option<String>,
     /// `starting`, `ready`, `stopping`, `standby` (line 8).
     pub status: String,
+}
+
+impl PostmasterInfo {
+    /// Where a client connects: the socket directory, else the TCP listen
+    /// address (`*` and `0.0.0.0` reach the engine on loopback).
+    pub fn host(&self) -> Option<PathBuf> {
+        self.socket_dir.clone().or_else(|| {
+            self.listen.as_deref().map(|a| match a {
+                "*" | "0.0.0.0" => PathBuf::from("127.0.0.1"),
+                "::" => PathBuf::from("::1"),
+                a => PathBuf::from(a),
+            })
+        })
+    }
 }
 
 /// Reads `postmaster.pid` of the bundled engine (`None` when it is not
@@ -748,11 +784,18 @@ pub fn postmaster(layout: &DataLayout) -> Option<PostmasterInfo> {
         .map(|l| l.trim())
         .filter(|l| !l.is_empty())
         .map(PathBuf::from);
+    let listen = lines
+        .get(5)
+        .and_then(|l| l.split(',').next())
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(str::to_owned);
     let status = lines.get(7).map_or("starting", |l| l.trim()).to_owned();
     pid_alive(pid).then_some(PostmasterInfo {
         pid,
         port,
         socket_dir,
+        listen,
         status,
     })
 }
@@ -779,8 +822,12 @@ async fn attach(layout: &DataLayout) -> Result<AttachedEngine, ServerError> {
     loop {
         match postmaster(layout) {
             Some(info) if info.status == "ready" => {
-                let socket_dir = info.socket_dir.ok_or_else(|| {
-                    ServerError::Backend("the running PostgreSQL has no Unix socket to connect to".into())
+                // The Unix socket, or on Windows the loopback address: libpq
+                // and the connection URLs take either as the host.
+                let socket_dir = info.host().ok_or_else(|| {
+                    ServerError::Backend(
+                        "the running PostgreSQL has neither a Unix socket nor a TCP address to connect to".into(),
+                    )
                 })?;
                 return Ok(AttachedEngine {
                     pid: info.pid,
@@ -948,6 +995,24 @@ mod tests {
     }
 
     #[test]
+    fn the_superuser_session_finds_the_system_tables() {
+        let base = "postgres://forgebase_super:pw@localhost/forgebase?host=/tmp/s&port=5432";
+        assert_eq!(
+            session_url(base, Role::Super),
+            format!("{base}&options=-c%20search_path%3Dforgebase%2Cpublic")
+        );
+        assert_eq!(
+            session_url(base, Role::Server),
+            base,
+            "the server role has it as its default"
+        );
+        assert_eq!(
+            session_url("postgres://u@h/db", Role::Super),
+            "postgres://u@h/db?options=-c%20search_path%3Dforgebase%2Cpublic"
+        );
+    }
+
+    #[test]
     fn postmaster_pid_is_parsed() {
         let tmp = tempfile::tempdir().unwrap();
         let layout = DataLayout::new(tmp.path());
@@ -965,5 +1030,26 @@ mod tests {
         assert_eq!(info.port, 5432);
         assert_eq!(info.socket_dir, Some(PathBuf::from("/tmp/sock")));
         assert_eq!(info.status, "ready");
+        assert_eq!(info.host(), Some(PathBuf::from("/tmp/sock")), "the socket first");
+        // Windows: no socket line, a TCP listen address instead.
+        std::fs::write(
+            pgdata.join("postmaster.pid"),
+            format!("{me}\nC:/x\n1700000000\n54321\n\n127.0.0.1\n  0 0\nready   \n"),
+        )
+        .unwrap();
+        let info = postmaster(&layout).unwrap();
+        assert_eq!(info.socket_dir, None);
+        assert_eq!(info.listen.as_deref(), Some("127.0.0.1"));
+        assert_eq!(info.host(), Some(PathBuf::from("127.0.0.1")));
+        let a = AttachedEngine {
+            pid: me,
+            socket_dir: info.host().unwrap(),
+            port: info.port,
+            secrets_file: PathBuf::new(),
+        };
+        assert_eq!(
+            socket_url("forgebase_server", "pw", "forgebase", &a.socket_dir, a.port),
+            "postgres://forgebase_server:pw@localhost/forgebase?host=127.0.0.1&port=54321"
+        );
     }
 }

@@ -131,6 +131,17 @@ pub trait Dialect: Send + Sync + fmt::Debug {
     /// `expr ILIKE pat ESCAPE '\'` on PostgreSQL.
     fn like_ci(&self, expr: &str, pat: &str) -> String;
 
+    /// A Unicode case-insensitive match of `expr` against the regular
+    /// expression `pat` (a bound `(?i)…` pattern), where [`Dialect::like_ci`]
+    /// folds ASCII only: `expr REGEXP pat` on SQLite (registered on every
+    /// ForgeBase connection). `None` where `like_ci` is Unicode already.
+    /// Only for bound parameters, never for stored schema (index or view
+    /// definitions), which other SQLite connections must be able to read.
+    fn regexp_ci(&self, expr: &str, pat: &str) -> Option<String> {
+        let _ = (expr, pat);
+        None
+    }
+
     /// Sort direction keeping SQLite's NULL order (NULLs first ascending,
     /// last descending), which keyset cursors rely on.
     fn order_nulls(&self, desc: bool) -> &'static str;
@@ -337,6 +348,10 @@ impl Dialect for SqliteDialect {
 
     fn like_ci(&self, expr: &str, pat: &str) -> String {
         format!("{expr} LIKE {pat} {}", self.like_escape_clause())
+    }
+
+    fn regexp_ci(&self, expr: &str, pat: &str) -> Option<String> {
+        Some(format!("{expr} REGEXP {pat}"))
     }
 
     fn order_nulls(&self, desc: bool) -> &'static str {
@@ -613,10 +628,24 @@ impl Dialect for PgDialect {
         63
     }
 
+    /// `sql`: a view's definition; for a table, a `CREATE TABLE` rebuilt
+    /// from the catalog (PostgreSQL keeps no text): columns with type,
+    /// `NOT NULL` and default, then the primary key, unique, foreign-key and
+    /// check constraints.
     fn introspect_tables(&self) -> Statement {
         Statement::raw(
             "SELECT c.relname AS name, CASE WHEN c.relkind IN ('v', 'm') THEN 'view' ELSE 'table' END AS type, \
-             CASE WHEN c.relkind IN ('v', 'm') THEN pg_get_viewdef(c.oid) END AS sql \
+             CASE WHEN c.relkind IN ('v', 'm') THEN pg_get_viewdef(c.oid) \
+             ELSE 'CREATE TABLE ' || quote_ident(c.relname) || ' (' || concat_ws(', ', \
+               (SELECT string_agg(quote_ident(a.attname) || ' ' || format_type(a.atttypid, a.atttypmod) \
+                  || CASE WHEN a.attnotnull THEN ' NOT NULL' ELSE '' END \
+                  || coalesce(' DEFAULT ' || pg_get_expr(d.adbin, d.adrelid), ''), ', ' ORDER BY a.attnum) \
+                FROM pg_catalog.pg_attribute a \
+                LEFT JOIN pg_catalog.pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum \
+                WHERE a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped), \
+               (SELECT string_agg(pg_get_constraintdef(con.oid), ', ' ORDER BY con.contype DESC, con.conname) \
+                FROM pg_catalog.pg_constraint con \
+                WHERE con.conrelid = c.oid AND con.contype IN ('p', 'u', 'f', 'c'))) || ')' END AS sql \
              FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
              WHERE c.relkind IN ('r', 'p', 'v', 'm') AND n.nspname = ANY (current_schemas(false)) \
              ORDER BY c.relname",

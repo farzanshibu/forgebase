@@ -111,6 +111,22 @@ pub async fn verify_with(dir: &Path, opts: &VerifyOptions) -> VerifyReport {
 }
 
 async fn check_postgres(dir: &Path, m: &Manifest, method: Method, opts: &VerifyOptions, report: &mut VerifyReport) {
+    // The migration check without opening the copy (it needs a running
+    // cluster): the schema version the manifest records against this build's.
+    let latest = forgebase_db::migrations::postgres::POSTGRES_MIGRATIONS
+        .last()
+        .map_or(0, |x| x.version);
+    if m.schema_version > latest {
+        report.problems.push(format!(
+            "the backup is at schema v{} but this build knows v{latest}: restore it with a newer ForgeBase",
+            m.schema_version
+        ));
+    } else if m.schema_version < latest {
+        report.warnings.push(format!(
+            "schema v{} is older than this build (v{latest}); `serve` or `migrate` upgrades it after restore",
+            m.schema_version
+        ));
+    }
     let engine = m.engine_info();
     let tmp = opts.tmp.clone().unwrap_or_else(std::env::temp_dir);
     match method {

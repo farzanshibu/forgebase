@@ -325,9 +325,12 @@ projects while PostgreSQL is the default.
 binary into `<data_dir>/postgres/engine/` (about 30 MB, a few seconds), runs
 `initdb` (builtin C.UTF-8 locale, SCRAM passwords, data checksums), creates
 the ForgeBase roles with random passwords in `postgres/roles.secret` (0600),
-and listens on a Unix socket in `postgres/run/` only. TCP logins are off;
-`[database.postgres] listen = "127.0.0.1:5433"` turns on loopback TCP (other
-hosts need TLS, which this version does not set up). PostgreSQL refuses to run
+and listens on a Unix socket in `postgres/run/` only. TCP logins are off.
+Windows has no Unix socket: there the engine listens on loopback TCP
+(`127.0.0.1`, a free port picked at each start) and accepts loopback
+addresses only. `[database.postgres] listen = "127.0.0.1:5433"` turns on TCP
+logins at that address; they must use TLS (a self-signed certificate unless
+you set `[database.postgres] tls_cert` and `tls_key`). PostgreSQL refuses to run
 as root: run ForgeBase as an unprivileged user (the Docker image does). If the
 postmaster dies, ForgeBase restarts it with backoff; while it is down requests
 get `503 database_unavailable` and `/health/ready` fails the `database` check.
@@ -341,7 +344,8 @@ lock for the command and stop it afterwards (one to three seconds).
 | Command | What it does |
 |---|---|
 | `forgebase db status [--json]` | Backend, cluster directory, engine directory, whether the engine runs (pid, socket, port), TCP logins, and with a running engine the database size, connections, schema version and the extensions (available, installed). Never starts the engine. |
-| `forgebase db psql [--read-only \| --superuser] [PSQL_ARGS…]` | The engine's `psql` through the Unix socket, as `forgebase_server` (reads and writes every ForgeBase table, bypasses row-level security, not a superuser), `forgebase_reader` or `forgebase_super`. Example: `forgebase db psql -c 'select 1'`. The password goes through a temporary 0600 passfile, never the command line. External servers: use `psql "$FORGEBASE_DATABASE_URL"`. |
+| `forgebase db psql [--read-only \| --superuser \| --as LOGIN] [PSQL_ARGS…]` | The engine's `psql` through the Unix socket. By default the session runs as `forgebase_sql_admin`, the SQL editor's role (it logs in as `forgebase_server` and switches role): reads and writes collections, reads ForgeBase's tables except secret columns, bypasses row-level security, not a superuser. `--read-only` logs in as `forgebase_reader`, `--superuser` as `forgebase_super`. `--as LOGIN` logs in as a named direct login made with `forgebase db login create`; its rules apply, and psql asks for its password (or reads `PGPASSWORD` or `~/.pgpass`). Example: `forgebase db psql -c 'select 1'`. ForgeBase's own passwords go through a temporary 0600 passfile, never the command line. Not on Windows (no Unix socket). External servers: use `psql "$FORGEBASE_DATABASE_URL"`. |
+| `forgebase db login create\|list\|rotate\|delete` | Named direct logins: PostgreSQL logins (`fbu_<name>`) bound to one ForgeBase user or service account and at most one tenant, whose rules apply to every query. The password is printed once. |
 | `forgebase doctor` | Adds the engine (files against the archive manifest, `postgres --version`), the cluster (`PG_VERSION` against the engine, mode 0700), `roles.secret`, a postmaster left behind, and `amcheck` (`bt_index_check` on every B-tree index) plus the foreign-key check as the superuser. |
 
 `/api/system/info` reports `database.backend`, `mode`, `server_version`,
@@ -366,8 +370,11 @@ bundled engine is restarting or has failed.
 └── .forgebase.lock               held by the running server
 ```
 
-Back up with `forgebase backup` (online, consistent; it covers `forgebase.db`,
-`storage/` and `indexes/`). `auth/master.key` is **not** copied unless you pass
+Back up with `forgebase backup` (online, consistent; it covers the database,
+`storage/` and `indexes/`). The database is copied with the engine's own tool:
+`forgebase.db` with `VACUUM INTO` on SQLite, the cluster and `roles.secret`
+with `pg_basebackup` on the bundled PostgreSQL, a `pg_dump` of the ForgeBase
+schemas on an external server. `auth/master.key` is **not** copied unless you pass
 `--include-master-key`: losing it makes the stored secrets unreadable, so keep
 one copy of it apart from the backups. Schedule snapshots with cron or a
 systemd timer, for example `forgebase backup --keep-last 14 --max-age-days 30`.
@@ -467,16 +474,25 @@ Migrations run automatically on `serve`. Before you upgrade:
 5. Run `forgebase doctor` on the stopped data directory.
 6. Replace the binary, or pull the new image.
 7. Start the server. Pending migrations run. Before the first pending migration
-   the server writes `backups/pre-migrate-v<N>-<time>.db`.
+   the server writes a pre-migration snapshot: `backups/pre-migrate-v<N>-<time>.db`
+   on SQLite, the directory `backups/pre-migrate-v<N>-<time>/` (a
+   `pg_basebackup` of the cluster) on the bundled PostgreSQL. If that snapshot
+   fails, nothing is migrated. An external PostgreSQL server gets none; the
+   snapshot of step 4 is its rollback.
 8. Check `GET /health/ready` and `forgebase status`.
 
 **Rollback.** A database migrated by a newer binary is refused by an older one.
 To roll back:
 
 1. Stop the server.
-2. Restore the snapshot you took (`forgebase restore <id> --force`), or copy
-   `backups/pre-migrate-v<N>-<time>.db` over `forgebase.db` and delete
-   `forgebase.db-wal` and `forgebase.db-shm`.
+2. Restore the snapshot you took (`forgebase restore <id> --force`), or the
+   pre-migration snapshot:
+   - SQLite: copy `backups/pre-migrate-v<N>-<time>.db` over `forgebase.db`
+     and delete `forgebase.db-wal` and `forgebase.db-shm`.
+   - Bundled PostgreSQL: `forgebase restore backups/pre-migrate-v<N>-<time> --force`.
+     It puts the cluster back (the replaced one goes to
+     `backups/pre-restore-<time>/`) and leaves storage and keys alone.
+     PostgreSQL replays the copied WAL at the next start.
 3. Start the previous binary.
 
 Migrations are forward-only, so the snapshot is the only rollback path.
@@ -498,7 +514,7 @@ Keys in the TOML file, with defaults. Ranges are the accepted values.
 | `database.postgres.mode` | `"managed"` | `managed` (bundled engine), `external` (`FORGEBASE_DATABASE_URL`). Not editable in the dashboard. |
 | `database.postgres.url` | unset | External only; a secret: set `FORGEBASE_DATABASE_URL`. |
 | `database.postgres.pool_size` | `16` | `1`–`64` read connections; one writer. |
-| `database.postgres.listen` | `""` | `""` (Unix socket only) or a loopback `host:port`. |
+| `database.postgres.listen` | `""` | `""` (Unix socket only; loopback TCP on a free port on Windows) or an address with a port, such as `127.0.0.1:5433` or `0.0.0.0:5433`. TCP logins then require TLS. |
 | `database.postgres.engine_dir` | `""` | An installed PostgreSQL 17+ instead of the bundled engine. |
 | `database.postgres.native_rls` | `"logins"` | `off`, `logins`, `enforce` (FB-152). |
 | `database.postgres.settings` | `{}` | Extra `postgresql.conf` parameters; ForgeBase's own (listening, preload libraries, replication, anything that runs a program) are refused at start. File only. |

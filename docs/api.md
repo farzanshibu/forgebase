@@ -210,8 +210,8 @@ Snapshots of the database and storage over HTTP (FB-83). Administrators only.
 |---|---|
 | `GET /system/backups` | Snapshots, newest first: id, label, created time, size, whether derived index files are included. |
 | `POST /system/backups` | Take a snapshot now while the server keeps serving. Body (all optional): `{"label": "nightly", "include_indexes": true, "retention": {"keep_last": 7, "max_age_days": 30}}`. Retention runs after the snapshot is written. |
-| `GET`/`DELETE /system/backups/{id}` | Read or delete one snapshot. `latest` names the newest. |
-| `POST /system/backups/{id}/verify` | Check the manifest, every file's size and SHA-256, that no extra files exist, and open the copied database read-only (integrity, foreign keys, migration state). |
+| `GET`/`DELETE /system/backups/{id}` | Read or delete one snapshot. `latest` names the newest (also for `verify`). |
+| `POST /system/backups/{id}/verify` | Check the manifest, every file's size and SHA-256, and that no extra files exist. SQLite: open the copied database read-only (integrity, foreign keys, migration state). PostgreSQL: `pg_verifybackup` (bundled) or `pg_restore --list` (external), and the schema version against this build. |
 | `POST /system/backups/prune` | Apply a retention policy (`keep_last`, `max_age_days`). |
 
 Restore is not an HTTP operation, because it replaces files the running server
@@ -235,3 +235,23 @@ A refused anonymous request gets `401`, a signed-in non-administrator `403`.
 For `/metrics`, a scoped API key needs the scope `system:read`.
 `/health` and `/health/ready` are never gated.
 
+
+### 11.4 SQL editor (`/api/v1/sql`)
+
+`POST /sql` runs one statement, `POST /sql/batch` 1 to 1000 in one
+all-or-nothing transaction, `POST /sql/explain` returns a plan. Values go in
+`params`, never in the text.
+
+- **Placeholders.** SQLite takes `?`, `?N` and `$N`. On PostgreSQL a statement
+  with values and no `$N` may use `?`/`?N` (translated); a statement that uses
+  `$N`, or has no values, is sent as written, so `?`, `?|` and `?&` are the
+  `jsonb` operators: `SELECT data ? 'k' FROM t WHERE id = $1`.
+- **Secret columns.** Password fields, `password` and `token_key`, and the
+  secret columns of ForgeBase's system tables (`*_hash`, `*_enc`, `private_*`,
+  and names with a `password`, `secret`, `token` or `sealed` word) are masked
+  in results (`"secrets_masked": true`), and a statement that names one is
+  refused with `403`. `"show_secrets": true` shows them; each use is audited
+  (`sql.show_secrets`). On PostgreSQL the editor's role also has no `SELECT` on
+  them, so `SELECT *` of such a table is refused there unless `show_secrets` is
+  set. On SQLite this is a guard in front of an administrator's tool, not a
+  boundary: a column name built at run time is not seen.

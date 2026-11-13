@@ -221,6 +221,12 @@ impl Store {
         if k.is_empty() {
             return Err(KvError::InvalidKey("key must not be empty".into()));
         }
+        // PostgreSQL `text` cannot hold U+0000, and a key the flusher cannot
+        // write would hold back every other change of its set. Refused on both
+        // backends, so a SQLite project stays convertible.
+        if k.contains('\0') {
+            return Err(KvError::InvalidKey("key must not contain a NUL character".into()));
+        }
         if k.len() > self.cfg.max_key_bytes {
             return Err(KvError::InvalidKey(format!(
                 "key longer than {} bytes",

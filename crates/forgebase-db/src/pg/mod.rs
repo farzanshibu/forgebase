@@ -243,6 +243,18 @@ impl PgDatabase {
         self.inner.schema_gen.fetch_add(1, Ordering::AcqRel);
     }
 
+    /// The SQL of `stmt` with `$N` placeholders: `?N` translated, or for a
+    /// statement written with `$N` ([`Statement::native_placeholders`]) as
+    /// it is, `?` operators included.
+    fn translate_stmt(&self, stmt: &Statement) -> Result<Arc<Translated>, DbError> {
+        if stmt.native_placeholders {
+            return placeholders::translate_native(&stmt.sql)
+                .map(Arc::new)
+                .map_err(|e| DbError::Statement(e.to_string()));
+        }
+        self.translate(&stmt.sql)
+    }
+
     /// `?N` → `$N`, cached per SQL text.
     fn translate(&self, sql: &str) -> Result<Arc<Translated>, DbError> {
         if let Some(t) = self.inner.sql.lock().unwrap_or_else(|p| p.into_inner()).get(sql) {
@@ -499,15 +511,22 @@ impl PgDatabase {
             ))
             .await?;
         if installed.scalar().and_then(Value::as_i64) != Some(1) {
+            // On a server you run, the login usually may not install it
+            // (amcheck needs a superuser): `doctor` then skips the index
+            // check with a warning instead of failing.
             if self.inner.read_only {
                 return Err(DbError::Unsupported(
                     "the amcheck extension is not installed in this database".into(),
                 ));
             }
+            // In `public`, like `/system/extensions`, whatever the login's
+            // `search_path` puts first.
             let mut tx = self.begin_tx(TxMode::Normal).await?;
-            tx.execute(&Statement::raw("CREATE EXTENSION IF NOT EXISTS amcheck"))
-                .await
-                .map_err(|e| DbError::Unsupported(format!("the amcheck extension is not available: {e}")))?;
+            tx.execute(&Statement::raw(
+                "CREATE EXTENSION IF NOT EXISTS amcheck WITH SCHEMA public",
+            ))
+            .await
+            .map_err(|e| DbError::Unsupported(format!("the amcheck extension is not available: {e}")))?;
             Box::new(tx).commit().await?;
         }
         let indexes = self
@@ -1018,7 +1037,8 @@ fn indeterminate_param(e: &sqlx::Error) -> Option<usize> {
 }
 
 async fn prepare(db: &PgDatabase, conn: &mut sqlx::PgConnection, stmt: &Statement) -> Result<Prepared, RunError> {
-    let tr = db.translate(&stmt.sql)?;
+    crate::backend::refuse_nul(stmt)?;
+    let tr = db.translate_stmt(stmt)?;
     let n = tr.max_param.max(stmt.params.len());
     if n == 0 {
         return Ok(Prepared {
@@ -1138,7 +1158,7 @@ async fn fetch(db: &PgDatabase, conn: &mut sqlx::PgConnection, stmt: &Statement)
 /// and without parameters (with parameters, [`prepare`] has already prepared
 /// and cached a named one, which sqlx then reuses).
 fn runs_unnamed(db: &PgDatabase, stmt: &Statement) -> Result<bool, DbError> {
-    Ok(!stmt.cache && stmt.params.is_empty() && db.translate(&stmt.sql)?.max_param == 0)
+    Ok(!stmt.cache && stmt.params.is_empty() && db.translate_stmt(stmt)?.max_param == 0)
 }
 
 /// [`fetch`] of an unnamed statement inside a write transaction. sqlx can
@@ -1172,7 +1192,7 @@ async fn execute(db: &PgDatabase, conn: &mut sqlx::PgConnection, stmt: &Statemen
     if stmt.params.is_empty() && !stmt.cache {
         // One-off statements without parameters (DDL, scripts) use the simple
         // protocol, which, like SQLite, accepts several statements.
-        let tr = db.translate(&stmt.sql)?;
+        let tr = db.translate_stmt(stmt)?;
         if tr.max_param == 0 {
             let done = sqlx::raw_sql(AssertSqlSafe(stmt.sql.clone()))
                 .execute(&mut *conn)

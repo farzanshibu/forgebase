@@ -190,6 +190,10 @@ async fn scenario_02_create_sql_table() {
         .unwrap();
     let books = svc.describe_table(&ctx, "books").await.unwrap();
     assert!(books.columns.iter().any(|c| c.name == "isbn"));
+    // Both engines give the table's definition (PostgreSQL rebuilds it from
+    // the catalog).
+    let ddl = books.sql.as_deref().unwrap_or_default().to_ascii_lowercase();
+    assert!(ddl.starts_with("create table") && ddl.contains("isbn"), "{ddl}");
     assert!(books.indexes.contains(&"books_author".to_string()));
     let history = svc.schema_history(&ctx, None).await.unwrap();
     assert!(
@@ -1342,13 +1346,19 @@ async fn semantics_shared_by_both_engines() {
     assert_eq!(count("flag = true").await, 2);
     assert_eq!(count("flag = false").await, 2);
 
-    // `~` is a case-insensitive substring match: ASCII letters on SQLite;
-    // on PostgreSQL `ILIKE` folds what the database's ctype folds (Unicode
-    // with the bundled engine's builtin C.UTF-8, ASCII with libc "C", as the
-    // test engine runs), so only ASCII folding is asserted here.
+    // `~` is a case-insensitive substring match. SQLite folds every letter
+    // (`LIKE` for ASCII values, a `(?i)` REGEXP for others); on PostgreSQL
+    // `ILIKE` folds what the database's ctype folds (Unicode with the bundled
+    // engine's builtin C.UTF-8, ASCII with libc "C", as the test engine
+    // runs), so Unicode folding is asserted on SQLite only.
     assert_eq!(count("title ~ 'BET'").await, 1);
     assert_eq!(count("title !~ 'a'").await, 1);
     assert_eq!(count("title ~ 'éco'").await, 1);
+    if db.kind() == forgebase_db::BackendKind::Sqlite {
+        assert_eq!(count("title ~ 'ÉCO'").await, 1, "É folds to é");
+        assert_eq!(count("title !~ 'ÉCOLE'").await, 4);
+        assert_eq!(count("title ~ 'é.o'").await, 0, "the value is literal, not a pattern");
+    }
     assert_eq!(count("title:lower = 'beta'").await, 1);
 
     // JSON round trip: the document comes back as JSON (key order may differ).
@@ -1543,4 +1553,41 @@ async fn rules_over_stored_rows_see_typed_columns() {
         assert!(hidden.is_none());
     }
     db.close().await;
+}
+
+/// U+0000 in a record value (a text field, inside a JSON field, in a
+/// flexible document) is refused on both engines as a field error.
+#[tokio::test]
+async fn nul_characters_in_record_values_are_refused() {
+    let test = test_db().await;
+    let db: &Database = &test;
+    let svc = service(db).await;
+    let ctx = admin();
+    let mut coll = Collection::base("nul_docs")
+        .with_field(Field::new(
+            "title",
+            FieldKind::Text {
+                min_length: None,
+                max_length: None,
+            },
+        ))
+        .with_field(Field::new("meta", FieldKind::Json { max_size: None }));
+    coll.schema_mode = forgebase_data::schema::SchemaMode::Flexible;
+    svc.create_collection(&ctx, coll).await.unwrap();
+    for (doc, field) in [
+        (json!({"title": "a\u{0}b"}), "title"),
+        (json!({"meta": {"k": ["ok", "x\u{0}"]}}), "meta"),
+        (json!({"extra": "y\u{0}"}), "extra"),
+    ] {
+        let err = svc.create_record(&ctx, "nul_docs", doc.clone()).await.unwrap_err();
+        let text = format!("{err:?}");
+        assert!(text.contains("nul_character") && text.contains(field), "{doc}: {text}");
+    }
+    svc.create_record(
+        &ctx,
+        "nul_docs",
+        json!({"title": "fine", "meta": {"k": "\\u0000 as text"}}),
+    )
+    .await
+    .unwrap();
 }

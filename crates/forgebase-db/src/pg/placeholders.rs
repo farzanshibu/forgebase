@@ -45,6 +45,16 @@ fn is_ident_char(c: u8) -> bool {
 
 /// Rewrites `?N` and `?` to `$N`.
 pub fn translate(sql: &str) -> Result<Translated, PlaceholderError> {
+    translate_with(sql, true)
+}
+
+/// [`translate`] for text that uses `$N` only: every `?` stays as it is (the
+/// `jsonb` operators `?`, `?|` and `?&`); the `$N` already there are counted.
+pub fn translate_native(sql: &str) -> Result<Translated, PlaceholderError> {
+    translate_with(sql, false)
+}
+
+fn translate_with(sql: &str, question_marks: bool) -> Result<Translated, PlaceholderError> {
     let b = sql.as_bytes();
     let mut out = String::with_capacity(sql.len() + 8);
     let mut used = BTreeSet::new();
@@ -86,6 +96,7 @@ pub fn translate(sql: &str) -> Result<Translated, PlaceholderError> {
                     i += 1;
                 }
             }
+            b'?' if !question_marks => i += 1,
             b'?' => {
                 out.push_str(&sql[copied..i]);
                 let end = digits_end(b, i + 1);
@@ -209,6 +220,19 @@ mod tests {
     }
 
     #[test]
+    fn native_text_keeps_the_jsonb_question_mark_operators() {
+        let sql = "SELECT d ? 'k', d ?| array['a'], d ?& array['b'] FROM t WHERE id = $2 AND n > $1";
+        let tr = translate_native(sql).unwrap();
+        assert_eq!(tr.sql, sql);
+        assert_eq!(tr.max_param, 2);
+        assert_eq!(tr.used.iter().copied().collect::<Vec<_>>(), vec![1, 2]);
+        let tr = translate_native("SELECT '{\"a\":1}'::jsonb ? 'a'").unwrap();
+        assert_eq!(tr.max_param, 0);
+        // ForgeBase's own SQL still translates them.
+        assert_eq!(translate("SELECT d ? 'k'").unwrap().sql, "SELECT d $1 'k'");
+    }
+
+    #[test]
     fn numbered_and_bare_placeholders() {
         assert_eq!(
             t("SELECT * FROM a WHERE x = ?1 AND y = ?2"),
@@ -279,6 +303,7 @@ mod tests {
 
     #[test]
     fn out_of_range_numbers_are_refused() {
+        assert!(matches!(translate_native("$0"), Err(PlaceholderError::OutOfRange(_))));
         assert!(matches!(translate("?0"), Err(PlaceholderError::OutOfRange(_))));
         assert!(matches!(translate("?65536"), Err(PlaceholderError::OutOfRange(_))));
         assert!(matches!(

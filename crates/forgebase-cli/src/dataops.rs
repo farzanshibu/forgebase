@@ -206,6 +206,21 @@ enum BackupCommand {
     },
 }
 
+/// Cluster backups in `<backups>/clusters/`, newest first.
+fn cluster_backups(layout: &DataLayout) -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = std::fs::read_dir(layout.backups_dir().join("clusters"))
+        .map(|d| {
+            d.flatten()
+                .map(|e| e.path())
+                .filter(|p| topology::is_cluster_backup(p))
+                .collect()
+        })
+        .unwrap_or_default();
+    out.sort();
+    out.reverse();
+    out
+}
+
 fn resolve_backup(store: &SnapshotStore, spec: &str) -> anyhow::Result<PathBuf> {
     let as_path = Path::new(spec);
     if as_path.join(forgebase_backup::manifest::MANIFEST).is_file() || topology::is_cluster_backup(as_path) {
@@ -229,14 +244,29 @@ pub async fn run_backup(g: &GlobalArgs, cli: BackupCli) -> anyhow::Result<ExitCo
         None => create(&config, &layout, &store, cli.create).await,
         Some(BackupCommand::List { json: as_json }) => {
             let all = store.list()?;
+            let clusters = cluster_backups(&layout);
             if as_json {
                 print_json(&json!({ "dir": store.dir(), "snapshots": all.iter().map(|s| json!({
                     "id": s.id, "created": s.manifest.created, "label": s.manifest.label,
                     "schema_version": s.manifest.schema_version, "bytes": s.manifest.total_bytes(),
                     "engine": s.manifest.engine_info(),
                     "files": s.manifest.files.len(), "master_key_included": s.manifest.master_key.included,
+                })).collect::<Vec<_>>(),
+                "cluster_backups": clusters.iter().map(|p| json!({
+                    "path": p, "name": p.file_name().map(|n| n.to_string_lossy().into_owned()),
                 })).collect::<Vec<_>>() }))?;
-            } else if all.is_empty() {
+                return Ok(ExitCode::SUCCESS);
+            }
+            // `backup --cluster` writes to backups/clusters/ by default; they
+            // are not snapshots (no retention, `restore` takes the path).
+            for p in &clusters {
+                println!(
+                    "cluster backup  {}  (restore with `forgebase restore {}`)",
+                    p.display(),
+                    p.display()
+                );
+            }
+            if all.is_empty() {
                 println!("no snapshots in {}", store.dir().display());
             } else {
                 for s in &all {
@@ -737,6 +767,7 @@ pub async fn run_restore(g: &GlobalArgs, cli: RestoreCli) -> anyhow::Result<Exit
             skip_indexes: cli.no_indexes,
             pg,
             crash_after: None,
+            fail_swap: false,
         },
     )
     .await?;
@@ -792,6 +823,7 @@ async fn restore_cluster_cli(
                 skip_indexes: cli.no_indexes,
                 pg: pg_tools(config, layout).await,
                 crash_after: None,
+                fail_swap: false,
             },
             ..ClusterRestoreOptions::default()
         },

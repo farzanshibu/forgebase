@@ -321,3 +321,57 @@ async fn single_collection_files_in_json_ndjson_and_csv() {
         Err(BackupError::Invalid(_))
     ));
 }
+
+/// A conflict is found before anything is written, and a record that fails
+/// halfway removes the collections the run created: an import is all or
+/// nothing for the collections it makes.
+#[tokio::test]
+async fn a_conflict_or_a_failed_record_leaves_nothing_imported() {
+    use forgebase_data::schema::Collection;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let a = open(&tmp.path().join("a")).await;
+    a.seed(5).await;
+    let dir = tmp.path().join("bundle");
+    transfer::export_bundle(&a.data, &dir, ExportOptions::default())
+        .await
+        .unwrap();
+
+    // The target has `books` but not `authors` (which the bundle lists first).
+    let b = open(&tmp.path().join("b")).await;
+    b.data
+        .create_collection(&admin(), Collection::base("books"))
+        .await
+        .unwrap();
+    let err = transfer::import_bundle(&b.data, &dir, ImportOptions::default())
+        .await
+        .unwrap_err();
+    assert!(matches!(err, BackupError::Conflict(_)), "{err}");
+    assert!(err.to_string().contains("nothing was imported"), "{err}");
+    assert!(
+        b.data.get_collection(&admin(), "authors").await.is_err(),
+        "authors was not created before the conflict was found"
+    );
+
+    // A record that fails after `authors` and `books` were made.
+    let books = dir.join("collections/books.ndjson");
+    let mut text = std::fs::read_to_string(&books).unwrap();
+    text.push_str("{\"id\":\"bad00000000001\",\"title\":12345}\n");
+    std::fs::write(&books, text).unwrap();
+    let meta = dir.join("bundle.json");
+    let mut bundle: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&meta).unwrap()).unwrap();
+    for c in bundle["collections"].as_array_mut().unwrap() {
+        c.as_object_mut().unwrap().remove("sha256");
+    }
+    std::fs::write(&meta, serde_json::to_string(&bundle).unwrap()).unwrap();
+    let c = open(&tmp.path().join("c")).await;
+    let err = transfer::import_bundle(&c.data, &dir, ImportOptions::default())
+        .await
+        .unwrap_err();
+    for name in ["authors", "books"] {
+        assert!(
+            c.data.get_collection(&admin(), name).await.is_err(),
+            "{name} was removed again after: {err}"
+        );
+    }
+}
