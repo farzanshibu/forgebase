@@ -35,6 +35,26 @@ pub const MAX_DELIVERY_ATTEMPTS: i64 = 100;
 pub const MAX_PULL: i64 = 1000;
 /// Most ack ids in one ack, nack or deadline change.
 pub const MAX_ACK_IDS: usize = 1000;
+/// Shortest subscription time to live (`ttl_ms`).
+pub const MIN_SUBSCRIPTION_TTL_MS: i64 = 60_000;
+/// Longest subscription time to live (31 days).
+pub const MAX_SUBSCRIPTION_TTL_MS: i64 = 31 * 86_400_000;
+/// Default grace window of a secret rotation (24 hours).
+pub const DEFAULT_SECRET_GRACE_MS: i64 = 86_400_000;
+/// Longest grace window of a secret rotation (7 days).
+pub const MAX_SECRET_GRACE_MS: i64 = 7 * 86_400_000;
+/// Most consecutive failures `pause_after_failures` may name.
+pub const MAX_PAUSE_AFTER_FAILURES: i64 = 1000;
+/// Rolling window of the endpoint health of a push subscription (1 hour).
+pub const HEALTH_WINDOW_MS: i64 = 3_600_000;
+/// Most recent attempts the endpoint health looks at.
+pub const HEALTH_MAX_ATTEMPTS: i64 = 1000;
+/// Most dead letters one redrive call handles.
+pub const MAX_REDRIVE: i64 = 1000;
+/// Longest topic description (characters).
+pub const MAX_DESCRIPTION: usize = 1024;
+/// Largest topic example (serialized bytes).
+pub const MAX_EXAMPLE_BYTES: usize = 64 * 1024;
 
 /// Limits and timings of the queue service. The defaults suit one embedded
 /// instance; the server fills them from the `[queue]` config section.
@@ -72,6 +92,14 @@ pub struct QueueSettings {
     pub messages_feature: Option<String>,
     /// Quota feature counting published bytes; `None` turns it off.
     pub bytes_feature: Option<String>,
+    /// Bytes of a push endpoint's response body kept per attempt (ADR-0031).
+    pub push_response_body_bytes: usize,
+    /// Push attempts kept per subscription in the attempt log.
+    pub push_attempts_per_subscription: i64,
+    /// How long push attempts are kept in the attempt log.
+    pub push_attempts_retention_ms: i64,
+    /// Test sends one push subscription may make per minute.
+    pub push_test_sends_per_minute: u32,
 }
 
 impl Default for QueueSettings {
@@ -92,6 +120,10 @@ impl Default for QueueSettings {
             dead_letter_retention_ms: 14 * 86_400_000,
             messages_feature: Some("queue.messages".into()),
             bytes_feature: Some("queue.bytes".into()),
+            push_response_body_bytes: 4096,
+            push_attempts_per_subscription: 1000,
+            push_attempts_retention_ms: 7 * 86_400_000,
+            push_test_sends_per_minute: 10,
         }
     }
 }
@@ -138,6 +170,13 @@ pub struct NewTopic {
     /// Free-form labels.
     #[serde(default)]
     pub labels: BTreeMap<String, String>,
+    /// What the topic's events are (event catalog; at most 1024 characters).
+    #[serde(default)]
+    pub description: Option<String>,
+    /// An example of message `data` (event catalog); must satisfy the schema when one is set.
+    #[serde(default)]
+    #[schema(value_type = Option<Object>)]
+    pub example: Option<Json>,
 }
 
 /// Body of a topic change; absent fields keep their value.
@@ -166,6 +205,16 @@ pub struct TopicPatch {
     /// Replaces the labels.
     #[serde(default)]
     pub labels: Option<BTreeMap<String, String>>,
+    /// New description; an empty string removes it.
+    #[serde(default)]
+    pub description: Option<String>,
+    /// New example of message `data`.
+    #[serde(default)]
+    #[schema(value_type = Option<Object>)]
+    pub example: Option<Json>,
+    /// Removes the example.
+    #[serde(default)]
+    pub clear_example: bool,
 }
 
 /// A topic.
@@ -190,6 +239,11 @@ pub struct Topic {
     pub source: Option<RecordSource>,
     /// Labels.
     pub labels: BTreeMap<String, String>,
+    /// What the topic's events are.
+    pub description: Option<String>,
+    /// Example of message `data`.
+    #[schema(value_type = Option<Object>)]
+    pub example: Option<Json>,
     /// Messages ever published.
     pub published_total: i64,
     /// Bytes ever published.
@@ -456,6 +510,14 @@ pub struct NewSubscription {
     /// Free-form labels.
     #[serde(default)]
     pub labels: BTreeMap<String, String>,
+    /// Push: pause delivery after this many consecutive failed attempts
+    /// (1-1000; default: never). Paused subscriptions keep their messages.
+    #[serde(default)]
+    pub pause_after_failures: Option<i64>,
+    /// Delete the subscription this long after creation (60 s to 31 days;
+    /// default: never). A later change with `ttl_ms` extends it.
+    #[serde(default)]
+    pub ttl_ms: Option<i64>,
 }
 
 /// Body of a subscription change; absent fields keep their value.
@@ -489,6 +551,12 @@ pub struct SubscriptionPatch {
     /// Replaces the labels.
     #[serde(default)]
     pub labels: Option<BTreeMap<String, String>>,
+    /// New auto-pause threshold; `0` turns auto-pause off.
+    #[serde(default)]
+    pub pause_after_failures: Option<i64>,
+    /// Delete the subscription this long from now; `0` removes the expiry.
+    #[serde(default)]
+    pub ttl_ms: Option<i64>,
 }
 
 /// A subscription.
@@ -521,6 +589,17 @@ pub struct Subscription {
     /// Webhook signing secret: returned only when it is created.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub push_secret: Option<String>,
+    /// End of the grace window of the secret a rotation replaced (RFC 3339):
+    /// until then deliveries carry a signature with each secret.
+    pub push_secret_previous_expires_at: Option<String>,
+    /// Auto-pause after this many consecutive failed push attempts.
+    pub pause_after_failures: Option<i64>,
+    /// When push delivery was paused (RFC 3339); messages accumulate until it is resumed.
+    pub paused_at: Option<String>,
+    /// Why it was paused (`auto: …` for the circuit breaker).
+    pub paused_reason: Option<String>,
+    /// When the subscription is deleted (RFC 3339).
+    pub expires_at: Option<String>,
     /// Labels.
     pub labels: BTreeMap<String, String>,
     /// Creator.
@@ -709,6 +788,47 @@ pub struct SubscriptionMetrics {
     pub acked_last_minute: i64,
     /// Average ack rate over the last 5 minutes, per second.
     pub ack_rate_per_sec: f64,
+    /// Endpoint health of a push subscription (absent for pull).
+    pub push: Option<PushHealth>,
+}
+
+/// Endpoint health of a push subscription (ADR-0031 §5): the attempts of the
+/// last hour (at most the newest 1000; test sends excluded) and the
+/// circuit-breaker state.
+#[derive(Debug, Clone, PartialEq, Serialize, ToSchema)]
+pub struct PushHealth {
+    /// Length of the rolling window in milliseconds.
+    pub window_ms: i64,
+    /// Attempts in the window.
+    pub attempts: i64,
+    /// Successful attempts in the window.
+    pub successes: i64,
+    /// Failed attempts in the window.
+    pub failures: i64,
+    /// `successes / attempts` (absent without attempts).
+    pub success_rate: Option<f64>,
+    /// Median latency in milliseconds.
+    pub latency_p50_ms: Option<i64>,
+    /// 95th percentile latency in milliseconds.
+    pub latency_p95_ms: Option<i64>,
+    /// 99th percentile latency in milliseconds.
+    pub latency_p99_ms: Option<i64>,
+    /// Failed attempts since the last success.
+    pub consecutive_failures: i64,
+    /// Last successful attempt (RFC 3339).
+    pub last_success_at: Option<String>,
+    /// Last failed attempt (RFC 3339).
+    pub last_failure_at: Option<String>,
+    /// Error of the last failed attempt.
+    pub last_error: Option<String>,
+    /// Push delivery is paused.
+    pub paused: bool,
+    /// When it was paused (RFC 3339).
+    pub paused_at: Option<String>,
+    /// Why it was paused.
+    pub paused_reason: Option<String>,
+    /// Auto-pause threshold.
+    pub pause_after_failures: Option<i64>,
 }
 
 /// A message that used up its delivery attempts.
@@ -743,6 +863,10 @@ pub struct DeadLetter {
     pub forwarded_message_id: Option<String>,
     /// When (RFC 3339).
     pub at: String,
+    /// When it was redriven to the subscription (RFC 3339); a record is redriven once.
+    pub redriven_at: Option<String>,
+    /// Who redrove it.
+    pub redriven_by: Option<String>,
 }
 
 /// Dead letters of a subscription.
@@ -763,6 +887,314 @@ pub struct MaintenanceReport {
     pub relayed: usize,
     /// Messages metered after a transactional publish.
     pub metered: usize,
+    /// Subscriptions deleted because their `ttl_ms` ran out.
+    pub expired_subscriptions: usize,
+}
+
+// --------------------------------------------------------- webhook tooling
+
+/// How a push attempt ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PushOutcome {
+    /// `2xx` (webhook) or a function that finished without error: acknowledged.
+    Success,
+    /// Anything else: negatively acknowledged (retried after the backoff).
+    Failure,
+}
+
+impl PushOutcome {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            PushOutcome::Success => "success",
+            PushOutcome::Failure => "failure",
+        }
+    }
+}
+
+/// Why a push attempt failed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PushErrorClass {
+    /// No answer within `[queue] push_timeout_secs`.
+    Timeout,
+    /// The host name did not resolve.
+    Dns,
+    /// No TCP connection could be made.
+    Connect,
+    /// The TLS handshake failed (certificate, protocol).
+    Tls,
+    /// Refused before connecting: the host resolves to a private or reserved address.
+    SsrfRefused,
+    /// The endpoint answered with a non-`2xx` status.
+    HttpStatus,
+    /// Too many redirects or an invalid `Location`.
+    Redirect,
+    /// The response was malformed, cut off or too large.
+    Protocol,
+    /// The request could not be built (size, headers).
+    InvalidRequest,
+    /// The server cannot push (no client, no signing secret).
+    Config,
+    /// The function failed.
+    Function,
+}
+
+impl PushErrorClass {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            PushErrorClass::Timeout => "timeout",
+            PushErrorClass::Dns => "dns",
+            PushErrorClass::Connect => "connect",
+            PushErrorClass::Tls => "tls",
+            PushErrorClass::SsrfRefused => "ssrf_refused",
+            PushErrorClass::HttpStatus => "http_status",
+            PushErrorClass::Redirect => "redirect",
+            PushErrorClass::Protocol => "protocol",
+            PushErrorClass::InvalidRequest => "invalid_request",
+            PushErrorClass::Config => "config",
+            PushErrorClass::Function => "function",
+        }
+    }
+
+    pub(crate) fn parse(s: &str) -> Option<Self> {
+        Some(match s {
+            "timeout" => PushErrorClass::Timeout,
+            "dns" => PushErrorClass::Dns,
+            "connect" => PushErrorClass::Connect,
+            "tls" => PushErrorClass::Tls,
+            "ssrf_refused" => PushErrorClass::SsrfRefused,
+            "http_status" => PushErrorClass::HttpStatus,
+            "redirect" => PushErrorClass::Redirect,
+            "protocol" => PushErrorClass::Protocol,
+            "invalid_request" => PushErrorClass::InvalidRequest,
+            "config" => PushErrorClass::Config,
+            "function" => PushErrorClass::Function,
+            _ => return None,
+        })
+    }
+}
+
+/// One push attempt of a subscription: a delivery or a test send (ADR-0031 §1).
+#[derive(Debug, Clone, PartialEq, Serialize, ToSchema)]
+pub struct PushAttempt {
+    /// Record id (increasing).
+    pub id: i64,
+    /// Subscription.
+    pub subscription: String,
+    /// Message delivered (`test-…` for a test send).
+    pub message_id: String,
+    /// Delivery attempt of the message, from 1.
+    pub attempt: i64,
+    /// A test send: not a message, no effect on delivery state or totals.
+    pub test: bool,
+    /// `webhook` or `function`.
+    pub kind: PushKind,
+    /// Webhook URL or function name.
+    pub endpoint: String,
+    /// When it started (RFC 3339).
+    pub at: String,
+    /// How long it took in milliseconds.
+    pub latency_ms: i64,
+    /// `success` or `failure`.
+    pub outcome: PushOutcome,
+    /// HTTP status of the answer (webhooks that answered).
+    pub status: Option<i64>,
+    /// Why it failed.
+    pub error_class: Option<PushErrorClass>,
+    /// The failure in words.
+    pub error: Option<String>,
+    /// Headers sent (the signature masked).
+    pub request_headers: BTreeMap<String, String>,
+    /// Allowlisted headers of the answer (`content-type`, `retry-after`, request ids, ...).
+    pub response_headers: BTreeMap<String, String>,
+    /// The answer's body, cut to `[queue] push_response_body_bytes` (lossy UTF-8).
+    pub response_body: Option<String>,
+    /// Full size of the answer's body in bytes.
+    pub response_bytes: Option<i64>,
+    /// The body was cut.
+    pub response_truncated: bool,
+}
+
+/// Push attempts of a subscription.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct PushAttemptPage {
+    /// Newest first.
+    pub items: Vec<PushAttempt>,
+    /// Pass as `before` for the next page; absent at the end.
+    pub next_before: Option<i64>,
+}
+
+/// Filters of an attempt listing.
+#[derive(Debug, Clone, Default)]
+pub struct AttemptQuery {
+    /// Only this outcome.
+    pub outcome: Option<PushOutcome>,
+    /// Only attempts of this message.
+    pub message_id: Option<String>,
+    /// Only attempts at or after this time (epoch ms).
+    pub since_ms: Option<i64>,
+    /// Only attempts before this time (epoch ms).
+    pub until_ms: Option<i64>,
+    /// Only test sends (`true`) or only deliveries (`false`).
+    pub test: Option<bool>,
+    /// Only records with a lower id (paging).
+    pub before: Option<i64>,
+    /// Page size, 1-500.
+    pub limit: i64,
+}
+
+/// Body of a test send (optional).
+#[derive(Debug, Clone, Default, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TestSendRequest {
+    /// `data` of the synthetic message (default: a short `forgebase.test` object).
+    #[serde(default)]
+    #[schema(value_type = Option<Object>)]
+    pub data: Option<Json>,
+}
+
+/// Body of a redrive: `ids`, or `all` (optionally filtered).
+#[derive(Debug, Clone, Default, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RedriveRequest {
+    /// Dead-letter record ids (1-1000).
+    #[serde(default)]
+    pub ids: Vec<i64>,
+    /// Every dead letter of the subscription not yet redriven (oldest first, at most `limit`).
+    #[serde(default)]
+    pub all: bool,
+    /// With `all`: only records dead-lettered at or after this RFC 3339 time.
+    #[serde(default)]
+    pub since: Option<String>,
+    /// With `all`: only records whose message attributes match this filter (subscription filter syntax).
+    #[serde(default)]
+    #[schema(value_type = Option<Object>)]
+    pub filter: Option<Json>,
+    /// With `all`: most records to redrive in this call (1-1000, default 1000).
+    #[serde(default)]
+    pub limit: Option<i64>,
+}
+
+/// Outcome of a redrive.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, ToSchema)]
+pub struct RedriveResult {
+    /// Records delivered to the subscription again (attempt counter reset).
+    pub redriven: Vec<i64>,
+    /// Records that were redriven before (each record is redriven once).
+    pub already_redriven: Vec<i64>,
+    /// Ids that are not dead letters of this subscription.
+    pub not_found: Vec<i64>,
+    /// With `all`: matching records left for another call.
+    pub remaining: i64,
+}
+
+/// Body of a "retry now" (optional).
+#[derive(Debug, Clone, Default, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RetryRequest {
+    /// Only these messages (default: every message waiting for a retry backoff).
+    #[serde(default)]
+    pub message_ids: Vec<String>,
+}
+
+/// Outcome of a "retry now".
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, ToSchema)]
+pub struct RetryResult {
+    /// Deliveries that were waiting for a backoff and are ready now.
+    pub count: i64,
+}
+
+/// Body of a secret rotation (optional).
+#[derive(Debug, Clone, Default, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RotateSecretRequest {
+    /// How long the old secret keeps signing too, 0 to 7 days (default 24 hours; `0` drops it at once).
+    #[serde(default)]
+    pub grace_ms: Option<i64>,
+}
+
+/// A rotated webhook secret.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct RotatedSecret {
+    /// Subscription.
+    pub subscription: String,
+    /// The new signing secret: shown only here.
+    pub push_secret: String,
+    /// Until when deliveries are also signed with the old secret (RFC 3339; absent with no grace).
+    pub previous_expires_at: Option<String>,
+}
+
+/// Body of a pause (optional).
+#[derive(Debug, Clone, Default, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PauseRequest {
+    /// Why (shown as `paused_reason`; at most 500 characters).
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+/// Where an example in the catalog comes from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ExampleSource {
+    /// The topic's `example`.
+    Topic,
+    /// Derived from the topic schema or the collection's fields.
+    Schema,
+    /// Nothing describes the data.
+    None,
+}
+
+/// One kind of event of a record-source topic.
+#[derive(Debug, Clone, PartialEq, Serialize, ToSchema)]
+pub struct CatalogEventType {
+    /// `created`, `updated` or `deleted`.
+    #[serde(rename = "type")]
+    pub event_type: String,
+    /// The record operation (`create`, `update`, `delete`): attribute `forgebase.op`.
+    pub op: String,
+    /// What it means.
+    pub description: String,
+    /// A subscription filter that selects only this event type.
+    #[schema(value_type = Object)]
+    pub filter: Json,
+    /// JSON Schema of the message `data`.
+    #[schema(value_type = Object)]
+    pub data_schema: Json,
+    /// Example message `data`.
+    #[schema(value_type = Object)]
+    pub example: Json,
+}
+
+/// A subscribable topic in the event catalog.
+#[derive(Debug, Clone, PartialEq, Serialize, ToSchema)]
+pub struct CatalogTopic {
+    /// Topic name.
+    pub topic: String,
+    /// Owning tenant.
+    pub tenant: Option<String>,
+    /// What the topic's events are.
+    pub description: Option<String>,
+    /// JSON Schema of message `data` (the topic schema; for a record source, the change event).
+    #[schema(value_type = Option<Object>)]
+    pub data_schema: Option<Json>,
+    /// Example message `data`.
+    #[schema(value_type = Object)]
+    pub example: Json,
+    /// Where `example` comes from.
+    pub example_source: ExampleSource,
+    /// Record-change source.
+    pub source: Option<RecordSource>,
+    /// For a record source: its event types (empty otherwise).
+    pub event_types: Vec<CatalogEventType>,
+}
+
+/// The subscribable event types: every topic the caller may read.
+#[derive(Debug, Clone, PartialEq, Serialize, ToSchema)]
+pub struct EventCatalog {
+    /// By topic name.
+    pub topics: Vec<CatalogTopic>,
 }
 
 // --------------------------------------------------------------- validation

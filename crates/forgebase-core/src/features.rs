@@ -719,6 +719,32 @@ const QUEUES: &[SettingDef] = &[
         "How many days messages that failed delivery too many times (dead letters) are kept for inspection and replay. 14 is a good value.",
     )
     .unit("days"),
+    SettingDef::new(
+        "queue.push_response_body_bytes",
+        "Logged response body",
+        Int,
+        "How much of a webhook's response body each delivery attempt keeps in the attempt log, from 0 to 65536 bytes. 4096 is a good value.",
+    )
+    .unit("bytes"),
+    SettingDef::new(
+        "queue.push_attempts_per_subscription",
+        "Attempts kept per subscription",
+        Int,
+        "How many recent delivery attempts the attempt log keeps for each push subscription, from 1 to 100000. 1000 is a good value.",
+    ),
+    SettingDef::new(
+        "queue.push_attempts_retention_secs",
+        "Attempt log retention",
+        Int,
+        "How long delivery attempts stay in the attempt log, from 60 seconds to 31 days. 604800 (7 days) is a good value.",
+    )
+    .unit("seconds"),
+    SettingDef::new(
+        "queue.push_test_sends_per_minute",
+        "Test sends per minute",
+        Int,
+        "How many test events one push subscription may send per minute, from 1 to 1000. 10 is a good value.",
+    ),
 ];
 
 const REALTIME: &[SettingDef] = &[
@@ -837,14 +863,24 @@ const RESP: &[SettingDef] = &[
     .env("FORGEBASE_RESP_IDLE_TIMEOUT_SECS"),
 ];
 
-const BILLING: &[SettingDef] = &[SettingDef::new(
-    "billing.enabled",
-    "Billing",
-    Bool,
-    "Turns billing on or off: plans, subscriptions, invoices and payment provider webhooks under /api/v1/billing (test mode only in this version). Turn it off if you do not charge your users.",
-)
-.env("FORGEBASE_BILLING_ENABLED")
-.flag("--billing")];
+const BILLING: &[SettingDef] = &[
+    SettingDef::new(
+        "billing.enabled",
+        "Billing",
+        Bool,
+        "Turns billing on or off: plans, subscriptions, invoices and payment provider webhooks under /api/v1/billing (test mode only in this version). Turn it off if you do not charge your users.",
+    )
+    .env("FORGEBASE_BILLING_ENABLED")
+    .flag("--billing"),
+    SettingDef::new(
+        "billing.webhook_log_retention_days",
+        "Webhook log retention",
+        Int,
+        "How many days every incoming payment provider webhook (headers, body, whether its signature checked out and what it changed) is kept for inspection and replay. Bodies can hold customer names and emails. 30 is a good value.",
+    )
+    .unit("days")
+    .env("FORGEBASE_BILLING_WEBHOOK_LOG_RETENTION_DAYS"),
+];
 
 /// `[mcp]`: the MCP server for AI agents (ADR-0030).
 const MCP: &[SettingDef] = &[SettingDef::new(

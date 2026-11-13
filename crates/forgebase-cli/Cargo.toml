@@ -33,14 +33,19 @@ forgebase-db.workspace = true
 forgebase-observability.workspace = true
 forgebase-pgengine.workspace = true
 forgebase-policy.workspace = true
+# `queues listen` signs forwarded deliveries like webhook pushes (ADR-0031).
+forgebase-queue.workspace = true
 forgebase-server.workspace = true
 fs4.workspace = true
+futures-util = { workspace = true, features = ["sink"] }
 serde.workspace = true
 serde_json.workspace = true
 time.workspace = true
 toml_edit.workspace = true
 # process: `forgebase db psql` runs the engine's psql.
 tokio = { workspace = true, features = ["process"] }
+# `queues listen` consumes the WebSocket streaming pull (plain ws:// like the rest of the CLI).
+tokio-tungstenite.workspace = true
 tracing.workspace = true
 
 # `init` refuses the bundled PostgreSQL as root before it writes anything.
@@ -50,10 +55,8 @@ rustix = { version = "1.1.6", default-features = false, features = ["std", "proc
 [dev-dependencies]
 # node_e2e mounts the agent endpoints (FB-168) on a test router.
 axum.workspace = true
-futures-util = { workspace = true, features = ["sink"] }
 sha2.workspace = true
 tempfile.workspace = true
-tokio-tungstenite.workspace = true
 wat.workspace = true
 
 # Workspace-level integration tests live in /tests (owned by the repo, not by

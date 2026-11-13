@@ -1,0 +1,22 @@
+# forgebase.toml for the bundled PostgreSQL (the default of the standard image).
+# Keys are those of forgebase.example.toml; unknown keys stop ForgeBase at
+# startup. No secrets in this file: it lands in a ConfigMap.
+data_dir = "/data"
+
+[server]
+host = "0.0.0.0"
+port = 8090
+# loopback: administrators from anywhere, plus callers on the same host.
+# Prometheus on another pod needs an API key (docs/deployment.md, §5).
+ops_access = "loopback"
+# public_url = "https://forgebase.example.com"
+
+[database]
+backend = "postgres"
+
+[database.postgres]
+mode = "managed"
+
+[log]
+format = "json"
+level = "info"

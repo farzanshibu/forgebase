@@ -1,0 +1,16 @@
+# Ingress with TLS from cert-manager.
+publicUrl: https://forgebase.example.com
+trustForwardedFor: true
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+  hosts:
+    - host: forgebase.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  certManager:
+    clusterIssuer: letsencrypt-prod

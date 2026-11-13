@@ -308,6 +308,7 @@ pub static TABLES: &[TablePlacement] = &[
     control("_forgebase_billing_sync_events"),
     control("_forgebase_billing_tax_rates"),
     control("_forgebase_billing_usage_records"),
+    control("_forgebase_billing_webhook_deliveries"),
     control("_forgebase_billing_webhook_events"),
     control("_forgebase_credit_accounts"),
     control("_forgebase_credit_allocations"),
@@ -428,6 +429,14 @@ pub static TABLES: &[TablePlacement] = &[
     ),
     child(
         "_forgebase_queue_dead_letters",
+        "subscription",
+        "_forgebase_queue_subscriptions",
+        "name",
+        COPY,
+    ),
+    // Push attempt log (ADR-0031, 0050_queue_push_attempts).
+    child(
+        "_forgebase_queue_push_attempts",
         "subscription",
         "_forgebase_queue_subscriptions",
         "name",

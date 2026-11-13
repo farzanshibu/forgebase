@@ -1,0 +1,9 @@
+# Optional: an Ingress with TLS from cert-manager. Edit the host, the class and
+# the issuer in ingress.yaml, then add to an overlay:
+#   components:
+#     - ../../components/ingress
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+resources:
+  - ingress.yaml

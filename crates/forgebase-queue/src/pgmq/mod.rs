@@ -208,12 +208,34 @@ impl QueueService {
         head: i64,
         now: i64,
     ) -> Result<i64> {
+        // `send_batch` refuses an empty batch: a range can hold only copies
+        // of redriven dead letters addressed to other subscriptions (ADR-0031 §3).
+        let owed = scalar(
+            &tx.fetch_all(&Statement::new(
+                format!(
+                    "SELECT COUNT(*) FROM _forgebase_queue_messages WHERE topic = ?1 AND seq > ?2 AND seq <= ?3 \
+                     AND {}",
+                    crate::service::for_sub("", 4)
+                ),
+                vec![
+                    sub.topic.as_str().into(),
+                    cursor.into(),
+                    head.into(),
+                    sub.name.as_str().into(),
+                ],
+            ))
+            .await?,
+        );
+        if owed == 0 {
+            return Ok(0);
+        }
         let rows = tx
             .fetch_all(&Statement::new(
                 format!(
                     "SELECT COUNT(*) FROM pgmq.send_batch(CAST(?1 AS TEXT), ARRAY(SELECT {} \
-                     FROM _forgebase_queue_messages WHERE topic = ?2 AND seq > ?3 AND seq <= ?5 ORDER BY seq), {})",
+                     FROM _forgebase_queue_messages WHERE topic = ?2 AND seq > ?3 AND seq <= ?5 AND {} ORDER BY seq), {})",
                     body("seq", "ordering_key"),
+                    crate::service::for_sub("", 6),
                     ts(4)
                 ),
                 vec![
@@ -222,6 +244,7 @@ impl QueueService {
                     cursor.into(),
                     now.into(),
                     head.into(),
+                    sub.name.as_str().into(),
                 ],
             ))
             .await?;
@@ -539,6 +562,64 @@ impl QueueService {
     /// Whether `sub` has an entry visible at `now` (ready or expired).
     pub(crate) fn pgmq_has_work_sql(sub: &str) -> String {
         format!("EXISTS (SELECT 1 FROM {} WHERE vt <= {})", table(sub), ts(2))
+    }
+
+    /// Owes message `seq` to `sub` again (a redrive), unless an entry for
+    /// it exists. Returns whether one was sent.
+    pub(crate) async fn pgmq_redeliver(
+        &self,
+        tx: &mut dyn WriteTx,
+        sub: &str,
+        seq: i64,
+        key: Option<String>,
+        now: i64,
+    ) -> Result<bool> {
+        let rows = tx
+            .fetch_all(&Statement::new(
+                format!(
+                    "SELECT 1 FROM {} WHERE CAST(message->>'seq' AS BIGINT) = ?1",
+                    table(sub)
+                ),
+                vec![seq.into()],
+            ))
+            .await?;
+        if !rows.rows.is_empty() {
+            return Ok(false);
+        }
+        Ok(self.pgmq_send(tx, sub, &[(seq, key)], now).await? > 0)
+    }
+
+    /// Entries of `sub` waiting for a retry backoff (not leased, visible
+    /// later) become visible at `now`; with `message_ids` only theirs.
+    pub(crate) async fn pgmq_retry_now(
+        &self,
+        tx: &mut dyn WriteTx,
+        sub: &str,
+        now: i64,
+        message_ids: &[String],
+    ) -> Result<u64> {
+        let mut params: Vec<forgebase_db::Value> = vec![now.into()];
+        params.extend(message_ids.iter().map(|m| forgebase_db::Value::from(m.as_str())));
+        let only = if message_ids.is_empty() {
+            String::new()
+        } else {
+            format!(
+                " AND CAST(message->>'seq' AS BIGINT) IN (SELECT seq FROM _forgebase_queue_messages WHERE id IN ({}))",
+                crate::tooling::marks(2, message_ids.len())
+            )
+        };
+        Ok(tx
+            .execute(&Statement::new(
+                format!(
+                    "UPDATE {} SET vt = {} WHERE message->>'consumer' IS NULL AND vt > {}{only}",
+                    table(sub),
+                    ts(1),
+                    ts(1)
+                ),
+                params,
+            ))
+            .await?
+            .rows_affected)
     }
 
     /// Drops every entry of `sub` (a seek).

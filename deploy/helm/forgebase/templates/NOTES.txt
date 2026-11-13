@@ -1,0 +1,54 @@
+ForgeBase {{ .Chart.AppVersion }} is installed as {{ include "forgebase.fullname" . }} (one pod, {{ include "forgebase.podName" . }}).
+{{- if include "forgebase.managedPostgres" . }}
+Database: the bundled PostgreSQL, inside the pod, on the PVC.
+{{- else if include "forgebase.externalPostgres" . }}
+Database: your external PostgreSQL server (URL from a Secret).
+{{- else }}
+Database: SQLite, one file on the PVC.
+{{- end }}
+
+The first start unpacks the engine, creates the database and applies the
+migrations; the pod stays "not ready" until that is done (up to 15 minutes).
+  kubectl --namespace {{ .Release.Namespace }} rollout status statefulset/{{ include "forgebase.fullname" . }}
+  kubectl --namespace {{ .Release.Namespace }} logs {{ include "forgebase.podName" . }} -f
+
+Reach it:
+{{- if .Values.ingress.enabled }}
+{{- range .Values.ingress.hosts }}
+  https://{{ .host }}/admin/
+{{- end }}
+{{- else if .Values.httpRoute.enabled }}
+{{- range .Values.httpRoute.hostnames }}
+  https://{{ . }}/admin/
+{{- end }}
+{{- else }}
+  kubectl --namespace {{ .Release.Namespace }} port-forward svc/{{ include "forgebase.fullname" . }} {{ .Values.service.port }}:{{ .Values.service.port }}
+  then open http://127.0.0.1:{{ .Values.service.port }}/admin/
+{{- end }}
+
+Administrator:
+{{- if .Values.admin.bootstrap.enabled }}
+  {{ .Values.admin.bootstrap.email }} is created by an init container on the first start (an existing administrator is kept).
+{{- else }}
+  No administrator exists yet. The server prints a one-time setup link to its
+  standard output while it is in setup mode:
+    kubectl --namespace {{ .Release.Namespace }} logs {{ include "forgebase.podName" . }} | grep 'First run'
+  Replace the host and port in the link with your public address. Anyone who can
+  read the pod's logs can read the link: set admin.bootstrap to avoid that.
+{{- end }}
+
+Keep in mind:
+  * ForgeBase has one writer. The chart runs one replica and cannot scale out.
+  * auth/master.key (in /data/auth/) seals every stored secret and is NOT in
+    backups. Copy it somewhere safe once:
+      kubectl --namespace {{ .Release.Namespace }} exec {{ include "forgebase.podName" . }} -- cat /data/auth/master.key > master.key
+{{- if not .Values.persistence.enabled }}
+  * persistence.enabled=false: everything in the pod is lost when it restarts.
+{{- end }}
+{{- if not .Values.backup.enabled }}
+  * Backups are off. Set backup.enabled=true (see the chart README).
+{{- end }}
+{{- if and (not .Values.ingress.enabled) (not .Values.httpRoute.enabled) }}
+  * The server speaks plain HTTP. Put TLS in front of it before you expose it
+    (ingress.enabled with cert-manager, or httpRoute.enabled).
+{{- end }}

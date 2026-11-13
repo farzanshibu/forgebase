@@ -1,0 +1,9 @@
+# Optional: restrict who may reach the pod and where it may connect. Edit the
+# namespace selector (your ingress controller) and the egress rules, then add:
+#   components:
+#     - ../../components/networkpolicy
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+resources:
+  - networkpolicy.yaml

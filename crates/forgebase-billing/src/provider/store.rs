@@ -234,6 +234,23 @@ pub trait StoreProvider: Send + Sync + fmt::Debug {
     fn acknowledge<'a>(&'a self, _p: &'a StorePurchase) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move { Ok(()) })
     }
+    /// The store account notifications are for (bundle id, package name),
+    /// recorded by the webhook inspector (ADR-0032).
+    fn account(&self) -> Option<String> {
+        None
+    }
+    /// Reads a stored notification again for a replay (ADR-0032) when its
+    /// authentication cannot be repeated: Google Play's push token is
+    /// short-lived and never stored, and the purchase state is read back
+    /// from the store API anyway. `None` (the default): a replay verifies the
+    /// stored delivery again with [`Self::verify_notification`].
+    fn reread_notification<'a>(
+        &'a self,
+        _body: &'a [u8],
+        _now_ms: i64,
+    ) -> Option<BoxFuture<'a, Result<StoreNotification>>> {
+        None
+    }
 }
 
 /// Refuses a purchase made outside the store's test environment.

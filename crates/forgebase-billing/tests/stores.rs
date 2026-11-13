@@ -1384,3 +1384,236 @@ async fn store_account_config_merges_and_reads_back_without_secrets() {
     assert_eq!(acct.environment, "sandbox");
     assert_eq!(acct.config["key_id"], "KID123");
 }
+
+// ---------------------------------------------------------------------------
+// Webhook inspector (ADR-0032)
+// ---------------------------------------------------------------------------
+
+/// The newest recorded delivery of a provider.
+async fn last_delivery(env: &Env, provider: &str) -> forgebase_billing::WebhookDelivery {
+    env.billing
+        .webhook_deliveries(
+            &admin(),
+            forgebase_billing::WebhookDeliveryFilter {
+                provider: Some(provider.into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap()
+        .items
+        .remove(0)
+}
+
+#[tokio::test]
+async fn app_store_notification_is_recorded_linked_and_replayable() {
+    let env = setup().await;
+    let apple = Apple::install(&env);
+    let month = 30 * DAY;
+    let tx1 = apple_tx(
+        "2000000101",
+        "2000000101",
+        "com.forgebase.pro.monthly",
+        "Auto-Renewable Subscription",
+        T0,
+        Some(T0 + month),
+        29_990,
+    );
+    apple.status("2000000101", &tx1, &renewal("2000000101", 1, T0), 1);
+    let rec = env
+        .billing
+        .verify_store_purchase(&user("ann"), "app_store", verify_jws(&apple_jws(&tx1)))
+        .await
+        .unwrap();
+    env.clock.advance(month);
+    let tx2 = apple_tx(
+        "2000000102",
+        "2000000101",
+        "com.forgebase.pro.monthly",
+        "Auto-Renewable Subscription",
+        T0 + month,
+        Some(T0 + 2 * month),
+        29_990,
+    );
+    let body = notification(
+        "6f6d1c3e-0101",
+        "DID_RENEW",
+        None,
+        &tx2,
+        Some(&renewal("2000000101", 1, T0 + month)),
+        T0 + month,
+    );
+    let out = env.billing.handle_webhook("app_store", &[], &body).await.unwrap();
+    assert_eq!(out.result, "processed", "{out:?}");
+    let d = last_delivery(&env, "app_store").await;
+    assert_eq!(
+        (d.outcome.as_str(), d.account.as_deref(), d.event_type.as_deref()),
+        ("applied", Some(BUNDLE), Some("DID_RENEW"))
+    );
+    assert_eq!(d.links.subscription, rec.subscription_id);
+    assert_eq!(d.links.store_purchase.as_deref(), Some(rec.id.as_str()));
+    let renewal_invoice = env.billing.invoices(&user("ann"), None, None, None).await.unwrap()[0]
+        .id
+        .clone();
+    assert_eq!(d.links.invoice.as_deref(), Some(renewal_invoice.as_str()));
+    assert!(d.links.payment.is_some() && d.links.webhook_event.is_some());
+    // Replay: the JWS is verified again; the dedup makes it a no-op.
+    let r = env.billing.replay_webhook_delivery(&admin(), &d.id).await.unwrap();
+    assert_eq!(r.result, "already_applied", "{r:?}");
+    assert_eq!(
+        env.billing
+            .invoices(&user("ann"), None, None, None)
+            .await
+            .unwrap()
+            .len(),
+        2
+    );
+    // A forged notification is recorded and not processed.
+    env.clock.advance(MIN);
+    let forged = json!({"signedPayload": "eyJhbGciOiJFUzI1NiJ9.e30.c2ln"})
+        .to_string()
+        .into_bytes();
+    env.billing.handle_webhook("app_store", &[], &forged).await.unwrap_err();
+    let f = last_delivery(&env, "app_store").await;
+    assert_ne!(f.verification, forgebase_billing::WebhookVerification::Verified);
+    assert_eq!((f.processing, f.links.webhook_event), (None, None));
+}
+
+#[tokio::test]
+async fn google_play_push_is_recorded_without_its_token_and_replays() {
+    let env = setup().await;
+    let g = Google::install(&env);
+    g.subscription(
+        "tok-i",
+        "SUBSCRIPTION_STATE_ACTIVE",
+        "GPA.5544-0000-0000-00001",
+        "2026-12-01T00:00:00Z",
+        true,
+    );
+    let rec = env
+        .billing
+        .verify_store_purchase(
+            &user("ann"),
+            "google_play",
+            StoreVerifyInput {
+                purchase_token: Some("tok-i".into()),
+                product_id: Some("pro_monthly".into()),
+                ..StoreVerifyInput::default()
+            },
+        )
+        .await
+        .unwrap();
+    env.clock.advance(30 * DAY);
+    g.subscription(
+        "tok-i",
+        "SUBSCRIPTION_STATE_ACTIVE",
+        "GPA.5544-0000-0000-00001..0",
+        "2027-01-01T00:00:00Z",
+        true,
+    );
+    let (h, body) = push(
+        &env,
+        "google-signer.key",
+        json!({}),
+        "msg-i1",
+        &rtdn(2, "tok-i", T0 + 30 * DAY),
+    );
+    let out = env.billing.handle_webhook("google_play", &h, &body).await.unwrap();
+    assert_eq!(out.result, "processed", "{out:?}");
+    let d = last_delivery(&env, "google_play").await;
+    assert_eq!(
+        (d.outcome.as_str(), d.account.as_deref(), d.event_id.as_deref()),
+        ("applied", Some(BUNDLE), Some("msg-i1"))
+    );
+    assert_eq!(d.links.subscription, rec.subscription_id);
+    assert_eq!(d.links.store_purchase.as_deref(), Some(rec.id.as_str()));
+    assert!(d.links.invoice.is_some());
+    // The push token (an authorization value) is never stored.
+    let detail = env.billing.webhook_delivery(&admin(), &d.id).await.unwrap();
+    assert!(detail.headers.get("authorization").is_none());
+    assert!(!serde_json::to_string(&detail).unwrap().contains("Bearer"));
+    // Replay hours later, when the token would have expired: re-read from the
+    // Play API, deduplicated.
+    env.clock.advance(2 * HOUR);
+    let r = env.billing.replay_webhook_delivery(&admin(), &d.id).await.unwrap();
+    assert_eq!(r.result, "already_applied", "{r:?}");
+    // A push signed by a key that is not Google's: recorded, not processed,
+    // and not re-verifiable (no token is stored).
+    let (h, body) = push(&env, "google-sa.key", json!({}), "msg-i2", &rtdn(2, "tok-i", T0));
+    let e = env.billing.handle_webhook("google_play", &h, &body).await.unwrap_err();
+    assert_eq!(code(&e), "invalid_signature");
+    let f = last_delivery(&env, "google_play").await;
+    assert_eq!(f.outcome, "signature_invalid");
+    let e = env
+        .billing
+        .reverify_webhook_delivery(&admin(), &f.id)
+        .await
+        .unwrap_err();
+    assert_eq!(code(&e), "not_reverifiable");
+}
+
+#[tokio::test]
+async fn creem_delivery_is_recorded_and_linked() {
+    let env = setup().await;
+    let mock = Arc::new(Mock::default());
+    mock.on(
+        "POST",
+        "/v1/checkouts",
+        200,
+        json!({"id": "ch_i", "object": "checkout", "status": "pending", "checkout_url": "https://creem.test/checkout/ch_i",
+               "mode": "test"}),
+    );
+    let p = CreemProvider::new(
+        CREEM_KEY,
+        CREEM_WHSEC,
+        Some("http://creem.test"),
+        mock.clone(),
+        Arc::new(env.clock.clone()),
+    )
+    .unwrap();
+    env.billing.register_store(Arc::new(p));
+    env.billing
+        .store_checkout(
+            &user("ann"),
+            "creem",
+            StoreCheckoutInput {
+                subject: None,
+                price: "pro-m".into(),
+                success_url: "https://app.test/billing/done".into(),
+                idempotency_key: "buy-pro-i".into(),
+            },
+        )
+        .await
+        .unwrap();
+    let checkout = json!({"id": "ch_i", "object": "checkout", "status": "completed", "mode": "test",
+        "order": {"id": "ord_i", "transaction": "tran_i", "amount": 2900, "currency": "USD", "status": "paid", "type": "recurring"},
+        "product": {"id": "prod_pro"}, "customer": {"id": "cust_1", "email": "ann@example.test"},
+        "subscription": creem_sub("sub_i", "active", "2026-11-01T00:00:00Z", "2026-12-01T00:00:00Z", "tran_i"),
+        "metadata": {"forgebase_subject": pk("ann")}});
+    let body = creem_event("evt_ci", "checkout.completed", T0, checkout);
+    assert_eq!(creem_hook(&env, &body).await.unwrap().result, "processed");
+    let d = last_delivery(&env, "creem").await;
+    assert_eq!(
+        (d.outcome.as_str(), d.event_type.as_deref()),
+        ("applied", Some("checkout.completed"))
+    );
+    let inv = env.billing.invoices(&user("ann"), None, None, None).await.unwrap()[0].clone();
+    assert_eq!(d.links.invoice.as_deref(), Some(inv.id.as_str()));
+    assert_eq!(d.links.subscription, inv.subscription_id);
+    assert!(d.links.store_purchase.is_some() && d.links.payment.is_some());
+    let detail = env.billing.webhook_delivery(&admin(), &d.id).await.unwrap();
+    assert!(detail.headers["creem-signature"].is_string());
+    // Forged: recorded as such; re-verifying with the same secret still refuses it.
+    env.clock.advance(MIN);
+    let forged = vec![("creem-signature".to_owned(), creem::sign("whsec_guess", &body))];
+    let e = env.billing.handle_webhook("creem", &forged, &body).await.unwrap_err();
+    assert_eq!(code(&e), "invalid_signature");
+    let f = last_delivery(&env, "creem").await;
+    assert_eq!(f.outcome, "signature_invalid");
+    let r = env.billing.reverify_webhook_delivery(&admin(), &f.id).await.unwrap();
+    assert_eq!(r.result, "unverified");
+    assert_eq!(
+        r.delivery.verification,
+        forgebase_billing::WebhookVerification::SignatureInvalid
+    );
+}

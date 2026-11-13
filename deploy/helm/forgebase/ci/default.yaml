@@ -1,0 +1,2 @@
+# Defaults: bundled PostgreSQL on a PVC, no routing.
+{}

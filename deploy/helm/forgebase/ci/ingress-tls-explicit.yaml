@@ -1,0 +1,16 @@
+# Ingress with an explicit tls block and an Issuer.
+ingress:
+  enabled: true
+  hosts:
+    - host: a.example.com
+      paths:
+        - path: /
+    - host: b.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: forgebase-tls
+      hosts: [a.example.com, b.example.com]
+  certManager:
+    issuer: team-issuer

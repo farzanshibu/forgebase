@@ -267,6 +267,7 @@ stops startup with an error.
 | `FORGEBASE_RESP_ENABLED`, `FORGEBASE_RESP_HOST`, `FORGEBASE_RESP_PORT` | Redis protocol listener. |
 | `FORGEBASE_RESP_MAX_CONNECTIONS`, `FORGEBASE_RESP_MAX_BULK_BYTES`, `FORGEBASE_RESP_IDLE_TIMEOUT_SECS` | Redis protocol limits. |
 | `FORGEBASE_BILLING_ENABLED` | Mount the billing API. |
+| `FORGEBASE_BILLING_WEBHOOK_LOG_RETENTION_DAYS` | Days the billing webhook inspector keeps a delivery (default 30). |
 | `FORGEBASE_STORAGE_ENABLED`, `FORGEBASE_FUNCTIONS_ENABLED`, `FORGEBASE_QUEUE_ENABLED`, `FORGEBASE_REALTIME_ENABLED`, `FORGEBASE_VECTOR_ENABLED`, `FORGEBASE_GRAPH_ENABLED`, `FORGEBASE_IDENTITY_ENABLED`, `FORGEBASE_ACCESS_ENABLED` | Switch a module on or off (default on; ADR-0026, [architecture.md §6](architecture.md#6-feature-flags)). |
 | `FORGEBASE_REALTIME_MAX_CONNECTIONS_PER_PRINCIPAL` | Most realtime connections one user or key may hold (default 32). |
 | `FORGEBASE_STORAGE_S3_ACCESS_KEY`, `FORGEBASE_STORAGE_S3_SECRET_KEY`, `FORGEBASE_STORAGE_S3_SESSION_TOKEN` | S3 credentials, read from the environment only (the storage driver reads them; the config loader only notes that they are set). |
@@ -445,6 +446,9 @@ Scrape every 15 s or so; each scrape refreshes the gauges below.
 | `forgebase_kv_keys`, `forgebase_kv_memory_bytes` | gauge | none |
 | `forgebase_queue_deliveries` | gauge | `state` = `ready`, `delayed`, `in_flight` (only when `[queue]` is enabled) |
 | `forgebase_queue_messages` | gauge | none (only when `[queue]` is enabled) |
+| `forgebase_billing_webhook_deliveries_total` | counter | `provider` (a known provider or `other`), `outcome` = `applied`, `ignored`, `duplicate`, `failed`, `signature_invalid`, `timestamp_out_of_tolerance`, `unknown_provider`, `malformed`, `rejected`, `error` (only when `[billing]` is enabled; ADR-0032) |
+| `forgebase_billing_webhook_processing_seconds` | histogram | `provider` (verification plus processing of a billing webhook, replays and re-verifications included) |
+| `forgebase_billing_webhook_log_dropped_total` | counter | `provider`, `kind` = `body` (stored without body) or `delivery` (not stored): unverified webhooks over the inspector budget |
 
 Notes:
 
@@ -537,6 +541,7 @@ Keys in the TOML file, with defaults. Ranges are the accepted values.
 | `storage.s3_endpoint`, `s3_region`, `s3_bucket`, `s3_prefix`, `s3_part_size` | unset / `""` / `8388608` | S3 only. Credentials come from the environment (§3.3). |
 | `realtime.max_connections_per_principal` | `32` | `1`–`1000000`. Most simultaneous realtime (WebSocket) connections for one user or API key; the next one gets `429 too_many_connections`. Raise it for a shared service identity that fans out many subscribers. |
 | `billing.enabled` | `true` | Mounts `/api/v1/billing/*` and the provider webhooks. |
+| `billing.webhook_log_retention_days` | `30` | Days the billing webhook inspector keeps each incoming provider webhook (headers, body, outcome) before `billing.maintenance` deletes it (ADR-0032). Bodies hold customer personal data ([security.md §4.9](security.md#49-billing-webhooks-and-store-receipts-forgebase-billing-adr-0021)). |
 | `storage.enabled`, `functions.enabled`, `queue.enabled`, `realtime.enabled`, `vector.enabled`, `graph.enabled`, `identity.enabled`, `access.enabled` | `true` | Switch a module off: its routes answer `404 feature_disabled` and its workers do not start ([architecture.md §6](architecture.md#6-feature-flags), ADR-0026). |
 | `auth.trust_forwarded_for` | `false` | Client address from the last `X-Forwarded-For` entry. Only behind your own proxy (§5). |
 | `auth.allow_private_outbound` | `false` | The auth service's outbound HTTPS (OAuth/OIDC providers, SMS gateways, Turnstile) refuses loopback, private, link-local and metadata addresses unless this is `true` (an identity provider on your own network). LDAP and S3 endpoints are not affected. |
@@ -561,3 +566,149 @@ test-mode keys are accepted (see [security.md §3](security.md#3-trust-boundarie
 - [ ] `log.format` is `json` for log collection.
 - [ ] `resp.enabled` is `false`, or the Redis port is on loopback.
 - [ ] `/health` and `/health/ready` return `200`.
+
+## 9. Kubernetes
+
+ForgeBase runs on Kubernetes as **one pod**: a StatefulSet with `replicas: 1` and
+its data directory on a PersistentVolumeClaim. There are two ways to deploy it, with
+the same pod spec:
+
+| | Where | Use when |
+|---|---|---|
+| Helm chart | [`deploy/helm/forgebase`](../deploy/helm/forgebase/README.md) | You want options: Ingress or Gateway API route, ServiceMonitor, NetworkPolicy, backup CronJob, first-administrator bootstrap. Has a values table and a JSON schema. |
+| Kustomize | [`deploy/kubernetes`](../deploy/kubernetes/README.md) | You want plain manifests to read and patch: a base, three overlays (`bundled-postgres`, `sqlite`, `external-postgres`) and optional components (ingress, network policy, backup). |
+
+```sh
+# Helm
+helm install forgebase ./deploy/helm/forgebase -n forgebase --create-namespace
+# Kustomize (bundled PostgreSQL)
+kubectl create namespace forgebase
+kubectl apply -k deploy/kubernetes/overlays/bundled-postgres -n forgebase
+# Either: reach the dashboard
+kubectl -n forgebase port-forward svc/forgebase 8090:8090   # then /admin/
+```
+
+The image is `ghcr.io/farzanshibu/forgebase:<version>` (the standard image). The
+release workflow does not publish a `-lite` image; build it from the Dockerfile
+without `ENGINE_ARCHIVE` if you want one. The standard image also runs SQLite
+(`database.backend=sqlite`).
+
+### 9.1 Why one replica
+
+ForgeBase has a single writer: one process owns the data directory, holds
+`.forgebase.lock`, runs the database engine and the background workers, and keeps
+rate limits in memory (security.md §8, item 2). There is no clustering in this
+release (§1), and the replica topology of ADR-0029 needs TLS between hosts, which this
+version does not set up (§3.5). So the chart and the manifests pin `replicas: 1`, allow
+only a single-writer access mode (`ReadWriteOnce` or `ReadWriteOncePod`, never
+`ReadWriteMany`), and the chart's JSON schema rejects any other `replicaCount`.
+Upgrades and config changes restart the pod: expect a short outage. A node failure
+leaves the pod `Terminating` until the node is declared gone, as for any StatefulSet.
+
+### 9.2 What the pod needs
+
+* **Non-root.** The pod runs as uid and gid 10001 (PostgreSQL refuses root) with
+  `runAsNonRoot`, seccomp `RuntimeDefault`, no privilege escalation, all capabilities
+  dropped and a read-only root filesystem, as the Compose file does (§2.2). It
+  satisfies the `restricted` Pod Security Standard.
+* **Writable paths.** `/data` (the PVC: database or cluster, extracted engine, socket,
+  storage, keys, backups), `/tmp` (an emptyDir) and, with the bundled PostgreSQL,
+  `/dev/shm`.
+* **Shared memory.** Kubernetes gives a pod 64 MB of `/dev/shm`, as Docker does (§2.2).
+  The chart and the `bundled-postgres` overlay mount a memory-backed emptyDir of 256 Mi,
+  which counts against the memory limit.
+* **Volume ownership.** `fsGroup: 10001` with `fsGroupChangePolicy: OnRootMismatch`.
+  A recursive ownership change would add group bits to `roles.secret` and the
+  PostgreSQL data directory, which ForgeBase and PostgreSQL refuse.
+* **No service links.** `enableServiceLinks: false`: for a Service named `forgebase`
+  Kubernetes would inject `FORGEBASE_PORT=tcp://…`, and the binary rejects unknown
+  `FORGEBASE_*` variables (§3.3).
+* **Probes.** Startup and readiness on `GET /health/ready`, liveness on `GET /health`
+  (both open regardless of `ops_access`). The startup probe waits up to 15 minutes:
+  the first start extracts the engine, runs `initdb` and every migration.
+* **Grace period.** 90 s: the server drains requests for `shutdown_timeout_secs`
+  (30 s), then checkpoints and stops PostgreSQL.
+
+### 9.3 Database, configuration and secrets
+
+* **Bundled PostgreSQL** (default): inside the pod, on the PVC.
+* **External PostgreSQL**: `[database.postgres] mode = "external"`; the URL is read from
+  the Secret key and set as `FORGEBASE_DATABASE_URL` (§3.3). The PVC still holds
+  object storage and `auth/master.key`.
+* **SQLite**: one file on the PVC.
+
+`forgebase.toml` is mounted from a ConfigMap and named by `FORGEBASE_CONFIG`
+(§3.1). Secrets (database URL, S3 credentials, the administrator's password) come
+from Secrets as environment variables and never go into the ConfigMap.
+
+**First administrator.** Without bootstrap, the one-time setup link of §2.4 is
+printed to standard output, so it is in `kubectl logs forgebase-0` until used. The
+chart can create the administrator before the server starts, with an init container
+that runs `forgebase init --config … --admin-email … --admin-password-stdin`
+(§2.4, option 2), which keeps an existing administrator.
+
+### 9.4 TLS, routing and metrics
+
+The binary serves plain HTTP (§5): terminate TLS at an Ingress (with cert-manager
+annotations) or a Gateway API Gateway, and set `server.public_url`. Set
+`auth.trust_forwarded_for = true` only when every request reaches the pod through a proxy
+that appends the client address, and restrict the pod with a NetworkPolicy then.
+`/metrics` follows `server.ops_access` (§5): another pod such as Prometheus is not
+"the same host", so scrape with an admin service-account API key that has the
+`system:read` scope (the chart's `serviceMonitor.authorization`). Native TLS in the
+binary (a `[tls]` section) is exposed in the chart as `tls.mode`, off by default;
+ForgeBase 0.3.4 does not know that section.
+
+### 9.5 Backups
+
+The optional CronJob runs `forgebase backup` **inside the server pod** with
+`kubectl exec` (a ServiceAccount that may exec into that one pod, and nothing else).
+A second pod mounting the PVC cannot do it: for the bundled PostgreSQL the CLI attaches
+to the running engine through the PID in `postmaster.pid`, which another pod's PID
+namespace does not show. Snapshots land in `/data/backups/snapshots` (or a second PVC),
+which shares a failure domain with the data: copy them elsewhere or use CSI volume
+snapshots. `auth/master.key` is not in the backup (§4): copy it once with
+`kubectl exec forgebase-0 -- cat /data/auth/master.key`. Restoring needs a stopped
+server: scale the StatefulSet to 0 and run `forgebase restore` in a one-off pod on the
+same PVC.
+
+### 9.6 Checks
+
+`deploy/helm/validate.sh` and `deploy/kubernetes/validate.sh` lint and render every
+variant, validate the output against the Kubernetes and CRD JSON schemas with
+[kubeconform](https://github.com/yannh/kubeconform), and check that a second replica or
+a `ReadWriteMany` claim is refused. The `kubernetes` job of `.github/workflows/ci.yml`
+runs both. They do not start a cluster: see the READMEs for what has not been run
+against one.
+
+## 10. Configuration as code (Terraform)
+
+The Terraform provider in
+[`integrations/terraform-provider-forgebase`](../integrations/terraform-provider-forgebase/README.md)
+manages a running server's configuration through its REST API: collections with
+their indexes and access rules, storage buckets and ACLs, queue topics and
+subscriptions, functions, service accounts and API keys, OAuth clients, roles,
+organizations, projects, and entitlement plans.
+
+It needs a reachable server and one credential. Create an administrator, then a
+service account with an API key for Terraform to use:
+
+```sh
+forgebase admin create --email you@example.com --password-stdin
+# Signed in as that administrator:
+#   POST /api/auth/service-accounts            {"name": "terraform", "role": "admin"}
+#   POST /api/auth/service-accounts/{id}/keys  {"name": "terraform", "scopes": ["*"]}
+export FORGEBASE_URL=https://forgebase.example.com
+export FORGEBASE_TOKEN=fbk_...
+```
+
+Notes for operators:
+
+- The provider talks to the public API through your proxy; it needs no access to the data directory.
+- State holds the secrets the server shows once (API key secrets, OAuth client secrets, webhook
+  signing secrets, function secrets). Keep the Terraform state in an encrypted backend.
+- The key needs `write` on the areas it manages (`collections`, `storage`, `queues`, `functions`,
+  `auth`, `policies`, `plans`, ...) and `read` for refresh. Collection rules, plans, features and
+  realm roles also need an administrator principal.
+- Applies are not transactional across resources. After a failed apply, rerun it: every resource
+  reads its real state first.

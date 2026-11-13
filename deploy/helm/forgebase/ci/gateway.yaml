@@ -1,0 +1,11 @@
+# Gateway API HTTPRoute (TLS terminates at the Gateway).
+httpRoute:
+  enabled: true
+  parentRefs:
+    - name: shared-gateway
+      namespace: gateway-system
+      sectionName: https
+  hostnames:
+    - forgebase.example.com
+  timeouts:
+    request: 0s
