@@ -97,7 +97,7 @@ jobs:
                    "accelerators": "off"},
                   {"name": "macOS arm64", "os": "macos-15", "target": "aarch64-apple-darwin",
                    "scope": "workspace", "accelerators": "auto", "experimental": False},
-                  # The Windows engine has never run on CI (engine.lock: pending-ci) and the
+                  # The Windows engine is new on CI (first built in engine-pg18.6-r8) and the
                   # crate test harness needs Unix sockets: the black-box suites only, and a
                   # failure does not fail the run until the engine is proven there.
                   {"name": "Windows x86_64", "os": "windows-2022", "target": "x86_64-pc-windows-msvc",
@@ -112,6 +112,10 @@ jobs:
     runs-on: ${{ matrix.os }}
     continue-on-error: ${{ matrix.experimental }}
     timeout-minutes: 90
+    permissions:
+      contents: read
+      # gh run list: whether the engine workflow is still building the release.
+      actions: read
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.pg-plan.outputs.matrix) }}
@@ -158,10 +162,39 @@ jobs:
             *) echo "zstd is not on PATH" >&2; exit 1 ;;
           esac
 
+      # An engine bump pushes engine.lock and its tag together, so this run
+      # can start before the engine workflow has published the release it
+      # pins (r6–r8 failed every PostgreSQL suite that way). While an engine
+      # run for the tag is still going, wait for this target's archive.
       - name: Download and unpack the pinned engine
+        id: engine
         run: |
           set -euo pipefail
           release=$(python3 deploy/postgres-engine/engine.py get engine.release)
+          published() {
+            gh release view "$release" --repo "$GITHUB_REPOSITORY" --json assets \
+              --jq "[.assets[].name | select(endswith(\"-$TARGET.tar.zst\") or . == \"SHA256SUMS\")] | length" \
+              2>/dev/null | grep -qx 2
+          }
+          building() {
+            gh run list --repo "$GITHUB_REPOSITORY" --workflow postgres-engine.yml --branch "$release" \
+              --json status --jq '[.[] | select(.status != "completed")] | length' | grep -qvx 0
+          }
+          deadline=$((SECONDS + 45 * 60))
+          until published; do
+            if ! building; then
+              # The run may have finished between the two checks.
+              published && break
+              echo "::error::release $release has no $TARGET archive and no engine run for it is in progress (push the tag $release, engine.lock engine.release)"
+              exit 1
+            fi
+            if (( SECONDS >= deadline )); then
+              echo "::error::gave up after 45 minutes waiting for the engine workflow to publish $release"
+              exit 1
+            fi
+            echo "the engine workflow is still building $release; waiting"
+            sleep 60
+          done
           mkdir -p "$RUNNER_TEMP/engine-dl"
           gh release download "$release" --repo "$GITHUB_REPOSITORY" \
             -p "forgebase-pg*-$TARGET.tar.zst" -p SHA256SUMS -D "$RUNNER_TEMP/engine-dl"
@@ -188,8 +221,9 @@ jobs:
         run: cargo test -p forgebase-cli --locked --no-fail-fast -- --test-threads=2
 
       - name: Every other crate on PostgreSQL
-        # Runs even when the black-box step failed, so one CI run lists every failure.
-        if: ${{ !cancelled() && matrix.scope == 'workspace' }}
+        # Runs even when the black-box step failed, so one CI run lists every
+        # failure; without an engine every test would only fail for want of one.
+        if: ${{ !cancelled() && steps.engine.outcome == 'success' && matrix.scope == 'workspace' }}
         run: |
           cargo test --workspace --locked --no-fail-fast --exclude forgebase-cli --exclude forgebase-functions
           # JavaScript tests time out under full parallel load (FB-147).
