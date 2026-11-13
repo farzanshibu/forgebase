@@ -1,6 +1,8 @@
 import { WebhookVerificationError } from "./errors";
 import type { QueueMessage } from "./queues";
 
+export { WebhookVerificationError };
+
 /*
  * Webhook verification for push subscriptions (ADR-0022 §13).
  *
