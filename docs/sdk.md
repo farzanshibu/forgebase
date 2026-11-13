@@ -13,6 +13,7 @@ does not repeat it.
 | Rust (`forgebase-sdk`) | [`sdk/rust`](../sdk/rust) | Version 0.1.0 (FB-82), its own Cargo workspace. Covers auth, records, KV, storage, realtime, functions, jobs, queues, billing and entitlements. See [sdk/rust/README.md](../sdk/rust/README.md). |
 | Dart / Flutter (`forgebase`) | [`sdk/dart`](../sdk/dart) | Version 0.1.0 (requested after the 2026-11-10 skip). Pure Dart, so it runs in Flutter and on servers. Covers auth, records, realtime, storage, KV, functions, queues, jobs, entitlements and store billing. See [§8](#8-dart--flutter-sdk) and [sdk/dart/README.md](../sdk/dart/README.md). |
 | Kotlin (Android and JVM, `dev.forgebase:forgebase`) | [`sdk/kotlin`](../sdk/kotlin) | Version 0.1.0, a pure Kotlin/JVM Gradle library (Android needs no plugin). Covers auth with a pluggable token store and Custom Tabs sign-in, records, storage (multipart and resumable), realtime with resume, functions, KV, queues, jobs, entitlements, billing customer and store verification, vector, graph, SQL reads and webhook verification. Administration APIs are left to the JS and Rust SDKs. See [sdk/kotlin/README.md](../sdk/kotlin/README.md). |
+| Swift (iOS, macOS, tvOS, watchOS, visionOS; product `ForgeBase`) | [`sdk/swift`](../sdk/swift) | Version 0.1.0, Swift Package Manager, no third-party dependencies. Covers auth with a Keychain token store and `ASWebAuthenticationSession` sign-in, records, storage (multipart and resumable), realtime with resume, functions, KV, queues, jobs, entitlements, billing, credits, vector, graph, SQL reads and webhook verification. Administration APIs are left to the JS and Rust SDKs. See [§10](#10-swift-sdk) and [sdk/swift/README.md](../sdk/swift/README.md). |
 
 ## 2. JavaScript / TypeScript SDK
 
@@ -321,3 +322,41 @@ fb.realtime.subscribe(SubscribeOptions(collection = "posts")).collect { event ->
 - **Tests**: `cd sdk/kotlin && ./gradlew test` (MockWebServer for HTTP, WebSocket and SSE; no server needed). CI runs it on JDK 17.
 - **Left out**: administration APIs (function deploy, bucket ACLs, billing catalog, organizations, identity admin, system),
   cookie sessions, the realtime SSE fallback and OpenAPI code generation. `fb.request(path)` reaches any route.
+
+## 10. Swift SDK
+
+Native Swift package `ForgeBase` in [`sdk/swift`](../sdk/swift), version 0.1.0, for iOS 15, macOS 12, tvOS 15, watchOS 8 and
+visionOS 1 (Swift 5.9+). The reference is [`sdk/swift/README.md`](../sdk/swift/README.md). It has no third-party dependencies: `URLSession`,
+`URLSessionWebSocketTask`, `CryptoKit`, `Security` (Keychain) and `AuthenticationServices`.
+
+```swift
+import ForgeBase
+
+let fb = ForgeBaseClient(baseURL: URL(string: "http://localhost:8080")!,
+                         tokenStore: KeychainTokenStore(service: "com.example.app.forgebase"))
+try await fb.auth.signIn(email: "ada@example.com", password: "...")
+let posts = try await fb.collection("posts").list(ListOptions(filter: "views > {:min}", params: ["min": 100], sort: ["-views"]))
+let sub = try await fb.realtime.subscribe(.collection("posts"))
+for await event in sub.events { /* .record, .message, .presence, .reset */ }
+```
+
+It mirrors the method structure and behaviour of the JavaScript SDK (retries and `Retry-After`, error mapping, refresh-token rotation with one
+shared refresh and a retry after `401`, commit tokens, realtime resume from the last cursor) with Swift types: `Codable` records, `AsyncStream`
+for realtime events, one `ForgeBaseError` whose `kind` replaces the JavaScript error classes.
+
+| Area | Swift API |
+|---|---|
+| Auth | `fb.auth`: sign-up, password / MFA / magic link / OTP sign-in, reset and verification flows, refresh, sign-out, PATs, sessions, `stateChanges()`; OAuth with `fb.auth.oauth.signInWithBrowser` (`ASWebAuthenticationSession`); `TokenStore` (`InMemoryTokenStore`, `KeychainTokenStore`) |
+| Records | `fb.collection("posts", as: Post.self)`: list / pages / iterate / get / create / update / replace / delete / count / export / import, `version:` for `If-Match`; `fb.collections` |
+| Storage | `fb.storage`: buckets, `from(bucket)` objects (data or file bodies, ranges, download to file), signed URLs (also as a `URLRequest` for background sessions), multipart and resumable uploads |
+| Realtime | `fb.realtime`: collection, record and channel subscriptions, presence, publish, reconnect with cursor resume |
+| Services | `fb.functions` (invoke), `fb.kv`, `fb.queues` (publish, pull, ack, streaming pull), `fb.jobs`, `fb.entitlements`, `fb.billing` (customer, portal, subscriptions, invoices, StoreKit / Play / Creem verification), `fb.credits` (reads), `fb.vector` (search), `fb.graph` (reads), `fb.sql`; `Webhook` verification |
+
+Administration APIs (identity and organization management, access policies, billing catalog and settings, entitlement and credit
+administration, function deployment, vector and graph writes, `system`) are left to the JavaScript and Rust SDKs; `fb.request(...)` reaches any
+route. The OAuth helper relies on the server doing PKCE with the provider: the app only returns `code` and `state`.
+
+```sh
+cd sdk/swift
+swift build -Xswiftc -warnings-as-errors && swift test   # offline: URLProtocol mock and a fake WebSocket
+```
