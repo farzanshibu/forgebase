@@ -518,3 +518,68 @@ async fn new_sms_gateways_seal_their_secrets_and_validate_config() {
         assert_error(&r, StatusCode::BAD_REQUEST, "invalid_input");
     }
 }
+
+#[tokio::test]
+async fn new_provider_kinds_and_fields_work_over_the_admin_api() {
+    let h = harness(|_| {}).await;
+    let admin = h.root_token().await;
+    make_realm(&h, &admin, "acme", json!({})).await;
+    let base = "/api/auth/realms/acme/oauth-providers";
+    let cfg = |kind: &str, extra: Value| {
+        let mut v = json!({"kind": kind, "client_id": "cid", "client_secret": "super-secret-1"});
+        for (k, val) in extra.as_object().unwrap() {
+            v[k] = val.clone();
+        }
+        v
+    };
+    for (id, kind, extra) in [
+        (
+            "entra",
+            "microsoft",
+            json!({"tenant": "organizations", "allowed_tenants": ["11111111-aaaa-4aaa-8aaa-111111111111"]}),
+        ),
+        ("gl", "gitlab", json!({"base_url": "https://git.example.com"})),
+        (
+            "kc",
+            "keycloak",
+            json!({"base_url": "https://sso.example.com", "tenant": "acme"}),
+        ),
+        ("sl", "slack", json!({"authorize_params": {"team": "T1"}})),
+        ("li", "linkedin", json!({})),
+        ("tw", "twitch", json!({})),
+        ("bb", "bitbucket", json!({})),
+        ("sp", "spotify", json!({})),
+    ] {
+        let r = put(&h, &format!("{base}/{id}"), &admin, cfg(kind, extra.clone())).await;
+        assert_eq!(r.status, StatusCode::OK, "{kind}: {}", r.json);
+        assert_eq!(r.json["kind"], kind);
+        assert_eq!(r.json["client_secret"], MASK);
+        assert!(!r.json.to_string().contains("super-secret-1"));
+    }
+    // The realm's login page offers them.
+    let info = h
+        .send(
+            axum::http::Method::GET,
+            "/api/auth/realm",
+            None,
+            None,
+            &[("x-forgebase-realm", "acme")],
+        )
+        .await;
+    assert_eq!(
+        info.json["oauth_providers"].as_array().unwrap().len(),
+        8,
+        "{}",
+        info.json
+    );
+    // Bad settings are refused with the field named.
+    for (kind, extra) in [
+        ("microsoft", json!({"tenant": "contoso.com"})),
+        ("keycloak", json!({})),
+        ("gitlab", json!({"base_url": "javascript:alert(1)"})),
+        ("slack", json!({"authorize_params": {"state": "x"}})),
+    ] {
+        let r = put(&h, &format!("{base}/bad"), &admin, cfg(kind, extra)).await;
+        assert_error(&r, StatusCode::BAD_REQUEST, "invalid_input");
+    }
+}

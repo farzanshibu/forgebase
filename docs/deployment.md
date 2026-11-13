@@ -360,6 +360,105 @@ package switches it over), `mode`, `extension`, `available`, `installed`,
 `state`). `/health/ready` keeps its shape and fails the `database` check while the
 bundled engine is restarting or has failed.
 
+### 3.6 Email, SMS and login providers
+
+Providers are not keys of the TOML file: they carry secrets, differ per
+realm and change without a restart. They are set over the REST API (secrets
+sealed under `auth/master.key`, never returned, masked as `********`) and
+survive restarts; back up `master.key` with the data directory or they cannot
+be opened. All calls go through the server's HTTPS client, which refuses
+private and metadata addresses unless `[auth] allow_private_outbound` is set
+([ADR-0039](adr/0039-more-providers.md)). Send administrator credentials on
+each call (`$ADMIN` is an administrator token).
+
+**Transactional email** (`resend`, `postmark`, `sendgrid`, `mailgun`, `ses`,
+`smtp`, `log`). Until one is set the server only logs the envelope of each
+message. One configuration per instance (`realm=*`) with optional overrides per
+realm; `from_address` is the `From` of every message (a verified sender or
+domain at the provider):
+
+```sh
+# Resend for the whole instance
+curl -X PUT "$BASE/api/v1/customize/email/provider?realm=*" -H "authorization: Bearer $ADMIN" \
+  -H 'content-type: application/json' \
+  -d '{"provider":"resend","api_key":"re_...","from_address":"no-reply@example.com"}'
+# Amazon SES in eu-west-1 for realm "acme" (credentials of an IAM user allowed ses:SendEmail)
+curl -X PUT "$BASE/api/v1/customize/email/provider?realm=acme" -H "authorization: Bearer $ADMIN" \
+  -H 'content-type: application/json' \
+  -d '{"provider":"ses","access_key_id":"AKIA...","secret_access_key":"...","region":"eu-west-1","from_address":"no-reply@acme.example"}'
+# Send a test message now; the answer carries the provider's message id
+curl -X POST "$BASE/api/v1/customize/email/provider/test?realm=*" -H "authorization: Bearer $ADMIN" \
+  -H 'content-type: application/json' -d '{"to":"you@example.com"}'
+```
+
+| `provider` | Settings | Notes |
+|---|---|---|
+| `resend` | `api_key` | |
+| `postmark` | `server_token`, `message_stream` (default `outbound`) | |
+| `sendgrid` | `api_key`, `region` (`global`, `eu`) | `eu` uses `api.eu.sendgrid.com` |
+| `mailgun` | `api_key`, `domain`, `region` (`us`, `eu`) | `eu` uses `api.eu.mailgun.net` |
+| `ses` | `access_key_id`, `secret_access_key`, `session_token`?, `region`, `configuration_set`? | SES v2, SigV4 |
+| `smtp` | `host`, `port`?, `tls` (`starttls`, `implicit`, `none`), `username`/`password`?, `envelope_from`, `helo`? | |
+| `log` | none | development |
+
+Every setting also accepts `base_url` (SES and SNS: `endpoint`) for a private
+relay or a regional endpoint. 429 and 5xx answers are retried by the job queue
+with backoff (5 attempts); other 4xx answers fail the delivery with the
+provider's reason in the delivery log, which also shows the provider's
+message id. `DELETE .../provider?realm=` removes a configuration: the realm
+falls back to the instance's, then to the log provider.
+
+**SMS** (`twilio`, `webhook`, `vonage`, `messagebird`, `bird`, `sns`,
+`plivo`, `dev`): per realm over `PUT /api/auth/realms/{realm}/sms`, or the
+instance's in `<data_dir>/auth/sms.json` (keep it `0600`; it holds the
+secrets in clear):
+
+```json
+{"provider": "vonage", "api_key": "...", "api_secret": "...", "from": "Acme"}
+{"provider": "messagebird", "api_key": "...", "from": "Acme"}
+{"provider": "bird", "api_key": "...", "workspace_id": "...", "channel_id": "..."}
+{"provider": "sns", "access_key_id": "AKIA...", "secret_access_key": "...", "region": "us-east-1", "sender_id": "Acme", "sms_type": "Transactional"}
+{"provider": "plivo", "auth_id": "MA...", "auth_token": "...", "from": "+15550100"}
+```
+
+Numbers must be E.164 (`+4915112345678`). 429 and 5xx answers are retried
+twice, briefly; if the gateway still throttles, the phone endpoints answer
+`429` with `Retry-After`. Amazon SNS needs an account out of the SMS sandbox
+and an origination identity for the destination country.
+
+**Login providers** (`google`, `github`, `apple`, `facebook`, `wechat`,
+`discord`, `oidc`, and `microsoft`, `gitlab`, `slack`, `linkedin`, `twitch`,
+`bitbucket`, `spotify`, `keycloak`): `oauth-providers.json` or
+`PUT /api/auth/realms/{realm}/oauth-providers/{id}`. The redirect URI to
+register at the provider is `<public_url>/api/auth/oauth/<id>/callback`
+(`server.public_url` must be set). Examples:
+
+```json
+{"providers": [
+  {"id": "entra", "kind": "microsoft", "client_id": "...", "client_secret": "...",
+   "tenant": "organizations", "allowed_tenants": ["00000000-0000-0000-0000-000000000000"]},
+  {"id": "gitlab-corp", "kind": "gitlab", "client_id": "...", "client_secret": "...",
+   "base_url": "https://git.example.com"},
+  {"id": "sso", "kind": "keycloak", "client_id": "...", "client_secret": "...",
+   "base_url": "https://sso.example.com", "tenant": "acme"},
+  {"id": "slack", "kind": "slack", "client_id": "...", "client_secret": "...",
+   "authorize_params": {"team": "T0123ABCD"}},
+  {"id": "linkedin", "kind": "linkedin", "client_id": "...", "client_secret": "..."},
+  {"id": "twitch", "kind": "twitch", "client_id": "...", "client_secret": "..."},
+  {"id": "bitbucket", "kind": "bitbucket", "client_id": "...", "client_secret": "..."},
+  {"id": "spotify", "kind": "spotify", "client_id": "...", "client_secret": "..."},
+  {"id": "apple", "kind": "apple", "client_id": "com.example.web",
+   "apple": {"team_id": "ABCDE12345", "key_id": "KEY1234567", "private_key_pem": "-----BEGIN PRIVATE KEY-----\n..."}}
+]}
+```
+
+Provider-side notes: for Microsoft, enable the optional `email` and `xms_edov`
+claims in the app registration if you want people to link to existing local
+accounts by email (without `xms_edov` they get a new account; see
+[security.md](security.md) §4.1); for Apple, register the callback as a
+`form_post` return URL and note Apple sends the name only on the first
+authorization; for Twitch the claims ForgeBase needs are requested for you.
+
 ## 4. Data directory
 
 ```text

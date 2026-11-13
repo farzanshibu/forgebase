@@ -333,3 +333,21 @@ all-or-nothing transaction, `POST /sql/explain` returns a plan. Values go in
   them, so `SELECT *` of such a table is refused there unless `show_secrets` is
   set. On SQLite this is a guard in front of an administrator's tool, not a
   boundary: a column name built at run time is not seen.
+
+### 11.7 Mail providers (`/api/v1/customize/email/provider`)
+
+Which transport sends a realm's transactional email ([ADR-0039](adr/0039-more-providers.md)).
+Platform administrators only; `realm` is a realm id, or `*` for the instance's configuration (default: the
+realm of the request).
+
+| Route | Purpose |
+|---|---|
+| `GET /customize/email/provider` | `{"realm", "configured", "config", "created_at", "updated_at"}`; secrets show as `"********"`. `configured: false`: the realm uses the instance's provider, which falls back to the log provider. |
+| `PUT /customize/email/provider` | `{"provider": "resend" \| "postmark" \| "sendgrid" \| "mailgun" \| "ses" \| "smtp" \| "log", ...settings, "from_address"?}`. Secrets are sealed at rest; an absent field or `"********"` keeps the stored secret of the same provider type. Nothing is sent. `400 invalid_mail_config` names the setting. |
+| `DELETE /customize/email/provider` | `204`; `404` when there is none. |
+| `POST /customize/email/provider/test` | `{"to"}`: sends one message now (not queued, not logged) and answers `{"provider", "message_id", "from"}`, or `409 mail_test_failed` with the provider's reason. |
+
+The delivery log (`GET /customize/email/deliveries`) gains `provider_message_id`. SMS gateways keep their
+route (`PUT /api/auth/realms/{realm}/sms`) and accept the new provider types; the login provider routes
+accept the new `kind`s and fields (`tenant`, `base_url`, `allowed_tenants`, `authorize_params`), and an
+identity (`GET /api/auth/oauth/identities`) shows `avatar_url`.
