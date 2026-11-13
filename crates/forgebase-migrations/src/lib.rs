@@ -246,6 +246,11 @@ pub static SYSTEM_MIGRATIONS: &[Migration] = &[
         "portable_trigram",
         include_str!("../../../migrations/system/0056_portable_trigram.sql"),
     ),
+    Migration::new(
+        65,
+        "oauth_identity_avatar",
+        include_str!("../../../migrations/system/0065_oauth_identity_avatar.sql"),
+    ),
 ];
 
 /// A migration recorded as applied in the database.

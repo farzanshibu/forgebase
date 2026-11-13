@@ -65,6 +65,24 @@ pub enum ProviderKind {
     Discord,
     /// Any OpenID Connect provider (discovery or explicit endpoints).
     Oidc,
+    /// Microsoft Entra ID / Microsoft account (OpenID Connect, v2.0
+    /// endpoints; `tenant` is `common`, `organizations`, `consumers` or a
+    /// tenant GUID).
+    Microsoft,
+    /// GitLab.com or a self-hosted GitLab (OpenID Connect; `base_url`).
+    Gitlab,
+    /// Sign in with Slack (OpenID Connect).
+    Slack,
+    /// Sign In with LinkedIn using OpenID Connect.
+    Linkedin,
+    /// Twitch (OpenID Connect; claims are requested explicitly).
+    Twitch,
+    /// Bitbucket Cloud (OAuth 2, no ID token).
+    Bitbucket,
+    /// Spotify (OAuth 2, no ID token).
+    Spotify,
+    /// A Keycloak realm (OpenID Connect discovery; `base_url` + `tenant` = realm name).
+    Keycloak,
 }
 
 /// Apple "Sign in with Apple" client-secret signing key.
@@ -132,6 +150,76 @@ pub struct ProviderConfig {
     /// Label for login buttons.
     #[serde(default)]
     pub display_name: Option<String>,
+    /// Microsoft: `common` (default), `organizations`, `consumers` or a
+    /// tenant GUID. Keycloak: the realm name.
+    #[serde(default)]
+    pub tenant: Option<String>,
+    /// Microsoft: login host (default `https://login.microsoftonline.com`;
+    /// sovereign clouds differ). GitLab: the instance (default
+    /// `https://gitlab.com`). Keycloak: the server, with its context path
+    /// (`https://sso.example/auth` on legacy installs).
+    #[serde(default)]
+    pub base_url: Option<String>,
+    /// Microsoft multi-tenant (`common`, `organizations`): the tenant GUIDs
+    /// allowed to sign in; any tenant when absent.
+    #[serde(default)]
+    pub allowed_tenants: Option<Vec<String>>,
+    /// Extra authorization request parameters (`prompt`, `login_hint`, Slack
+    /// `team`, Google `hd`, ...). The protocol parameters cannot be set.
+    #[serde(default)]
+    pub authorize_params: Option<std::collections::BTreeMap<String, String>>,
+}
+
+/// Parameters of the authorization request that configuration cannot override.
+const RESERVED_PARAMS: &[&str] = &[
+    "client_id",
+    "appid",
+    "response_type",
+    "redirect_uri",
+    "scope",
+    "state",
+    "nonce",
+    "code_challenge",
+    "code_challenge_method",
+    "response_mode",
+];
+
+/// The tenant GUID of Microsoft's consumer (personal account) directory.
+pub const MSA_TENANT: &str = "9188040d-6c67-4c5b-b112-36a304b66dad";
+
+/// `8-4-4-4-12` hex digits.
+pub(crate) fn is_guid(s: &str) -> bool {
+    s.len() == 36
+        && s.bytes().enumerate().all(|(i, b)| match i {
+            8 | 13 | 18 | 23 => b == b'-',
+            _ => b.is_ascii_hexdigit(),
+        })
+}
+
+/// An `http(s)` base URL without credentials, query or fragment.
+fn base_url_ok(u: &str) -> bool {
+    url::Url::parse(u).is_ok_and(|p| {
+        matches!(p.scheme(), "http" | "https")
+            && p.host_str().is_some()
+            && p.username().is_empty()
+            && p.password().is_none()
+            && p.query().is_none()
+            && p.fragment().is_none()
+    })
+}
+
+/// Issuer rule of a multi-tenant provider: `iss` must be the template with
+/// the token's own `tid` filled in, and the tenant must be allowed.
+#[derive(Debug, Clone)]
+pub struct TenantRule {
+    /// `https://login.microsoftonline.com/{tenantid}/v2.0`.
+    pub issuer_template: String,
+    /// Only this tenant (`consumers`).
+    pub only: Option<String>,
+    /// Never this tenant (`organizations` excludes personal accounts).
+    pub not: Option<String>,
+    /// Allowed tenants (lower-case GUIDs); any when empty.
+    pub allow: Vec<String>,
 }
 
 impl ProviderConfig {
@@ -156,6 +244,46 @@ impl ProviderConfig {
             ProviderKind::Apple => {}
             _ if self.client_secret.is_empty() => {
                 return Err(AuthError::invalid("provider client_secret is required"));
+            }
+            _ => {}
+        }
+        for k in self.authorize_params.iter().flat_map(|m| m.keys()) {
+            if RESERVED_PARAMS.contains(&k.as_str()) || k.is_empty() || k.len() > 64 {
+                return Err(AuthError::invalid(format!(
+                    "authorize_params cannot set `{k}`; the flow sets it"
+                )));
+            }
+        }
+        if let Some(b) = &self.base_url
+            && !base_url_ok(b)
+        {
+            return Err(AuthError::invalid(
+                "base_url must be an http(s) URL without credentials, query or fragment",
+            ));
+        }
+        match self.kind {
+            ProviderKind::Microsoft => {
+                let t = self.tenant.as_deref().unwrap_or("common");
+                if !matches!(t, "common" | "organizations" | "consumers") && !is_guid(t) {
+                    return Err(AuthError::invalid(
+                        "microsoft `tenant` must be common, organizations, consumers or a tenant GUID",
+                    ));
+                }
+                if self.allowed_tenants.iter().flatten().any(|g| !is_guid(g)) {
+                    return Err(AuthError::invalid("microsoft `allowed_tenants` are tenant GUIDs"));
+                }
+            }
+            ProviderKind::Keycloak => {
+                let t = self.tenant.as_deref().unwrap_or_default();
+                let realm_ok = !t.is_empty()
+                    && t.len() <= 128
+                    && t.bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b' '));
+                if self.base_url.is_none() || !realm_ok {
+                    return Err(AuthError::invalid(
+                        "keycloak providers need `base_url` (the server) and `tenant` (the realm name)",
+                    ));
+                }
             }
             _ => {}
         }
@@ -186,6 +314,9 @@ pub struct Endpoints {
     pub emails: Option<String>,
     /// Accepted `iss` values.
     pub issuers: Vec<String>,
+    /// Multi-tenant issuer rule (Microsoft `common` / `organizations` /
+    /// `consumers`); replaces `issuers` when set.
+    pub tenant: Option<TenantRule>,
 }
 
 /// A registered provider.
@@ -201,13 +332,41 @@ impl Provider {
     pub fn uses_id_token(&self) -> bool {
         matches!(
             self.config.kind,
-            ProviderKind::Google | ProviderKind::Apple | ProviderKind::Oidc
+            ProviderKind::Google
+                | ProviderKind::Apple
+                | ProviderKind::Oidc
+                | ProviderKind::Microsoft
+                | ProviderKind::Gitlab
+                | ProviderKind::Slack
+                | ProviderKind::Linkedin
+                | ProviderKind::Twitch
+                | ProviderKind::Keycloak
         )
     }
 
-    /// Whether PKCE is sent (WeChat and Apple do not document it).
+    /// Whether PKCE is sent (WeChat, Apple and Bitbucket do not document it).
     pub fn uses_pkce(&self) -> bool {
-        !matches!(self.config.kind, ProviderKind::Wechat | ProviderKind::Apple)
+        !matches!(
+            self.config.kind,
+            ProviderKind::Wechat | ProviderKind::Apple | ProviderKind::Bitbucket
+        )
+    }
+
+    /// Whether the client authenticates at the token endpoint with HTTP Basic
+    /// (RFC 6749 §2.3.1) instead of form fields.
+    pub fn token_auth_basic(&self) -> bool {
+        matches!(self.config.kind, ProviderKind::Bitbucket | ProviderKind::Spotify)
+    }
+
+    /// The OIDC issuer: configured, or derived from a Keycloak server and realm.
+    pub fn issuer(&self) -> Option<String> {
+        let c = &self.config;
+        if c.kind == ProviderKind::Keycloak && c.issuer.is_none() {
+            let base = c.base_url.as_deref()?.trim_end_matches('/');
+            let realm = c.tenant.as_deref()?;
+            return Some(format!("{base}/realms/{}", realm.replace(' ', "%20")));
+        }
+        c.issuer.clone()
     }
 
     /// Default scopes of the provider type.
@@ -216,14 +375,44 @@ impl Provider {
             return s.clone();
         }
         let d: &[&str] = match self.config.kind {
-            ProviderKind::Google | ProviderKind::Oidc => &["openid", "email", "profile"],
+            ProviderKind::Google
+            | ProviderKind::Oidc
+            | ProviderKind::Microsoft
+            | ProviderKind::Gitlab
+            | ProviderKind::Slack
+            | ProviderKind::Keycloak => &["openid", "email", "profile"],
+            ProviderKind::Linkedin => &["openid", "profile", "email"],
+            ProviderKind::Twitch => &["openid", "user:read:email"],
             ProviderKind::Github => &["read:user", "user:email"],
             ProviderKind::Apple => &["name", "email"],
             ProviderKind::Facebook => &["email", "public_profile"],
             ProviderKind::Wechat => &["snsapi_login"],
             ProviderKind::Discord => &["identify", "email"],
+            ProviderKind::Bitbucket => &["account", "email"],
+            ProviderKind::Spotify => &["user-read-email"],
         };
         d.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    /// Authorization request parameters the provider type needs besides the
+    /// protocol ones, then the configured extras.
+    pub fn extra_authorize_params(&self) -> Vec<(String, String)> {
+        let mut v: Vec<(String, String)> = Vec::new();
+        if self.config.kind == ProviderKind::Twitch {
+            // Twitch only puts claims in the ID token and `userinfo` that the
+            // request names.
+            let claim =
+                serde_json::json!({"email": null, "email_verified": null, "preferred_username": null, "picture": null});
+            v.push((
+                "claims".into(),
+                serde_json::json!({"id_token": claim, "userinfo": claim}).to_string(),
+            ));
+        }
+        for (k, val) in self.config.authorize_params.iter().flatten() {
+            v.retain(|(x, _)| x != k);
+            v.push((k.clone(), val.clone()));
+        }
+        v
     }
 
     /// Built-in endpoints of the provider type with overrides applied. For a
@@ -231,56 +420,188 @@ impl Provider {
     /// which is done by the caller (see `flow::endpoints`).
     pub(crate) fn static_endpoints(&self) -> Option<Endpoints> {
         let c = &self.config;
-        #[allow(clippy::type_complexity)]
-        let (a, t, u, j, e, iss): (&str, &str, Option<&str>, Option<&str>, Option<&str>, &[&str]) = match c.kind {
-            ProviderKind::Google => (
-                "https://accounts.google.com/o/oauth2/v2/auth",
-                "https://oauth2.googleapis.com/token",
-                Some("https://openidconnect.googleapis.com/v1/userinfo"),
-                Some("https://www.googleapis.com/oauth2/v3/certs"),
-                None,
-                &["https://accounts.google.com", "accounts.google.com"],
-            ),
-            ProviderKind::Apple => (
-                "https://appleid.apple.com/auth/authorize",
-                "https://appleid.apple.com/auth/token",
-                None,
-                Some("https://appleid.apple.com/auth/keys"),
-                None,
-                &["https://appleid.apple.com"],
-            ),
-            ProviderKind::Github => (
-                "https://github.com/login/oauth/authorize",
-                "https://github.com/login/oauth/access_token",
-                Some("https://api.github.com/user"),
-                None,
-                Some("https://api.github.com/user/emails"),
-                &[],
-            ),
-            ProviderKind::Facebook => (
-                "https://www.facebook.com/v19.0/dialog/oauth",
-                "https://graph.facebook.com/v19.0/oauth/access_token",
-                Some("https://graph.facebook.com/v19.0/me"),
-                None,
-                None,
-                &[],
-            ),
-            ProviderKind::Wechat => (
-                "https://open.weixin.qq.com/connect/qrconnect",
-                "https://api.weixin.qq.com/sns/oauth2/access_token",
-                Some("https://api.weixin.qq.com/sns/userinfo"),
-                None,
-                None,
-                &[],
-            ),
-            ProviderKind::Discord => (
-                "https://discord.com/oauth2/authorize",
-                "https://discord.com/api/oauth2/token",
-                Some("https://discord.com/api/users/@me"),
-                None,
-                None,
-                &[],
-            ),
+        let (a, t, u, j, e, iss): (
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Vec<String>,
+        );
+        let mut tenant = None;
+        let lit = |x: &str| x.to_owned();
+        match c.kind {
+            ProviderKind::Google => {
+                (a, t, u, j, e) = (
+                    lit("https://accounts.google.com/o/oauth2/v2/auth"),
+                    lit("https://oauth2.googleapis.com/token"),
+                    Some(lit("https://openidconnect.googleapis.com/v1/userinfo")),
+                    Some(lit("https://www.googleapis.com/oauth2/v3/certs")),
+                    None,
+                );
+                iss = vec![lit("https://accounts.google.com"), lit("accounts.google.com")];
+            }
+            ProviderKind::Apple => {
+                (a, t, u, j, e) = (
+                    lit("https://appleid.apple.com/auth/authorize"),
+                    lit("https://appleid.apple.com/auth/token"),
+                    None,
+                    Some(lit("https://appleid.apple.com/auth/keys")),
+                    None,
+                );
+                iss = vec![lit("https://appleid.apple.com")];
+            }
+            ProviderKind::Github => {
+                (a, t, u, j, e) = (
+                    lit("https://github.com/login/oauth/authorize"),
+                    lit("https://github.com/login/oauth/access_token"),
+                    Some(lit("https://api.github.com/user")),
+                    None,
+                    Some(lit("https://api.github.com/user/emails")),
+                );
+                iss = vec![];
+            }
+            ProviderKind::Facebook => {
+                (a, t, u, j, e) = (
+                    lit("https://www.facebook.com/v19.0/dialog/oauth"),
+                    lit("https://graph.facebook.com/v19.0/oauth/access_token"),
+                    Some(lit("https://graph.facebook.com/v19.0/me")),
+                    None,
+                    None,
+                );
+                iss = vec![];
+            }
+            ProviderKind::Wechat => {
+                (a, t, u, j, e) = (
+                    lit("https://open.weixin.qq.com/connect/qrconnect"),
+                    lit("https://api.weixin.qq.com/sns/oauth2/access_token"),
+                    Some(lit("https://api.weixin.qq.com/sns/userinfo")),
+                    None,
+                    None,
+                );
+                iss = vec![];
+            }
+            ProviderKind::Discord => {
+                (a, t, u, j, e) = (
+                    lit("https://discord.com/oauth2/authorize"),
+                    lit("https://discord.com/api/oauth2/token"),
+                    Some(lit("https://discord.com/api/users/@me")),
+                    None,
+                    None,
+                );
+                iss = vec![];
+            }
+            ProviderKind::Slack => {
+                (a, t, u, j, e) = (
+                    lit("https://slack.com/openid/connect/authorize"),
+                    lit("https://slack.com/api/openid.connect.token"),
+                    Some(lit("https://slack.com/api/openid.connect.userInfo")),
+                    Some(lit("https://slack.com/openid/connect/keys")),
+                    None,
+                );
+                iss = vec![lit("https://slack.com")];
+            }
+            ProviderKind::Linkedin => {
+                (a, t, u, j, e) = (
+                    lit("https://www.linkedin.com/oauth/v2/authorization"),
+                    lit("https://www.linkedin.com/oauth/v2/accessToken"),
+                    Some(lit("https://api.linkedin.com/v2/userinfo")),
+                    Some(lit("https://www.linkedin.com/oauth/openid/jwks")),
+                    None,
+                );
+                iss = vec![lit("https://www.linkedin.com")];
+            }
+            ProviderKind::Twitch => {
+                (a, t, u, j, e) = (
+                    lit("https://id.twitch.tv/oauth2/authorize"),
+                    lit("https://id.twitch.tv/oauth2/token"),
+                    Some(lit("https://id.twitch.tv/oauth2/userinfo")),
+                    Some(lit("https://id.twitch.tv/oauth2/keys")),
+                    None,
+                );
+                iss = vec![lit("https://id.twitch.tv/oauth2")];
+            }
+            ProviderKind::Bitbucket => {
+                (a, t, u, j, e) = (
+                    lit("https://bitbucket.org/site/oauth2/authorize"),
+                    lit("https://bitbucket.org/site/oauth2/access_token"),
+                    Some(lit("https://api.bitbucket.org/2.0/user")),
+                    None,
+                    Some(lit("https://api.bitbucket.org/2.0/user/emails")),
+                );
+                iss = vec![];
+            }
+            ProviderKind::Spotify => {
+                (a, t, u, j, e) = (
+                    lit("https://accounts.spotify.com/authorize"),
+                    lit("https://accounts.spotify.com/api/token"),
+                    Some(lit("https://api.spotify.com/v1/me")),
+                    None,
+                    None,
+                );
+                iss = vec![];
+            }
+            ProviderKind::Gitlab => {
+                let base = c
+                    .base_url
+                    .as_deref()
+                    .unwrap_or("https://gitlab.com")
+                    .trim_end_matches('/');
+                (a, t, u, j, e) = (
+                    format!("{base}/oauth/authorize"),
+                    format!("{base}/oauth/token"),
+                    Some(format!("{base}/oauth/userinfo")),
+                    Some(format!("{base}/oauth/discovery/keys")),
+                    None,
+                );
+                iss = vec![base.to_owned()];
+            }
+            ProviderKind::Microsoft => {
+                let base = c
+                    .base_url
+                    .as_deref()
+                    .unwrap_or("https://login.microsoftonline.com")
+                    .trim_end_matches('/');
+                let ten = c.tenant.as_deref().unwrap_or("common");
+                (a, t, u, j, e) = (
+                    format!("{base}/{ten}/oauth2/v2.0/authorize"),
+                    format!("{base}/{ten}/oauth2/v2.0/token"),
+                    Some(lit("https://graph.microsoft.com/oidc/userinfo")),
+                    Some(format!("{base}/{ten}/discovery/v2.0/keys")),
+                    None,
+                );
+                let allow: Vec<String> = c
+                    .allowed_tenants
+                    .iter()
+                    .flatten()
+                    .map(|g| g.to_ascii_lowercase())
+                    .collect();
+                if is_guid(ten) {
+                    // One tenant: its issuer is known up front.
+                    iss = vec![format!("{base}/{}/v2.0", ten.to_ascii_lowercase())];
+                } else {
+                    iss = vec![];
+                    tenant = Some(TenantRule {
+                        issuer_template: format!("{base}/{{tenantid}}/v2.0"),
+                        only: (ten == "consumers").then(|| MSA_TENANT.to_owned()),
+                        not: (ten == "organizations").then(|| MSA_TENANT.to_owned()),
+                        allow,
+                    });
+                }
+            }
+            ProviderKind::Keycloak => {
+                // Discovery finds the endpoints unless all are given.
+                let (a, t, j) = (c.authorize_url.as_ref()?, c.token_url.as_ref()?, c.jwks_url.as_ref()?);
+                return Some(Endpoints {
+                    authorize: a.clone(),
+                    token: t.clone(),
+                    userinfo: c.userinfo_url.clone(),
+                    jwks: Some(j.clone()),
+                    emails: None,
+                    issuers: self.issuer().into_iter().collect(),
+                    tenant: None,
+                });
+            }
             ProviderKind::Oidc => {
                 let (a, t, j) = (c.authorize_url.as_ref()?, c.token_url.as_ref()?, c.jwks_url.as_ref()?);
                 return Some(Endpoints {
@@ -290,11 +611,12 @@ impl Provider {
                     jwks: Some(j.clone()),
                     emails: None,
                     issuers: c.issuer.iter().cloned().collect(),
+                    tenant: None,
                 });
             }
-        };
-        let pick = |over: &Option<String>, d: Option<&str>| over.clone().or_else(|| d.map(str::to_owned));
-        let mut issuers: Vec<String> = iss.iter().map(|s| (*s).to_owned()).collect();
+        }
+        let pick = |over: &Option<String>, d: Option<String>| over.clone().or(d);
+        let mut issuers = iss;
         if let Some(i) = &c.issuer
             && !issuers.contains(i)
         {
@@ -307,6 +629,7 @@ impl Provider {
             jwks: pick(&c.jwks_url, j),
             emails: pick(&c.emails_url, e),
             issuers,
+            tenant,
         })
     }
 }

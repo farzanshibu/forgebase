@@ -108,6 +108,8 @@ struct CallbackParams {
     code: Option<String>,
     state: Option<String>,
     error: Option<String>,
+    /// Apple's first-authorization user JSON.
+    user: Option<String>,
 }
 
 async fn finish(a: AuthService, ci: crate::ClientInfo, rid: String, p: String, cp: CallbackParams) -> Res {
@@ -115,6 +117,7 @@ async fn finish(a: AuthService, ci: crate::ClientInfo, rid: String, p: String, c
         code: cp.code,
         state: cp.state,
         error: cp.error,
+        user: cp.user,
     };
     match a
         .oauth_callback(&ci, &p, &cb)
@@ -140,6 +143,7 @@ fn params_from(pairs: Vec<(String, String)>) -> CallbackParams {
             "code" => cp.code = Some(v),
             "state" => cp.state = Some(v),
             "error" => cp.error = Some(v),
+            "user" => cp.user = Some(v),
             _ => {}
         }
     }

@@ -130,6 +130,8 @@ impl JwksCache {
 pub struct Expect<'a> {
     /// Accepted `iss` values.
     pub issuers: &'a [String],
+    /// Multi-tenant issuer rule; replaces `issuers` when set.
+    pub tenant: Option<&'a super::registry::TenantRule>,
     /// Our client id (must be in `aud`).
     pub audience: &'a str,
     /// The nonce sent in the authorization request.
@@ -204,7 +206,26 @@ pub async fn validate(
     let c: Value = serde_json::from_slice(&dec(p)?).map_err(|_| bad("invalid ID token"))?;
     let obj = c.as_object().ok_or(bad("invalid ID token"))?;
     let iss = obj.get("iss").and_then(Value::as_str).unwrap_or_default();
-    if !expect.issuers.iter().any(|i| i == iss) {
+    if let Some(rule) = expect.tenant {
+        // Multi-tenant: the issuer names the token's own tenant, so it can
+        // only be checked against the template with that tenant filled in.
+        // Every tenant signs with the same keys: without this check a token
+        // minted for another tenant's `iss` would pass.
+        let tid = obj
+            .get("tid")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        if !super::registry::is_guid(&tid) || iss != rule.issuer_template.replace("{tenantid}", &tid) {
+            return Err(bad("ID token issuer mismatch"));
+        }
+        let denied = rule.only.as_deref().is_some_and(|o| o != tid)
+            || rule.not.as_deref() == Some(tid.as_str())
+            || (!rule.allow.is_empty() && !rule.allow.contains(&tid));
+        if denied {
+            return Err(bad("ID token tenant is not allowed"));
+        }
+    } else if !expect.issuers.iter().any(|i| i == iss) {
         return Err(bad("ID token issuer mismatch"));
     }
     let aud_ok = match obj.get("aud") {

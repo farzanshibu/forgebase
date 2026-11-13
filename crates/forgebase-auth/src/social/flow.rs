@@ -37,6 +37,10 @@ pub struct OAuthCallback {
     pub state: Option<String>,
     /// Provider error code (`access_denied`, ...).
     pub error: Option<String>,
+    /// Apple's `user` form field (JSON with the name, sent on the first
+    /// authorization only). Client supplied: used for the display name,
+    /// never for identity or email.
+    pub user: Option<String>,
 }
 
 /// A linked provider account as shown to its owner.
@@ -52,6 +56,8 @@ pub struct IdentityView {
     pub email_verified: bool,
     /// Display name.
     pub display_name: Option<String>,
+    /// Profile picture the provider reported (https URL).
+    pub avatar_url: Option<String>,
     /// Linked at (RFC 3339).
     pub created_at: String,
     /// Last sign-in with it (RFC 3339).
@@ -75,6 +81,67 @@ pub(crate) struct Profile {
     pub(crate) email: Option<String>,
     pub(crate) email_verified: bool,
     pub(crate) name: Option<String>,
+    pub(crate) picture: Option<String>,
+}
+
+/// An avatar URL worth keeping: `https`, no credentials, at most 2048 bytes.
+fn clean_avatar(u: Option<&str>) -> Option<String> {
+    let u = u?;
+    let p = url::Url::parse(u).ok()?;
+    (u.len() <= 2048
+        && p.scheme() == "https"
+        && p.host_str().is_some()
+        && p.username().is_empty()
+        && p.password().is_none())
+    .then(|| u.to_owned())
+}
+
+/// A display name: control characters out, at most 100 characters, `None` if empty.
+fn clean_name(n: &str) -> Option<String> {
+    let n: String = n.chars().filter(|c| !c.is_control()).take(100).collect();
+    let n = n.trim().to_owned();
+    (!n.is_empty()).then_some(n)
+}
+
+/// The name in Apple's first-authorization `user` JSON
+/// (`{"name": {"firstName": "..", "lastName": ".."}}`).
+fn apple_user_name(user: Option<&str>) -> Option<String> {
+    let v: Json = serde_json::from_str(user.filter(|u| u.len() <= 4096)?).ok()?;
+    let part = |k: &str| v["name"][k].as_str().map(str::trim).filter(|s| !s.is_empty());
+    clean_name(
+        &[part("firstName"), part("lastName")]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join(" "),
+    )
+}
+
+fn is_truthy(v: Option<&Json>) -> bool {
+    match v {
+        Some(Json::Bool(b)) => *b,
+        Some(Json::String(s)) => s == "true" || s == "1",
+        Some(Json::Number(n)) => n.as_i64() == Some(1),
+        _ => false,
+    }
+}
+
+fn json_id(v: Option<&Json>) -> Option<String> {
+    v.and_then(|v| {
+        v.as_i64()
+            .map(|n| n.to_string())
+            .or_else(|| v.as_str().map(str::to_owned))
+    })
+}
+
+/// Basic credentials of RFC 6749 §2.3.1: both parts form-urlencoded.
+fn client_basic(id: &str, secret: &str) -> String {
+    use base64::Engine as _;
+    let enc = |s: &str| url::form_urlencoded::byte_serialize(s.as_bytes()).collect::<String>();
+    format!(
+        "Basic {}",
+        base64::engine::general_purpose::STANDARD.encode(format!("{}:{}", enc(id), enc(secret)))
+    )
 }
 
 fn provider_err(m: &str) -> AuthError {
@@ -157,9 +224,7 @@ impl AuthService {
                 }
                 // Generic OIDC with only an issuer: discovery.
                 let issuer = p
-                    .config
-                    .issuer
-                    .as_deref()
+                    .issuer()
                     .ok_or_else(|| provider_err("provider has no endpoints"))?
                     .trim_end_matches('/')
                     .to_owned();
@@ -197,6 +262,7 @@ impl AuthService {
                     ),
                     emails: None,
                     issuers: vec![issuer],
+                    tenant: None,
                 })
             })
             .await
@@ -327,6 +393,9 @@ impl AuthService {
                 q.append_pair("code_challenge", &b64url(&Sha256::digest(v.as_bytes())));
                 q.append_pair("code_challenge_method", "S256");
             }
+            for (k, v) in p.extra_authorize_params() {
+                q.append_pair(&k, &v);
+            }
         }
         if p.config.kind == ProviderKind::Wechat {
             url.set_fragment(Some("wechat_redirect"));
@@ -383,7 +452,7 @@ impl AuthService {
             .as_deref()
             .filter(|c| !c.is_empty() && c.len() <= 2048)
             .ok_or_else(|| AuthError::invalid("missing authorization code"))?;
-        let profile = match self.oauth_fetch_profile(&p, code, &st).await {
+        let profile = match self.oauth_fetch_profile(&p, code, &st, cb.user.as_deref()).await {
             Ok(pr) => pr,
             Err(e) => {
                 audit_fail("exchange_failed").await?;
@@ -456,7 +525,13 @@ impl AuthService {
         }
     }
 
-    async fn oauth_fetch_profile(&self, p: &Provider, code: &str, st: &StateRow) -> Result<Profile, AuthError> {
+    async fn oauth_fetch_profile(
+        &self,
+        p: &Provider,
+        code: &str,
+        st: &StateRow,
+        user_hint: Option<&str>,
+    ) -> Result<Profile, AuthError> {
         let ep = self.endpoints(p).await?;
         let http = self.social().http();
         let secret = self.client_secret(p).await?;
@@ -475,13 +550,21 @@ impl AuthService {
                 ("grant_type", "authorization_code"),
                 ("code", code),
                 ("redirect_uri", &st.redirect_uri),
-                ("client_id", &c.client_id),
-                ("client_secret", &secret),
             ];
+            // Bitbucket and Spotify authenticate the client with HTTP Basic;
+            // the others take it in the form.
+            if !p.token_auth_basic() {
+                f.push(("client_id", &c.client_id));
+                f.push(("client_secret", &secret));
+            }
             if let Some(v) = &st.verifier {
                 f.push(("code_verifier", v));
             }
-            HttpRequest::post_form(&ep.token, &f)
+            let mut r = HttpRequest::post_form(&ep.token, &f);
+            if p.token_auth_basic() {
+                r = r.header("authorization", client_basic(&c.client_id, &secret));
+            }
+            r
         };
         let res = http.send(req).await?;
         let tok = res.json()?;
@@ -499,7 +582,15 @@ impl AuthService {
         };
 
         match c.kind {
-            ProviderKind::Google | ProviderKind::Apple | ProviderKind::Oidc => {
+            ProviderKind::Google
+            | ProviderKind::Apple
+            | ProviderKind::Oidc
+            | ProviderKind::Microsoft
+            | ProviderKind::Gitlab
+            | ProviderKind::Slack
+            | ProviderKind::Linkedin
+            | ProviderKind::Twitch
+            | ProviderKind::Keycloak => {
                 let id_token = tok
                     .get("id_token")
                     .and_then(Json::as_str)
@@ -512,17 +603,20 @@ impl AuthService {
                     id_token,
                     &Expect {
                         issuers: &ep.issuers,
+                        tenant: ep.tenant.as_ref(),
                         audience: &c.client_id,
                         nonce: &st.nonce,
                         now: now(),
                     },
                 )
                 .await?;
+                let claim = |k: &str| claims.raw.get(k).and_then(Json::as_str).map(str::to_owned);
                 let mut profile = Profile {
                     subject: claims.sub.clone(),
                     email: claims.email.clone(),
                     email_verified: claims.email_verified,
                     name: claims.name.clone(),
+                    picture: claims.picture.clone(),
                 };
                 if profile.email.is_none()
                     && let (Some(u), Some(at)) = (ep.userinfo.as_deref(), access.as_deref())
@@ -536,9 +630,45 @@ impl AuthService {
                             profile.name = profile
                                 .name
                                 .or_else(|| j.get("name").and_then(Json::as_str).map(str::to_owned));
+                            profile.picture = profile
+                                .picture
+                                .or_else(|| j.get("picture").and_then(Json::as_str).map(str::to_owned));
                         }
                     }
                 }
+                match c.kind {
+                    ProviderKind::Apple => {
+                        // Apple never puts the name in the ID token; it sends
+                        // it once, in the `user` form field of the first
+                        // authorization. A relay address (`is_private_email`)
+                        // is a real, verified mailbox that forwards.
+                        profile.name = profile.name.or_else(|| apple_user_name(user_hint));
+                    }
+                    ProviderKind::Microsoft => {
+                        // The `email` claim is whatever the account holder
+                        // typed: it is not proof of a mailbox (the "nOAuth"
+                        // account takeover). Only Entra's optional
+                        // `xms_edov` claim (the email's domain is owned by
+                        // the tenant) counts, and the stable identity is
+                        // tenant + object id, never the email.
+                        profile.email_verified = profile.email.is_some() && is_truthy(claims.raw.get("xms_edov"));
+                        if let (Some(tid), Some(oid)) = (claim("tid"), claim("oid")) {
+                            profile.subject = format!("{}:{}", tid.to_ascii_lowercase(), oid.to_ascii_lowercase());
+                        }
+                    }
+                    ProviderKind::Twitch => {
+                        profile.name = profile.name.or_else(|| claim("preferred_username"));
+                    }
+                    ProviderKind::Gitlab => {
+                        profile.name = profile
+                            .name
+                            .or_else(|| claim("nickname"))
+                            .or_else(|| claim("preferred_username"));
+                    }
+                    _ => {}
+                }
+                profile.name = profile.name.as_deref().and_then(clean_name);
+                profile.picture = clean_avatar(profile.picture.as_deref());
                 Ok(profile)
             }
             ProviderKind::Github => {
@@ -580,14 +710,15 @@ impl AuthService {
                         .get("name")
                         .or_else(|| j.get("login"))
                         .and_then(Json::as_str)
-                        .map(str::to_owned),
+                        .and_then(clean_name),
+                    picture: clean_avatar(j.get("avatar_url").and_then(Json::as_str)),
                 })
             }
             ProviderKind::Facebook => {
                 let at = need_access()?;
                 let u = ep.userinfo.as_deref().ok_or_else(|| provider_err("no user endpoint"))?;
                 let mut url = url::Url::parse(u).map_err(|_| provider_err("bad user URL"))?;
-                url.query_pairs_mut().append_pair("fields", "id,name,email");
+                url.query_pairs_mut().append_pair("fields", "id,name,email,picture");
                 let r = http.send(bearer(url.as_str(), &at)).await?;
                 if r.status != 200 {
                     return Err(provider_err("could not read the Facebook profile"));
@@ -602,7 +733,8 @@ impl AuthService {
                     email: j.get("email").and_then(Json::as_str).map(str::to_owned),
                     // Facebook does not say whether an address is verified.
                     email_verified: false,
-                    name: j.get("name").and_then(Json::as_str).map(str::to_owned),
+                    name: j.get("name").and_then(Json::as_str).and_then(clean_name),
+                    picture: clean_avatar(j["picture"]["data"]["url"].as_str()),
                 })
             }
             ProviderKind::Discord => {
@@ -613,19 +745,80 @@ impl AuthService {
                     return Err(provider_err("could not read the Discord profile"));
                 }
                 let j = r.json()?;
+                let id = j
+                    .get("id")
+                    .and_then(Json::as_str)
+                    .ok_or_else(|| provider_err("Discord profile has no id"))?
+                    .to_owned();
+                // Avatars are a hash on Discord's CDN.
+                let picture = j.get("avatar").and_then(Json::as_str).and_then(|h| {
+                    (h.len() <= 64 && h.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_'))
+                        .then(|| format!("https://cdn.discordapp.com/avatars/{id}/{h}.png"))
+                });
                 Ok(Profile {
-                    subject: j
-                        .get("id")
-                        .and_then(Json::as_str)
-                        .ok_or_else(|| provider_err("Discord profile has no id"))?
-                        .to_owned(),
+                    subject: id,
                     email: j.get("email").and_then(Json::as_str).map(str::to_owned),
                     email_verified: j.get("verified") == Some(&Json::Bool(true)),
                     name: j
                         .get("global_name")
                         .or_else(|| j.get("username"))
                         .and_then(Json::as_str)
-                        .map(str::to_owned),
+                        .and_then(clean_name),
+                    picture,
+                })
+            }
+            ProviderKind::Bitbucket => {
+                let at = need_access()?;
+                let u = ep.userinfo.as_deref().ok_or_else(|| provider_err("no user endpoint"))?;
+                let r = http.send(bearer(u, &at)).await?;
+                if r.status != 200 {
+                    return Err(provider_err("could not read the Bitbucket profile"));
+                }
+                let j = r.json()?;
+                let subject = j
+                    .get("uuid")
+                    .and_then(Json::as_str)
+                    .ok_or_else(|| provider_err("Bitbucket profile has no uuid"))?
+                    .to_owned();
+                // Only the primary address Bitbucket itself confirmed counts.
+                let mut email = None;
+                if let Some(eu) = ep.emails.as_deref() {
+                    let er = http.send(bearer(eu, &at)).await?;
+                    if er.status == 200 {
+                        email = er.json()?["values"]
+                            .as_array()
+                            .and_then(|l| l.iter().find(|e| e["is_primary"] == true && e["is_confirmed"] == true))
+                            .and_then(|e| e["email"].as_str())
+                            .map(str::to_owned);
+                    }
+                }
+                Ok(Profile {
+                    subject,
+                    email_verified: email.is_some(),
+                    email,
+                    name: j
+                        .get("display_name")
+                        .or_else(|| j.get("nickname"))
+                        .and_then(Json::as_str)
+                        .and_then(clean_name),
+                    picture: clean_avatar(j["links"]["avatar"]["href"].as_str()),
+                })
+            }
+            ProviderKind::Spotify => {
+                let at = need_access()?;
+                let u = ep.userinfo.as_deref().ok_or_else(|| provider_err("no user endpoint"))?;
+                let r = http.send(bearer(u, &at)).await?;
+                if r.status != 200 {
+                    return Err(provider_err("could not read the Spotify profile"));
+                }
+                let j = r.json()?;
+                Ok(Profile {
+                    subject: json_id(j.get("id")).ok_or_else(|| provider_err("Spotify profile has no id"))?,
+                    email: j.get("email").and_then(Json::as_str).map(str::to_owned),
+                    // Spotify does not confirm the address it reports.
+                    email_verified: false,
+                    name: j.get("display_name").and_then(Json::as_str).and_then(clean_name),
+                    picture: clean_avatar(j["images"][0]["url"].as_str()),
                 })
             }
             ProviderKind::Wechat => {
@@ -656,7 +849,8 @@ impl AuthService {
                     subject: unionid.unwrap_or_else(|| openid.to_owned()),
                     email: None,
                     email_verified: false,
-                    name,
+                    name: name.as_deref().and_then(clean_name),
+                    picture: None,
                 })
             }
         }
@@ -701,8 +895,9 @@ impl AuthService {
         let mut tx = Tx::begin(self.data().backend()).await?;
         tx.exec(
             "INSERT INTO _forgebase_oauth_identities
-                (id, realm, provider, provider_subject, collection, user_id, email, email_verified, display_name, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                (id, realm, provider, provider_subject, collection, user_id, email, email_verified, display_name, created_at,
+                 avatar_url)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             vec![
                 t(id.clone()),
                 t(realm),
@@ -714,6 +909,7 @@ impl AuthService {
                 i(i64::from(profile.email_verified)),
                 ot(profile.name.clone()),
                 i(now()),
+                ot(profile.picture.clone()),
             ],
         )
         .await?;
@@ -797,12 +993,14 @@ impl AuthService {
             let mut tx = Tx::begin(self.data().backend()).await?;
             tx.exec(
                 "UPDATE _forgebase_oauth_identities SET last_login_at = ?2, email = COALESCE(?3, email),
-                    email_verified = CASE WHEN CAST(?3 AS TEXT) IS NULL THEN email_verified ELSE ?4 END WHERE id = ?1",
+                    email_verified = CASE WHEN CAST(?3 AS TEXT) IS NULL THEN email_verified ELSE ?4 END,
+                    avatar_url = COALESCE(?5, avatar_url) WHERE id = ?1",
                 vec![
                     t(identity_id),
                     i(now()),
                     ot(profile.email.clone()),
                     i(i64::from(profile.email_verified)),
+                    ot(profile.picture.clone()),
                 ],
             )
             .await?;
@@ -985,7 +1183,7 @@ impl AuthService {
     async fn identity_view(&self, id: &str) -> Result<IdentityView, AuthError> {
         let r = read(
             self.data().backend(),
-            "SELECT id, provider, email, email_verified, display_name, created_at, last_login_at
+            "SELECT id, provider, email, email_verified, display_name, avatar_url, created_at, last_login_at
              FROM _forgebase_oauth_identities WHERE id = ?1",
             vec![t(id)],
         )
@@ -1000,7 +1198,7 @@ impl AuthService {
         let (coll, id) = Self::session_user(caller)?;
         let r = read(
             self.data().backend(),
-            "SELECT id, provider, email, email_verified, display_name, created_at, last_login_at
+            "SELECT id, provider, email, email_verified, display_name, avatar_url, created_at, last_login_at
              FROM _forgebase_oauth_identities WHERE collection = ?1 AND user_id = ?2 ORDER BY created_at",
             vec![t(coll), t(id)],
         )
@@ -1092,6 +1290,7 @@ fn identity_row(row: crate::store::Row<'_>) -> IdentityView {
         email: row.opt_str("email"),
         email_verified: row.i64("email_verified") == 1,
         display_name: row.opt_str("display_name"),
+        avatar_url: row.opt_str("avatar_url"),
         created_at: rfc3339(row.i64("created_at")),
         last_login_at: row.opt_i64("last_login_at").map(rfc3339),
     }

@@ -47,6 +47,11 @@ pub struct Quirks {
     pub no_id_token: bool,
     pub discovery_issuer: Option<String>,
     pub userinfo_email: bool,
+    /// Claims merged into the ID token last (they override the defaults).
+    pub extra_claims: serde_json::Map<String, Value>,
+    /// The token endpoint wants the client in an HTTP Basic header (and
+    /// refuses client credentials in the form).
+    pub basic_client_auth: bool,
 }
 
 struct Grant {
@@ -63,6 +68,9 @@ struct St {
     quirks: Quirks,
     apple_verifier: Option<p256::ecdsa::VerifyingKey>,
     redeem_count: usize,
+    /// `(Authorization header, form carried client_secret)` of the last token request.
+    last_token_auth: (Option<String>, bool),
+    last_client_secret: String,
 }
 
 pub struct Idp {
@@ -125,12 +133,19 @@ impl Idp {
                 quirks: Quirks::default(),
                 apple_verifier: None,
                 redeem_count: 0,
+                last_token_auth: (None, false),
+                last_client_secret: String::new(),
             }),
             ec: SigningKey::from_slice(&[9u8; 32]).unwrap(),
             jwks_hits: AtomicUsize::new(0),
         });
         let app = Router::new()
             .route("/token", post(token))
+            // GitLab's paths under a `base_url`, Keycloak's realm discovery.
+            .route("/oauth/token", post(token))
+            .route("/oauth/discovery/keys", get(certs))
+            .route("/oauth/userinfo", get(userinfo))
+            .route("/realms/acme/.well-known/openid-configuration", get(discovery))
             .route("/certs", get(certs))
             .route("/.well-known/openid-configuration", get(discovery))
             .route("/userinfo", get(userinfo))
@@ -138,6 +153,9 @@ impl Idp {
             .route("/gh/emails", get(gh_emails))
             .route("/discord/me", get(discord_me))
             .route("/fb/me", get(fb_me))
+            .route("/bb/user", get(bb_user))
+            .route("/bb/emails", get(bb_emails))
+            .route("/spotify/me", get(spotify_me))
             .route("/wx/token", get(wx_token))
             .route("/wx/userinfo", get(wx_userinfo))
             .with_state(idp.clone());
@@ -161,6 +179,17 @@ impl Idp {
 
     pub fn set_apple_verifier(&self, v: p256::ecdsa::VerifyingKey) {
         self.st.lock().unwrap().apple_verifier = Some(v);
+    }
+
+    /// The `Authorization` header and whether the form carried a
+    /// `client_secret` on the last token request.
+    pub fn last_token_auth(&self) -> (Option<String>, bool) {
+        self.st.lock().unwrap().last_token_auth.clone()
+    }
+
+    /// The `client_secret` form field of the last token request.
+    pub fn last_client_secret(&self) -> String {
+        self.st.lock().unwrap().last_client_secret.clone()
     }
 
     pub fn redeemed(&self) -> usize {
@@ -221,6 +250,9 @@ impl Idp {
         {
             claims["email"] = json!(e);
             claims["email_verified"] = json!(st.profile.email_verified);
+        }
+        for (k, v) in &q.extra_claims {
+            claims[k] = v.clone();
         }
         let alg = q
             .alg
@@ -299,9 +331,37 @@ fn query(uri: &Uri) -> HashMap<String, String> {
         .collect()
 }
 
-async fn token(State(idp): State<Arc<Idp>>, body: Bytes) -> Response {
-    let f = form(&body);
+async fn token(State(idp): State<Arc<Idp>>, headers: HeaderMap, body: Bytes) -> Response {
+    let mut f = form(&body);
+    let auth = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned);
+    idp.st.lock().unwrap().last_token_auth = (auth.clone(), f.contains_key("client_secret"));
+    if idp.st.lock().unwrap().quirks.basic_client_auth {
+        // client_secret_basic: both parts form-urlencoded inside the header.
+        let creds = auth
+            .as_deref()
+            .and_then(|a| a.strip_prefix("Basic "))
+            .and_then(|b| base64::engine::general_purpose::STANDARD.decode(b).ok())
+            .and_then(|b| String::from_utf8(b).ok());
+        let Some((id, sec)) = creds.as_deref().and_then(|c| c.split_once(':')) else {
+            return (StatusCode::UNAUTHORIZED, axum::Json(json!({"error": "invalid_client"}))).into_response();
+        };
+        if f.contains_key("client_secret") {
+            return (StatusCode::BAD_REQUEST, axum::Json(json!({"error": "invalid_request"}))).into_response();
+        }
+        let dec = |s: &str| {
+            url::form_urlencoded::parse(s.as_bytes())
+                .next()
+                .map(|(k, _)| k.into_owned())
+                .unwrap_or_default()
+        };
+        f.insert("client_id".into(), dec(id));
+        f.insert("client_secret".into(), dec(sec));
+    }
     let secret = f.get("client_secret").cloned().unwrap_or_default();
+    idp.st.lock().unwrap().last_client_secret = secret.clone();
     let verifier = idp.st.lock().unwrap().apple_verifier;
     let secret_ok = match verifier {
         // Apple: the client secret is an ES256 JWT signed with the team key.
@@ -399,8 +459,10 @@ async fn discord_me(State(idp): State<Arc<Idp>>, h: HeaderMap) -> Response {
         return StatusCode::UNAUTHORIZED.into_response();
     }
     let p = idp.profile();
-    axum::Json(json!({"id": "9001", "username": "disco", "email": p.email, "verified": p.email_verified}))
-        .into_response()
+    axum::Json(
+        json!({"id": "9001", "username": "disco", "email": p.email, "verified": p.email_verified, "avatar": "abc123"}),
+    )
+    .into_response()
 }
 
 async fn fb_me(State(idp): State<Arc<Idp>>, h: HeaderMap) -> Response {
@@ -442,4 +504,41 @@ async fn wx_userinfo(State(idp): State<Arc<Idp>>, uri: Uri) -> Response {
     }
     let p = idp.profile();
     axum::Json(json!({"openid": q.get("openid"), "nickname": p.name})).into_response()
+}
+
+async fn bb_user(State(idp): State<Arc<Idp>>, h: HeaderMap) -> Response {
+    if !bearer_ok(&h) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let p = idp.profile();
+    axum::Json(json!({
+        "uuid": "{bb-uuid-1}", "display_name": p.name, "nickname": "bb",
+        "links": {"avatar": {"href": "https://secure.gravatar.com/avatar/bb.png"}},
+    }))
+    .into_response()
+}
+
+async fn bb_emails(State(idp): State<Arc<Idp>>, h: HeaderMap) -> Response {
+    if !bearer_ok(&h) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let p = idp.profile();
+    // A confirmed secondary address that must never be picked, then the primary.
+    let mut values = vec![json!({"email": "second@example.com", "is_primary": false, "is_confirmed": true})];
+    if let Some(e) = &p.email {
+        values.push(json!({"email": e, "is_primary": true, "is_confirmed": p.email_verified}));
+    }
+    axum::Json(json!({"values": values})).into_response()
+}
+
+async fn spotify_me(State(idp): State<Arc<Idp>>, h: HeaderMap) -> Response {
+    if !bearer_ok(&h) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let p = idp.profile();
+    axum::Json(json!({
+        "id": "spotify-user-1", "display_name": p.name, "email": p.email,
+        "images": [{"url": "https://i.scdn.co/image/abc", "height": 64}],
+    }))
+    .into_response()
 }

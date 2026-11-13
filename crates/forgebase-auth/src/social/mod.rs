@@ -17,7 +17,10 @@ use std::sync::{Arc, RwLock};
 
 pub use flow::{IdentityView, OAuthCallback, OAuthOutcome, OAuthStart};
 pub use http_client::{HttpClient, HttpRequest, HttpResponse, PlainHttpClient};
-pub use registry::{AppleKey, DEFAULT_REALM, ProviderConfig, ProviderInfo, ProviderKind, ProviderRegistry, Secret};
+pub use registry::{
+    AppleKey, DEFAULT_REALM, MSA_TENANT, ProviderConfig, ProviderInfo, ProviderKind, ProviderRegistry, Secret,
+    TenantRule,
+};
 
 /// Provider state held by the auth service.
 #[derive(Debug)]
