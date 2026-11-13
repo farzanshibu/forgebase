@@ -23,6 +23,7 @@ functions and billing. SQLite is the optional one-file alternative.
 - Redis protocol listener (off by default), TOML config and `FORGEBASE_*`
   environment variables, `.env` for development.
 - JavaScript SDK in [`sdk/js`](sdk/js).
+- Terraform provider in [`integrations/terraform-provider-forgebase`](integrations/terraform-provider-forgebase): collections, storage, queues, functions, identity and plans as code.
 - Docker image, Docker Compose file, a hardened systemd unit, and a release
   workflow for five targets.
 

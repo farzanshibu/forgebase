@@ -344,3 +344,22 @@ jobs:
       - run: dart analyze --fatal-infos
       - run: dart format --output=none --set-exit-if-changed .
       - run: dart test
+
+  terraform-provider:
+    name: terraform provider (fmt, vet, test)
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: integrations/terraform-provider-forgebase
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: integrations/terraform-provider-forgebase/go.mod
+          cache-dependency-path: integrations/terraform-provider-forgebase/go.sum
+      - run: go build ./...
+      - name: gofmt
+        run: test -z "$(gofmt -l .)"
+      - run: go vet ./...
+      # Includes the docs-up-to-date check; run `go generate ./...` to refresh docs/.
+      - run: go test -race ./...

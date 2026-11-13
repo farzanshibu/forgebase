@@ -659,3 +659,35 @@ variant, validate the output against the Kubernetes and CRD JSON schemas with
 a `ReadWriteMany` claim is refused. The `kubernetes` job of `.github/workflows/ci.yml`
 runs both. They do not start a cluster: see the READMEs for what has not been run
 against one.
+
+## 10. Configuration as code (Terraform)
+
+The Terraform provider in
+[`integrations/terraform-provider-forgebase`](../integrations/terraform-provider-forgebase/README.md)
+manages a running server's configuration through its REST API: collections with
+their indexes and access rules, storage buckets and ACLs, queue topics and
+subscriptions, functions, service accounts and API keys, OAuth clients, roles,
+organizations, projects, and entitlement plans.
+
+It needs a reachable server and one credential. Create an administrator, then a
+service account with an API key for Terraform to use:
+
+```sh
+forgebase admin create --email you@example.com --password-stdin
+# Signed in as that administrator:
+#   POST /api/auth/service-accounts            {"name": "terraform", "role": "admin"}
+#   POST /api/auth/service-accounts/{id}/keys  {"name": "terraform", "scopes": ["*"]}
+export FORGEBASE_URL=https://forgebase.example.com
+export FORGEBASE_TOKEN=fbk_...
+```
+
+Notes for operators:
+
+- The provider talks to the public API through your proxy; it needs no access to the data directory.
+- State holds the secrets the server shows once (API key secrets, OAuth client secrets, webhook
+  signing secrets, function secrets). Keep the Terraform state in an encrypted backend.
+- The key needs `write` on the areas it manages (`collections`, `storage`, `queues`, `functions`,
+  `auth`, `policies`, `plans`, ...) and `read` for refresh. Collection rules, plans, features and
+  realm roles also need an administrator principal.
+- Applies are not transactional across resources. After a failed apply, rerun it: every resource
+  reads its real state first.
