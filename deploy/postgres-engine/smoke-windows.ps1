@@ -87,6 +87,11 @@ try {
   Check ((& "$Bin\pg_restore.exe" -l "$Work\dump") -match "TABLE public items").Count -gt 0 "pg_dump/pg_restore"
   & "$Bin\pg_basebackup.exe" -h 127.0.0.1 -p $Port -U postgres -D $Standby -R -X stream -c fast
   & "$Bin\pg_verifybackup.exe" $Standby | Out-Null
+  # Run by an administrator (the CI runner), pg_basebackup creates files owned
+  # by Administrators, which pg_ctl's restricted token cannot read
+  # ("global/pg_control: Permission denied", engine-pg18.6-r7). initdb drops
+  # its rights itself; a non-administrator never sees this.
+  icacls $Standby /grant "$($env:USERDOMAIN)\$($env:USERNAME):(OI)(CI)F" /T /Q | Out-Null
   PgCtl @("-D", $Standby, "-l", "$Work\standby.log", "-o", "-p $Port2", "-w", "-t", "60", "start")
   Q "INSERT INTO items VALUES (4, '[1,1,1]')" | Out-Null
   $ok = $false
