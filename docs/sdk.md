@@ -9,7 +9,7 @@ does not repeat it.
 
 | SDK | Location | Status |
 |---|---|---|
-| JavaScript / TypeScript (`@forgebase/sdk`) | [`sdk/js`](../sdk/js) | Version 0.1.0. Covers auth, collections and records, realtime, entitlements, billing, jobs and queues. |
+| JavaScript / TypeScript (`@forgebase/sdk`) | [`sdk/js`](../sdk/js) | Version 0.1.0. Covers auth, collections and records, storage, KV, functions, vector, graph, SQL, realtime, queues, jobs, billing, entitlements, credits, webhook verification, and the organization, access, identity, customization and system administration APIs. |
 | Rust (`forgebase-sdk`) | [`sdk/rust`](../sdk/rust) | Version 0.1.0 (FB-82), its own Cargo workspace. Covers auth, records, KV, storage, realtime, functions, jobs, queues, billing and entitlements. See [sdk/rust/README.md](../sdk/rust/README.md). |
 | Dart / Flutter | Not planned for this release | Skipped by decision on 2026-11-10. |
 
@@ -40,7 +40,20 @@ browsers, Deno and Bun provide. It ships ESM, CJS and type declarations.
 | Entitlements and quotas | `fb.entitlements` | See [sdk/js/README.md#entitlements-and-quotas](../sdk/js/README.md#entitlements-and-quotas). |
 | Queues and pub/sub | `fb.queues` | Topics, subscriptions, publish (attributes, ordering key, dedup id), pull, ack, nack, deadlines, streaming pull with automatic reconnect, seek and snapshots, dead letters. See [§3.1](#31-queues). |
 | Jobs and long tasks | `fb.jobs` | Enqueue, progress, wait, workflows. See [sdk/js/README.md#jobs-and-long-tasks](../sdk/js/README.md#jobs-and-long-tasks). |
-| Raw requests | `fb.request(path, options)` | For routes the SDK does not wrap yet, such as passkeys and backups ([§3.2](#32-backups-and-operational-endpoints)). |
+| Storage | `fb.storage` | Buckets, objects, multipart and resumable uploads, signed URLs, versions, ACLs. See [sdk/js/README.md#storage](../sdk/js/README.md#storage). |
+| Documents | `fb.documents` | Document form of the record operations with merge patch. |
+| Key-value | `fb.kv.ns(name)` | Strings, hashes, lists, sets, sorted sets, streams, TTLs, pub/sub, batch and raw commands. See [sdk/js/README.md#key-value-store](../sdk/js/README.md#key-value-store). |
+| SQL and indexes | `fb.sql`, `fb.indexes` | Parameterised SQL, batch, explain, tables; collection indexes, recommendations and the slow-query log. |
+| Graph | `fb.graph` | Nodes, edges, neighbours, traversal, shortest path, read-only openCypher. |
+| Vector search | `fb.vector` | Collections, fields, upsert, similarity and hybrid search, recall, rebuild. |
+| Functions | `fb.functions` | Deploy, invoke (JSON or raw `Response`), versions, rollback, logs, secrets, KV rules. |
+| Credits | `fb.credits` | Balance, ledger, top-ups, grants, spend, refunds, reversals, rates, usage, stats. |
+| Billing | `fb.billing` | Customers, subscriptions, orders, invoices, portal, catalog, providers, settings and store purchases. |
+| Organizations and access | `fb.orgs`, `fb.access` | Orgs, projects, teams, members, invitations, roles; permission checks, ACLs, collection and resource rules. |
+| Identity and customization | `fb.identity`, `fb.customize` | API keys, tokens, service accounts, OAuth clients, realms, user administration; domains, branding, email, agreements. |
+| System | `fb.system` | Features, config, database topology, backups, DB logins, extensions ([§3.2](#32-backups-and-operational-endpoints)). |
+| Webhook verification | `verifyWebhookSignature`, `constructWebhookEvent` | Verifies push-subscription webhooks on any Web Crypto runtime ([§3.3](#33-verifying-push-webhooks)). |
+| Raw requests | `fb.request(path, options)` | For routes the SDK does not wrap yet. |
 
 ### 2.3 Retries and errors
 
@@ -49,8 +62,8 @@ browsers, Deno and Bun provide. It ships ESM, CJS and type declarations.
 - Every failure is a `ForgeBaseError` with `status`, `code`, `message`,
   `requestId`, `details` and `retryAfter`. Subclasses include `ValidationError`,
   `AuthenticationError`, `PermissionError`, `NotFoundError`, `ConflictError`,
-  `RateLimitError`, `QuotaExceededError`, `ServerError`, `NetworkError` and
-  `RealtimeError`.
+  `RateLimitError`, `QuotaExceededError`, `ServerError`, `NetworkError`,
+  `RealtimeError` and `WebhookVerificationError`.
 
 See [sdk/js/README.md#retries](../sdk/js/README.md#retries) and
 [#errors](../sdk/js/README.md#errors). The error envelope itself is in
@@ -116,16 +129,14 @@ ack deadline; after `maxDeliveryAttempts` they move to the dead letters
 
 ### 3.2 Backups and operational endpoints
 
-Neither SDK wraps the backup routes (FB-83) or `/metrics`. They are
-administrator operations; call them with an administrator session or an admin
-service-account key:
+The JavaScript SDK wraps the backup routes (FB-83) as `fb.system.backups`; the
+Rust SDK does not, and neither wraps `/metrics`. They are administrator
+operations; call them with an administrator session or an admin service-account
+key:
 
 ```ts
-const snap = await fb.request("/api/v1/system/backups", {
-  method: "POST",
-  body: { label: "before-migration", retention: { keep_last: 7 } },
-});
-await fb.request(`/api/v1/system/backups/${snap.id}/verify`, { method: "POST" });
+const snap = await fb.system.backups.create({ label: "before-migration", retention: { keepLast: 7 } });
+await fb.system.backups.verify(snap.id);
 ```
 
 Restore has no HTTP route: stop the server and run `forgebase restore`
@@ -133,6 +144,31 @@ Restore has no HTTP route: stop the server and run `forgebase restore`
 `/api/system/*` follow `[server] ops_access` (default `loopback`): from another
 host, only administrators can read them, and a scoped key needs `system:read`
 ([api.md §11.3](api.md#113-operational-endpoints-ops_access)).
+
+### 3.3 Verifying push webhooks
+
+A push subscription with a webhook endpoint receives `{subscription,
+delivery_attempt, message}` signed with `X-Forgebase-Signature:
+t=<unix s>,v1=<hex HMAC-SHA256(secret, "<t>.<raw body>")>`
+([ADR-0022 §13](adr/0022-queues-pubsub.md)). The JavaScript SDK verifies it with
+Web Crypto, so it runs on Node 18+, Deno, Bun and edge runtimes:
+
+```ts
+import { constructWebhookEvent, WebhookVerificationError } from "@forgebase/sdk/webhooks";
+
+const event = await constructWebhookEvent({
+  secret: process.env.FORGEBASE_WEBHOOK_SECRET!, // or [newSecret, oldSecret] while rotating
+  header: request.headers.get("x-forgebase-signature"),
+  body: await request.text(),                    // the raw body, never re-serialised JSON
+  toleranceSeconds: 300,
+});
+```
+
+A header may carry several `v1=` values during a secret rotation; the check
+passes when any matches. The comparison is constant time and timestamps further
+than `toleranceSeconds` from now (either direction) are rejected. Failures throw
+`WebhookVerificationError` with a `reason`. Express, Next.js and Hono examples are
+in [sdk/js/README.md#webhook-verification](../sdk/js/README.md#webhook-verification).
 
 ## 4. Types
 
@@ -174,13 +210,19 @@ FB_LIVE_BIN=$PWD/../../target/debug/forgebase npm run test:live
 ## 6. Known limitations
 
 These are listed in [sdk/js/README.md#known-limitations](../sdk/js/README.md#known-limitations).
-Two points to check against the current server:
+In short:
 
-- The README says there is no storage API in the SDK. The server does expose
-  storage routes under `/api/v1/storage`.
-- The README says `/api/auth/*` is not in the OpenAPI document except OAuth and
-  WebAuthn. The server merges the auth document when auth is enabled. Compare
-  the live `GET /api/openapi.json` with the SDK's types before you rely on either.
+- The OpenAPI document leaves most `/api/auth/*`, policy, orgs and customization
+  bodies as plain objects and omits query parameters. Those types in the SDK are
+  written by hand from the server handlers. Compare the live
+  `GET /api/openapi.json` with the SDK's types after a server upgrade.
+- Passkeys are wrapped as option and verify calls; the browser credential APIs
+  stay with the caller. OIDC protocol endpoints are left to OIDC libraries.
+- Request bodies cannot be `ReadableStream`s (use the multipart or resumable
+  upload helpers), and a non-2xx answer from a function is always raised as a
+  typed error.
+- Webhook-endpoint tooling on the server (attempt log, test send, redrive,
+  secret rotation, health, event catalog) is not wrapped yet.
 
 ## 7. Versioning
 
