@@ -1415,6 +1415,9 @@ impl ConfigOverrides {
                 // Read by the engine (forgebase-pgengine) and its build, and by
                 // the test helpers; never configuration.
                 "PG_ENGINE_DIR" | "PG_ENGINE_ARCHIVE" | "PG_ENGINE_LOCK" => {}
+                // The server and credential of `forgebase project` / `deploy`
+                // (ADR-0037) and the Terraform provider; never configuration.
+                "URL" | "TOKEN" | "ADMIN_EMAIL" | "ADMIN_PASSWORD" | "CA_FILE" => {}
                 k if k.starts_with("TEST_") => {}
                 "DB_SYNCHRONOUS" => o.synchronous = Some(value.parse().map_err(bad)?),
                 "DB_BUSY_TIMEOUT_MS" => o.busy_timeout_ms = Some(parse_num(&value).map_err(bad)?),
