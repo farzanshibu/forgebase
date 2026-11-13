@@ -17,6 +17,24 @@ function Q([string]$Sql, [int]$P = $Port) {
   return ($r -join "`n").Trim()
 }
 function Check([bool]$Ok, [string]$What) { if (-not $Ok) { throw "SMOKE FAIL: $What" } else { Write-Host "  ok: $What" } }
+# pg_ctl start runs the server through cmd.exe, which inherits pg_ctl's stdout
+# and stderr. Through a PowerShell pipe (`| Out-Null`) the pipe stays open for
+# as long as the server runs, so the pipeline never finished (engine-pg18.6-r6
+# hung here until the job limit). Its output goes to files instead.
+function PgCtl([string[]]$Arguments, [int]$Seconds = 120) {
+  $quoted = $Arguments | ForEach-Object { if ($_ -match '\s') { "`"$_`"" } else { $_ } }
+  $out = "$Work\pg_ctl.out"
+  Write-Host "  pg_ctl $($quoted -join ' ')"
+  $p = Start-Process -FilePath "$Bin\pg_ctl.exe" -ArgumentList $quoted -NoNewWindow -PassThru `
+    -RedirectStandardOutput $out -RedirectStandardError "$out.err"
+  $null = $p.Handle
+  if (-not $p.WaitForExit($Seconds * 1000)) { taskkill /T /F /PID $p.Id | Out-Null; throw "pg_ctl $($Arguments[0]) did not finish in $Seconds s" }
+  if ($p.ExitCode -ne 0) {
+    Get-Content $out, "$out.err" -ErrorAction SilentlyContinue | Write-Host
+    foreach ($l in $Log, "$Work\standby.log") { if (Test-Path $l) { Write-Host "--- $l"; Get-Content $l -Tail 40 | Write-Host } }
+    throw "pg_ctl $($Arguments[0]) failed with exit code $($p.ExitCode)"
+  }
+}
 
 Write-Host "--- programs run"
 foreach ($p in Get-ChildItem "$Bin\*.exe") { Write-Host "  $($p.Name): $(& $p.FullName --version)" }
@@ -38,7 +56,7 @@ max_replication_slots = 16
 max_prepared_transactions = 16
 fsync = off
 "@ | Add-Content "$Data\postgresql.conf"
-& "$Bin\pg_ctl.exe" -D $Data -l $Log -w -t 60 start | Out-Null
+PgCtl @("-D", $Data, "-l", $Log, "-w", "-t", "60", "start")
 
 try {
   Write-Host "--- extensions"
@@ -69,14 +87,14 @@ try {
   Check ((& "$Bin\pg_restore.exe" -l "$Work\dump") -match "TABLE public items").Count -gt 0 "pg_dump/pg_restore"
   & "$Bin\pg_basebackup.exe" -h 127.0.0.1 -p $Port -U postgres -D $Standby -R -X stream -c fast
   & "$Bin\pg_verifybackup.exe" $Standby | Out-Null
-  & "$Bin\pg_ctl.exe" -D $Standby -l "$Work\standby.log" -o "-p $Port2" -w -t 60 start | Out-Null
+  PgCtl @("-D", $Standby, "-l", "$Work\standby.log", "-o", "-p $Port2", "-w", "-t", "60", "start")
   Q "INSERT INTO items VALUES (4, '[1,1,1]')" | Out-Null
   $ok = $false
   for ($i = 0; $i -lt 30 -and -not $ok; $i++) { Start-Sleep 1; $ok = (Q "SELECT count(*) FROM items" $Port2) -eq "4" }
   Check $ok "standby replays"
   Check ((Q "SELECT pg_is_in_recovery()" $Port2) -eq "t") "standby is in recovery"
-  & "$Bin\pg_ctl.exe" -D $Standby -m fast -w stop | Out-Null
+  PgCtl @("-D", $Standby, "-m", "fast", "-w", "stop")
 } finally {
-  & "$Bin\pg_ctl.exe" -D $Data -m fast -w stop | Out-Null
+  PgCtl @("-D", $Data, "-m", "fast", "-w", "stop")
 }
 Write-Host "`nSMOKE OK"

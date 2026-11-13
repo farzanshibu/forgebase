@@ -204,8 +204,20 @@ jobs:
           path: ${{ runner.temp }}\engine\deps
           key: ${{ steps.depkey.outputs.key }}
 
+      # Kept even when the smoke test fails, for debugging. The release job
+      # collects engine-* only, so this copy is never published.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: untested-engine-x86_64-pc-windows-msvc
+          path: |
+            ${{ runner.temp }}\engine\out\*.tar.zst
+            ${{ runner.temp }}\engine\out\*.tar.zst.sha256
+          if-no-files-found: error
+          retention-days: 7
+
       - name: Smoke test from the archive
         shell: pwsh
+        timeout-minutes: 20
         run: |
           $archive = (Get-ChildItem "$env:WORK\out\*.tar.zst").FullName
           # Decompresses with the zstandard module (Build tools): the zstd CLI
