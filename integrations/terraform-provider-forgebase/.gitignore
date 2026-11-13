@@ -1,0 +1,7 @@
+/terraform-provider-forgebase
+/dist/
+*.test
+*.out
+.terraform/
+.terraform.lock.hcl
+terraform.tfstate*
