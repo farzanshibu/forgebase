@@ -505,9 +505,12 @@ email = "ops@example.com"
   `FORGEBASE_TLS_ACME_EAB_HMAC_KEY`. For a private authority whose own HTTPS
   endpoint uses a private root, set `ca_file` to that root (PEM).
 - The account key and certificate are stored under `<data_dir>/tls/acme/`,
-  sealed with the data directory's master key (`<data_dir>/auth/master.key`;
-  a backup of the data directory carries both). `status.json` next to them
-  holds the expiry and last error for `forgebase doctor`.
+  sealed with the data directory's master key (`<data_dir>/auth/master.key`).
+  `status.json` next to them holds the expiry and last error for
+  `forgebase doctor`. `forgebase backup` snapshots do not include `tls/`:
+  after a restore the server simply requests a new certificate (mind the
+  CA's rate limits when restoring often; a file-level copy of the whole data
+  directory keeps it).
 
 #### Redis protocol over TLS
 

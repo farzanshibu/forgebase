@@ -314,4 +314,8 @@ MPL-2.0), not linked.
   agent) speak plain HTTP only; with native TLS `status` reports the server
   as not answering. Their HTTPS client is a CLI follow-up.
 - The dashboard does not show the `tls` status entry yet (fields in
-  decision 11).
+  decision 11), and the feature registry's first `list` settings
+  (`tls.acme.domains`, `tls.acme.challenges`) are read-only there.
+- `forgebase backup` snapshots do not include `<data_dir>/tls/`; a restored
+  server requests a new certificate. Including it (it is sealed) is a
+  backup follow-up.
