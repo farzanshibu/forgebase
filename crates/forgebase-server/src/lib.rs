@@ -104,6 +104,8 @@ pub struct RunningServer {
     billing: Option<forgebase_billing::BillingService>,
     customize: CustomizeService,
     queue: Option<forgebase_queue::QueueService>,
+    /// Operations insights (ADR-0036): flushed once more at shutdown.
+    insights: forgebase_insights::InsightsService,
     shutdown_timeout: Duration,
     lock: Option<DataDirLock>,
     /// First-run setup token (FB-90), while no administrator exists.
@@ -727,6 +729,25 @@ async fn start_on(
     if let Some(q) = &queue {
         extensions.push(forgebase_queue::extension(q.clone()));
     }
+    // ADR-0036: operations insights (slow statements, usage, function
+    // profiles, audit search). The slow threshold applies to every set.
+    let slow = Duration::from_millis(config.observability.slow_query_ms);
+    for set in router.sets() {
+        forgebase_db::Backend::set_slow_query_threshold(set.database(), slow);
+    }
+    let insights = forgebase_insights::InsightsService::new(
+        forgebase_insights::InsightsDeps {
+            db: Arc::new(db.clone()),
+            router: Some(router.clone()),
+            data: state.data().clone(),
+            auth: fn_auth.clone(),
+            functions: functions.clone(),
+            billing: billing.clone(),
+            credits: Some(credits.clone()),
+        },
+        config.observability.clone(),
+    );
+    extensions.push(forgebase_insights::extension(insights.clone()));
     let opts = RouterOptions {
         extensions,
         graph: Some(graph.clone()),
@@ -917,6 +938,7 @@ async fn start_on(
     if let Some(q) = &queue {
         q.start_background();
     }
+    insights.start_background();
 
     tracing::info!(
         %addr,
@@ -949,6 +971,7 @@ async fn start_on(
         billing,
         customize,
         queue,
+        insights,
         shutdown_timeout: Duration::from_secs(config.server.shutdown_timeout_secs),
         lock: None,
         setup_token,
@@ -1459,6 +1482,7 @@ impl RunningServer {
         if let Some(f) = &self.functions {
             f.shutdown();
         }
+        self.insights.shutdown().await;
         self.upkeep.abort();
         if let Some(resp) = self.resp.take() {
             resp.shutdown().await;

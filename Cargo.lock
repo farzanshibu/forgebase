@@ -1930,6 +1930,7 @@ dependencies = [
  "forgebase-entitlements",
  "forgebase-functions",
  "forgebase-graph",
+ "forgebase-insights",
  "forgebase-jobs",
  "forgebase-kv",
  "forgebase-observability",
