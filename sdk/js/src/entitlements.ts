@@ -1,3 +1,8 @@
+import {
+  EntitlementAddonsApi, EntitlementLimitsApi, EntitlementOverridesApi, EntitlementFeaturesApi, EntitlementPlansApi, QuotaPoliciesApi, UsagePacksApi, snake,
+  type EntitlementSubscription, type EntitlementsMaintenanceReport, type GaugeInput, type StartTrialInput, type SubjectAddonInput,
+  type SubscriptionSyncInput, type SyncOutcome, type UsageAlert, type UsageEventPage, type UsageEventsOptions,
+} from "./entitlements-admin";
 import type { Transport } from "./http";
 import type { Schemas } from "./types";
 
@@ -41,7 +46,30 @@ const wire = (r: QuotaRequest & { idempotencyKey?: string; ttlSecs?: number }) =
 
 /** Entitlement and quota helpers (FB-24 routes): `client.entitlements`. */
 export class EntitlementsApi {
-  constructor(private readonly t: Transport) {}
+  /** Plans of the catalog. */
+  readonly plans: EntitlementPlansApi;
+  /** Features of the catalog. */
+  readonly features: EntitlementFeaturesApi;
+  /** Add-ons of the catalog. */
+  readonly addons: EntitlementAddonsApi;
+  /** Usage packs: the catalog, and the packs a subject holds. */
+  readonly usagePacks: UsagePacksApi;
+  /** Quota policies per feature. */
+  readonly quotaPolicies: QuotaPoliciesApi;
+  /** Allow / deny overrides of a feature for one subject. */
+  readonly overrides: EntitlementOverridesApi;
+  /** Enterprise limits of a subject. */
+  readonly limits: EntitlementLimitsApi;
+
+  constructor(private readonly t: Transport) {
+    this.plans = new EntitlementPlansApi(t);
+    this.features = new EntitlementFeaturesApi(t);
+    this.addons = new EntitlementAddonsApi(t);
+    this.usagePacks = new UsagePacksApi(t);
+    this.quotaPolicies = new QuotaPoliciesApi(t);
+    this.overrides = new EntitlementOverridesApi(t);
+    this.limits = new EntitlementLimitsApi(t);
+  }
 
   /** `has({feature})`, `has({permission})` or `has({plan})`: the boolean answer. */
   async has(q: HasQuery): Promise<boolean> {
@@ -111,5 +139,47 @@ export class EntitlementsApi {
 
   releaseLease(id: string): Promise<void> {
     return this.t.request(`/api/v1/usage/leases/${encodeURIComponent(id)}`, { method: "DELETE" });
+  }
+
+  /** The subscription of `subject` (default: the caller's; `billing:read`). No subscription is a `NotFoundError`. */
+  subscription(subject?: string): Promise<EntitlementSubscription> {
+    return this.t.request("/api/v1/entitlements/subscription", { query: { subject } });
+  }
+
+  /** Sets a subject's plan, status and add-ons (platform administrators). Idempotent by `eventId`, ordered by `eventAt`: the outcome says `applied`, `replayed` or `stale`. */
+  syncSubscription(input: SubscriptionSyncInput): Promise<SyncOutcome> {
+    return this.t.request("/api/v1/entitlements/subscription", { method: "PUT", body: snake(input) });
+  }
+
+  /** Starts a trial of a plan (platform administrators). */
+  startTrial(input: StartTrialInput): Promise<EntitlementSubscription> {
+    return this.t.request("/api/v1/entitlements/trials", { method: "POST", body: snake(input) });
+  }
+
+  /** Sets the quantity of an add-on of a subject; `0` removes it (platform administrators). */
+  setAddon(input: SubjectAddonInput): Promise<EntitlementSubscription> {
+    return this.t.request("/api/v1/entitlements/addons", { method: "PUT", body: input });
+  }
+
+  /** Changes a gauge (storage, seats) by `delta` or to `value`. A replayed `idempotencyKey` returns the first result; past the limit it throws `QuotaExceededError`. */
+  adjustGauge(input: GaugeInput): Promise<Consumption> {
+    return this.t.request("/api/v1/usage/gauge", { method: "POST", body: snake(input) });
+  }
+
+  /** Immutable usage events in `seq` order (`billing:read`): follow `next` as `after` for the next page. */
+  usageEvents(opts: UsageEventsOptions = {}): Promise<UsageEventPage> {
+    return this.t.request("/api/v1/usage/events", {
+      query: { subject: opts.subject, feature: opts.feature, after: opts.after, limit: opts.limit },
+    });
+  }
+
+  /** Usage alerts (70 / 90 / 100 %) of `subject` (default: the caller's), newest first. */
+  async usageAlerts(subject?: string): Promise<UsageAlert[]> {
+    return (await this.t.request<{ items: UsageAlert[] }>("/api/v1/usage/alerts", { query: { subject } })).items;
+  }
+
+  /** Runs period resets and expiries now (platform administrators; the server does it every minute). */
+  maintenance(): Promise<EntitlementsMaintenanceReport> {
+    return this.t.request("/api/v1/usage/maintenance", { method: "POST" });
   }
 }
