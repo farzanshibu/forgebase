@@ -106,6 +106,7 @@ func TestFeatureAndPlan(t *testing.T) {
 	}
 	imp, d := k.importState("forgebase_feature", "ai_generation")
 	k.failOn(d)
+	sameState(t, "feature", f2, imp)
 	if attr(imp, "kind") != "gauge" {
 		t.Errorf("feature import = %v", goValue(imp))
 	}

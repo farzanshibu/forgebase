@@ -577,3 +577,20 @@ func mergeNested(nt *tfprotov6.SchemaObject, typ tftypes.Type, prior, config tft
 }
 
 func tftypesNull(k *kit, res string) tftypes.Value { return tftypes.NewValue(k.resType(res), nil) }
+
+// sameState fails the test when two states differ, ignoring the named top-level
+// attributes and `a.b` paths. It mirrors ImportStateVerify of the acceptance tests.
+func sameState(t *testing.T, what string, created, imported tftypes.Value, ignore ...string) {
+	t.Helper()
+	strip := func(v tftypes.Value) map[string]any {
+		m, _ := goValue(v).(map[string]any)
+		for _, ig := range ignore {
+			delete(m, ig)
+		}
+		return m
+	}
+	a, b := strip(created), strip(imported)
+	if fmt.Sprint(a) != fmt.Sprint(b) {
+		t.Errorf("%s: imported state differs from created state:\n created:  %v\n imported: %v", what, a, b)
+	}
+}

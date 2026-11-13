@@ -1,0 +1,1 @@
+terraform import forgebase_collection_rules.posts posts

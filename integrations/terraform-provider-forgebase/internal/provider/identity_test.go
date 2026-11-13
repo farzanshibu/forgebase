@@ -138,6 +138,7 @@ func TestServiceAccountAndAPIKey(t *testing.T) {
 	}
 	imp, d := k.importState("forgebase_service_account", saID)
 	k.failOn(d)
+	sameState(t, "service account", sa, imp)
 	if attr(imp, "name") != "ci" {
 		t.Errorf("import = %v", goValue(imp))
 	}
@@ -174,6 +175,7 @@ func TestServiceAccountAndAPIKey(t *testing.T) {
 	// Imported key: no secret.
 	impKey, d := k.importState("forgebase_api_key", saID+"/"+attr(key, "id").(string))
 	k.failOn(d)
+	sameState(t, "api key", key, impKey, "key", "expires_in_days") // neither is recoverable
 	if attr(impKey, "key") != nil || attr(impKey, "name") != "deploy" {
 		t.Errorf("imported key = %v", goValue(impKey))
 	}
@@ -347,6 +349,7 @@ func TestOAuthClientLifecycle(t *testing.T) {
 	// Import has no secret.
 	imp, d := k.importState("forgebase_oauth_client", id)
 	k.failOn(d)
+	sameState(t, "oauth client", st2, imp, "client_secret")
 	if attr(imp, "client_secret") != nil || attr(imp, "name") != "Web app v2" {
 		t.Errorf("import = %v", goValue(imp))
 	}

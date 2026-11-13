@@ -283,6 +283,7 @@ func TestQueueTopicSourceAndValidation(t *testing.T) {
 	}
 	imp, d := k.importState("forgebase_queue_topic", "changes")
 	k.failOn(d)
+	sameState(t, "topic", st, imp)
 	if attr(imp, "name") != "changes" {
 		t.Errorf("import = %v", goValue(imp))
 	}
@@ -405,7 +406,7 @@ func TestQueueSubscriptionErrorsAndValidation(t *testing.T) {
 	fake := newFakeQueue(m)
 	k := newKit(t, m)
 	k.create("forgebase_queue_topic", map[string]any{"name": "orders"})
-	st := k.create("forgebase_queue_subscription", map[string]any{"name": "w", "topic": "orders"})
+	st := k.create("forgebase_queue_subscription", map[string]any{"name": "w", "topic": "orders", "start": "latest"})
 	if e := k.createErr("forgebase_queue_subscription", map[string]any{"name": "w", "topic": "orders"}); !strings.Contains(e, "subscription_exists") {
 		t.Errorf("409: %q", e)
 	}
@@ -414,6 +415,7 @@ func TestQueueSubscriptionErrorsAndValidation(t *testing.T) {
 	if attr(imp, "topic") != "orders" {
 		t.Errorf("import = %v", goValue(imp))
 	}
+	sameState(t, "subscription", st, imp, "start") // start is not stored by the server
 	if e := errText(k.destroy("forgebase_queue_subscription", st)); e != "" {
 		t.Fatal(e)
 	}

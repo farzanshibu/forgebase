@@ -11,6 +11,8 @@ import (
 	"github.com/farzanshibu/forgebase/integrations/terraform-provider-forgebase/internal/provider"
 )
 
+//go:generate go run ./tools/gendocs
+
 // version is set at build time (-ldflags "-X main.version=...").
 var version = "dev"
 

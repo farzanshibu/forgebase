@@ -106,11 +106,13 @@ func TestRoleRealmAndOrg(t *testing.T) {
 	}
 	imp, d := k.importState("forgebase_role", "org_1/billing")
 	k.failOn(d)
+	sameState(t, "org role", ost, imp)
 	if attr(imp, "org") != "org_1" || attr(imp, "key") != "billing" {
 		t.Errorf("org import = %v", goValue(imp))
 	}
 	impRealm, d := k.importState("forgebase_role", "editor")
 	k.failOn(d)
+	sameState(t, "realm role", st2, impRealm)
 	if attr(impRealm, "org") != nil || attr(impRealm, "name") != "Editor" {
 		t.Errorf("realm import = %v", goValue(impRealm))
 	}
@@ -268,6 +270,7 @@ func TestOrgAndProject(t *testing.T) {
 	}
 	imp, d := k.importState("forgebase_project", attr(pst, "id").(string))
 	k.failOn(d)
+	sameState(t, "project", pst, imp)
 	if attr(imp, "slug") != "web" {
 		t.Errorf("import = %v", goValue(imp))
 	}

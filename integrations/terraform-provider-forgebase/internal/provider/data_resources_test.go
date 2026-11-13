@@ -327,9 +327,10 @@ func TestStorageBucketImportAndDataSource(t *testing.T) {
 	m := newMock(t)
 	newFakeBuckets(m)
 	k := newKit(t, m)
-	k.create("forgebase_storage_bucket", map[string]any{"name": "docs"})
+	created := k.create("forgebase_storage_bucket", map[string]any{"name": "docs"})
 	st, d := k.importState("forgebase_storage_bucket", "docs")
 	k.failOn(d)
+	sameState(t, "bucket", created, st)
 	if attr(st, "name") != "docs" || attr(st, "visibility") != "private" || attr(st, "force_destroy") != false {
 		t.Errorf("imported = %v", goValue(st))
 	}

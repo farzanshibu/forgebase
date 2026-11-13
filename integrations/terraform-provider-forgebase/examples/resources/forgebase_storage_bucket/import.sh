@@ -1,0 +1,1 @@
+terraform import forgebase_storage_bucket.avatars avatars

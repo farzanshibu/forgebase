@@ -350,6 +350,10 @@ func TestCollectionImportByName(t *testing.T) {
 	if attr(st, "name") != "posts" || attr(st, "fields.1.options") == nil {
 		t.Errorf("imported = %v", goValue(st))
 	}
+	created := k.create("forgebase_collection", map[string]any{"name": "posts2", "fields": []any{map[string]any{"name": "t", "type": "text", "required": true}}})
+	imp2, d := k.importState(collectionRes, "posts2")
+	k.failOn(d)
+	sameState(t, "collection", created, imp2)
 	// Import keeps every server option key so the config can be copied.
 	if got := attr(st, "fields.1.options").(string); !strings.Contains(got, "max_select") {
 		t.Errorf("imported options = %s", got)
