@@ -43,6 +43,7 @@ Status of each work package, and what is still to do, is in
 - [Database](docs/database.md): PostgreSQL and SQLite, multi-model data, migrations, backups.
 - [Security](docs/security.md): threat model summary (draft) and open items.
 - [Deployment](docs/deployment.md): binary, Docker, systemd, configuration, upgrades.
+- [Observability](docs/observability.md): OpenTelemetry tracing, alert rules and notifiers, SLOs.
 - [SDKs](docs/sdk.md): JavaScript SDK, and the status of the Rust SDK.
 - [Architecture decisions](docs/adr/).
 

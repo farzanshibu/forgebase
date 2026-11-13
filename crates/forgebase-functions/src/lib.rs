@@ -1202,8 +1202,7 @@ impl FunctionService {
     ///
     /// ADR-0035: the run is a span `function <name>` (a child of the
     /// caller's span: the HTTP request, the hook, the job or the push
-    /// delivery); its trace id is stored on the execution log and given to
-    /// JavaScript as `ctx.trace`.
+    /// delivery); its trace id is stored on the execution log.
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn execute(
         &self,
@@ -1282,18 +1281,6 @@ impl FunctionService {
                     "function".into(),
                     serde_json::json!({"name": e.row.name, "version": target.version}),
                 );
-                // ADR-0035: ctx.trace, for log lines and manual propagation.
-                if let Some(t) = &trace {
-                    o.insert(
-                        "trace".into(),
-                        serde_json::json!({
-                            "trace_id": t.trace_id_hex(),
-                            "span_id": t.span_id_hex(),
-                            "traceparent": t.traceparent(),
-                            "sampled": t.sampled,
-                        }),
-                    );
-                }
                 input = Json::Object(o).to_string().into_bytes();
             }
         }

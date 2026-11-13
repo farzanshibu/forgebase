@@ -1418,10 +1418,7 @@ impl QueueService {
         {
             stamp_trace(&mut messages, &c.traceparent(), c.trace_state.as_deref());
         }
-        let r = self
-            .publish_traced(ctx, topic, messages)
-            .instrument(span.clone())
-            .await;
+        let r = self.publish_traced(ctx, topic, messages).instrument(span.clone()).await;
         if r.is_err() {
             span.record("otel.status_code", "error");
         }

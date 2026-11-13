@@ -90,7 +90,9 @@ fn check_labels(labels: &BTreeMap<String, String>, what: &str) -> Result<()> {
     for (k, v) in labels {
         let ok = !k.is_empty()
             && k.len() <= 64
-            && k.bytes().enumerate().all(|(i, b)| b.is_ascii_alphabetic() || b == b'_' || (i > 0 && b.is_ascii_digit()));
+            && k.bytes()
+                .enumerate()
+                .all(|(i, b)| b.is_ascii_alphabetic() || b == b'_' || (i > 0 && b.is_ascii_digit()));
         if !ok || v.len() > 2048 {
             return Err(AlertError::invalid(
                 "invalid_alert_rule",
@@ -118,10 +120,16 @@ pub fn build(
     check_name("name", name, 128)?;
     let expr = expr::parse(expr_src).map_err(|e| AlertError::invalid("invalid_alert_rule", format!("expr: {e}")))?;
     if !threshold.is_finite() {
-        return Err(AlertError::invalid("invalid_alert_rule", "threshold must be a finite number"));
+        return Err(AlertError::invalid(
+            "invalid_alert_rule",
+            "threshold must be a finite number",
+        ));
     }
     if !(0..=7 * 86_400_000).contains(&for_ms) {
-        return Err(AlertError::invalid("invalid_alert_rule", "for must be from 0s to 7d, such as 5m"));
+        return Err(AlertError::invalid(
+            "invalid_alert_rule",
+            "for must be from 0s to 7d, such as 5m",
+        ));
     }
     check_labels(&labels, "labels")?;
     check_labels(&annotations, "annotations")?;
@@ -155,8 +163,9 @@ pub fn build(
 pub fn parse_for(s: Option<&str>) -> Result<i64> {
     match s.map(str::trim).filter(|s| !s.is_empty()) {
         None => Ok(0),
-        Some(s) => expr::parse_duration(s)
-            .ok_or_else(|| AlertError::invalid("invalid_alert_rule", format!("for: {s:?} is not a duration such as 5m"))),
+        Some(s) => expr::parse_duration(s).ok_or_else(|| {
+            AlertError::invalid("invalid_alert_rule", format!("for: {s:?} is not a duration such as 5m"))
+        }),
     }
 }
 
@@ -388,7 +397,10 @@ pub fn builtins(tls_metric: &str) -> Vec<RuleDef> {
                 ("description".to_owned(), b.description.to_owned()),
                 (
                     "runbook_url".to_owned(),
-                    format!("https://github.com/farzanshibu/forgebase/blob/main/docs/observability.md#{}", b.id),
+                    format!(
+                        "https://github.com/farzanshibu/forgebase/blob/main/docs/observability.md#{}",
+                        b.id
+                    ),
                 ),
             ]
             .into_iter()
@@ -457,8 +469,7 @@ pub fn slo_rules(slo: &Slo) -> Vec<RuleDef> {
                 "summary".to_owned(),
                 format!(
                     "SLO {} ({what} {}) burns its error budget {{{{ $value }}}}x too fast ({long} and {short} windows)",
-                    slo.name,
-                    slo.objective
+                    slo.name, slo.objective
                 ),
             ),
             (
@@ -566,7 +577,8 @@ pub fn render(template: &str, labels: &BTreeMap<String, String>, value: f64) -> 
                 _ => format_value(value),
             })
         } else {
-            head.strip_prefix("$labels.").map(|k| labels.get(k).cloned().unwrap_or_default())
+            head.strip_prefix("$labels.")
+                .map(|k| labels.get(k).cloned().unwrap_or_default())
         };
         match text {
             Some(t) => out.push_str(&t),
@@ -595,10 +607,17 @@ mod tests {
     fn templates_fill_labels_and_values() {
         let l: BTreeMap<String, String> = [("subscription".to_owned(), "orders".to_owned())].into_iter().collect();
         assert_eq!(
-            render("{{ $labels.subscription }} has {{ $value }} ({{$value|percent}})", &l, 0.125),
+            render(
+                "{{ $labels.subscription }} has {{ $value }} ({{$value|percent}})",
+                &l,
+                0.125
+            ),
             "orders has 0.125 (12.5%)"
         );
-        assert_eq!(render("{{ $value | duration }} {{ nope }}", &l, 7_500.0), "2h5m {{ nope }}");
+        assert_eq!(
+            render("{{ $value | duration }} {{ nope }}", &l, 7_500.0),
+            "2h5m {{ nope }}"
+        );
         assert_eq!(render("unclosed {{ x", &l, 1.0), "unclosed {{ x");
     }
 

@@ -314,3 +314,40 @@ to the billing audit log. Errors: `409 delivery_not_verified` (replay of a refus
 `409 delivery_already_verified` (re-verify of a verified one: replay it), `409 reverify_in_progress`,
 `409 body_not_stored` (dropped by the budget or cut at the size limit) and `409 not_reverifiable` (Google Play:
 its push token is not stored; Pub/Sub redelivers unacknowledged pushes).
+
+### 11.6 Alerts and SLOs (`/api/v1/alerts`, `/api/v1/slos`)
+
+The alerting engine and service level objectives of
+[ADR-0035](adr/0035-tracing-alerting-slos.md) ([observability.md](observability.md)).
+Platform administrators only, checked before a body is read: an anonymous
+caller gets `401`, a signed-in non-administrator `403`. `[alerts] enabled = false`
+turns both prefixes into `404 feature_disabled`.
+
+| Route | Purpose |
+|---|---|
+| `GET /alerts` | Open alerts (`pending`, `firing`), most severe first; `state`, `severity` filters. Each lists `silenced_by`. |
+| `GET /alerts/history` | Every alert, newest first: `state`, `rule_id`, `from`, `to`, `before` (paging), `limit` (1–500). |
+| `GET /alerts/{id}` | One alert with its state changes (`events`). |
+| `POST /alerts/query` | Evaluates an expression now: `{"expr": "…"}` → samples. |
+| `GET /alerts/rules` · `POST /alerts/rules` | Every rule (built-in, `[[alerts.rules]]`, custom, SLO burn-rate) with `enabled`, `disabled_by_config`, `source`; create a custom rule (`name`, `expr`, `op`, `threshold`, `for`, `severity`, `labels`, `annotations`). |
+| `GET`, `PATCH`, `DELETE /alerts/rules/{id}` | One rule; change it (built-in, file and SLO rules: `enabled` only, else `409 rule_read_only`); delete a custom one. |
+| `GET`, `POST /alerts/silences` · `GET`, `PUT`, `DELETE /alerts/silences/{id}` | Silences (`?all=true` with expired ones): `matchers` (`label`, `op` `=` `!=` `=~` `!~`, `value`), `starts_at`, `ends_at` or `duration`, `comment`. `DELETE` ends one now. |
+| `GET`, `POST /alerts/notifiers` · `GET`, `PUT`, `DELETE /alerts/notifiers/{id}` | Notifiers (`webhook`, `slack`, `email`, `pagerduty`, `queue`; by id or name); secrets are never listed; a webhook's `signing_secret` is in the create answer only. |
+| `POST /alerts/notifiers/{id}/test` | Sends a test notification now (10 per notifier and minute, then `429 rate_limited`) and returns its delivery. |
+| `GET /alerts/notifications` | Deliveries, newest first: `notifier`, `status` (`pending`, `sent`, `failed`), `limit`. |
+| `GET`, `POST /slos` · `GET`, `PUT`, `DELETE /slos/{id}` | SLOs (by id or name): `kind` `availability` or `latency`, `objective`, `window`, `route_prefix` or `route_regex`, `methods`, `latency_threshold_ms`, `alerting`, `labels`. |
+| `GET /slos/{id}/status` · `GET /slos/status` | Totals, SLI, `error_budget` (`allowed`, `consumed`, `remaining_ratio`), `burn_rates` per window and the burn-rate tiers. |
+
+Errors: `404 alert_rule_not_found`, `alert_not_found`, `silence_not_found`,
+`notifier_not_found`, `slo_not_found`; `409 alert_rule_exists`,
+`notifier_exists`, `slo_exists`, `rule_read_only`, `rule_disabled_by_config`;
+`400 invalid_alert_rule`, `invalid_name`, `invalid_matcher`, `invalid_silence`,
+`invalid_notifier`, `invalid_slo`, `invalid_expression`, `invalid_query`;
+`429 rate_limited`.
+
+Trace context: with `[observability.otlp] enabled`, every response carries
+`traceparent` (the server span), and a request's `traceparent` continues the
+caller's trace under `[observability] trust_incoming_trace`
+([observability.md §1.5](observability.md#15-how-context-travels)). Queue
+messages published then carry a `traceparent` attribute, and jobs a
+`traceparent` field.

@@ -75,7 +75,10 @@ impl SloCounter {
                 id: s.id.clone(),
                 kind: s.kind,
                 prefix: s.route_prefix.clone(),
-                regex: s.route_regex.as_deref().and_then(|r| Regex::new(&format!("^(?:{r})$")).ok()),
+                regex: s
+                    .route_regex
+                    .as_deref()
+                    .and_then(|r| Regex::new(&format!("^(?:{r})$")).ok()),
                 methods: s.methods.clone(),
                 threshold_s: s.latency_threshold_ms.unwrap_or(0) as f64 / 1000.0,
             })
@@ -113,7 +116,10 @@ impl SloCounter {
 
     /// Takes the counts gathered so far.
     fn take(&self) -> HashMap<(String, i64), (i64, i64)> {
-        self.counts.lock().map(|mut c| std::mem::take(&mut *c)).unwrap_or_default()
+        self.counts
+            .lock()
+            .map(|mut c| std::mem::take(&mut *c))
+            .unwrap_or_default()
     }
 
     /// Counts not yet flushed for `slo_id` with minute `>= from`.
@@ -233,7 +239,8 @@ fn int(v: &Value) -> i64 {
 pub async fn totals(db: &dyn Backend, counter: &SloCounter, slo: &Slo, now: i64) -> Result<Totals> {
     let start = |w: i64| (now - w).div_euclid(MINUTE) * MINUTE + MINUTE;
     let window_start = start(slo.window_ms);
-    let mut sql = String::from("SELECT COALESCE(CAST(SUM(total) AS BIGINT), 0), COALESCE(CAST(SUM(good) AS BIGINT), 0)");
+    let mut sql =
+        String::from("SELECT COALESCE(CAST(SUM(total) AS BIGINT), 0), COALESCE(CAST(SUM(good) AS BIGINT), 0)");
     let mut params: Vec<Value> = vec![slo.id.as_str().into(), window_start.into()];
     for (_, w) in BURN_WINDOWS {
         let n = params.len() + 1;
@@ -243,10 +250,17 @@ pub async fn totals(db: &dyn Backend, counter: &SloCounter, slo: &Slo, now: i64)
         ));
         params.push(start(w).into());
     }
-    let longest = BURN_WINDOWS.iter().map(|(_, w)| *w).max().unwrap_or(0).max(slo.window_ms);
+    let longest = BURN_WINDOWS
+        .iter()
+        .map(|(_, w)| *w)
+        .max()
+        .unwrap_or(0)
+        .max(slo.window_ms);
     params.push(start(longest).into());
     let last = params.len();
-    sql.push_str(&format!(" FROM _forgebase_slo_minutes WHERE slo_id = ?1 AND minute >= ?{last}"));
+    sql.push_str(&format!(
+        " FROM _forgebase_slo_minutes WHERE slo_id = ?1 AND minute >= ?{last}"
+    ));
     let rows = db.fetch_all(&Statement::new(sql, params)).await?;
     let row = rows.rows.first().cloned().unwrap_or_default();
     let get = |i: usize| row.get(i).map_or(0, int);

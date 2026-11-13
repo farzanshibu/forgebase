@@ -301,15 +301,24 @@ impl ObservabilityOverrides {
     }
 
     pub(crate) fn keys(&self, put: &mut dyn FnMut(bool, &'static str)) {
-        put(self.trust_incoming_trace.is_some(), "observability.trust_incoming_trace");
+        put(
+            self.trust_incoming_trace.is_some(),
+            "observability.trust_incoming_trace",
+        );
         if let Some(o) = &self.otlp {
             put(o.enabled.is_some(), "observability.otlp.enabled");
             put(o.endpoint.is_some(), "observability.otlp.endpoint");
             put(o.protocol.is_some(), "observability.otlp.protocol");
             put(o.headers.is_some(), "observability.otlp.headers");
             put(o.service_name.is_some(), "observability.otlp.service_name");
-            put(o.service_instance_id.is_some(), "observability.otlp.service_instance_id");
-            put(o.resource_attributes.is_some(), "observability.otlp.resource_attributes");
+            put(
+                o.service_instance_id.is_some(),
+                "observability.otlp.service_instance_id",
+            );
+            put(
+                o.resource_attributes.is_some(),
+                "observability.otlp.resource_attributes",
+            );
             put(o.sampling_ratio.is_some(), "observability.otlp.sampling_ratio");
             put(o.export_traces.is_some(), "observability.otlp.export_traces");
             put(o.export_logs.is_some(), "observability.otlp.export_logs");
@@ -345,7 +354,10 @@ impl AlertsOverrides {
 
     pub(crate) fn keys(&self, put: &mut dyn FnMut(bool, &'static str)) {
         put(self.enabled.is_some(), "alerts.enabled");
-        put(self.evaluation_interval_secs.is_some(), "alerts.evaluation_interval_secs");
+        put(
+            self.evaluation_interval_secs.is_some(),
+            "alerts.evaluation_interval_secs",
+        );
         put(self.disabled_rules.is_some(), "alerts.disabled_rules");
         put(self.allow_http.is_some(), "alerts.allow_http");
         put(self.history_retention_days.is_some(), "alerts.history_retention_days");
@@ -412,7 +424,8 @@ impl ObservabilityConfig {
         if !url_ok(&o.endpoint) {
             out.push((
                 "observability.otlp.endpoint",
-                "must be the collector's address starting with http:// or https://, such as http://127.0.0.1:4318".into(),
+                "must be the collector's address starting with http:// or https://, such as http://127.0.0.1:4318"
+                    .into(),
             ));
         }
         if !(0.0..=1.0).contains(&o.sampling_ratio) || o.sampling_ratio.is_nan() {
@@ -437,7 +450,9 @@ impl ObservabilityConfig {
             if k.trim().is_empty() || k.contains(['\r', '\n', ':']) || v.contains(['\r', '\n', '\0']) {
                 out.push((
                     "observability.otlp.headers",
-                    format!("must hold names and one-line values, such as {{\"x-api-key\" = \"env:MY_KEY\"}} ({k:?} is not)"),
+                    format!(
+                        "must hold names and one-line values, such as {{\"x-api-key\" = \"env:MY_KEY\"}} ({k:?} is not)"
+                    ),
                 ));
                 break;
             }
@@ -489,9 +504,9 @@ impl AlertsConfig {
         }
         let metric_ok = |m: &str| {
             !m.is_empty()
-                && m.bytes().enumerate().all(|(i, b)| {
-                    b.is_ascii_alphabetic() || b == b'_' || b == b':' || (i > 0 && b.is_ascii_digit())
-                })
+                && m.bytes()
+                    .enumerate()
+                    .all(|(i, b)| b.is_ascii_alphabetic() || b == b'_' || b == b':' || (i > 0 && b.is_ascii_digit()))
         };
         if !metric_ok(&self.tls_cert_expiry_metric) {
             out.push((

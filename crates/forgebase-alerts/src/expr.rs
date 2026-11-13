@@ -254,7 +254,13 @@ pub fn format_duration(ms: i64) -> String {
     }
     let mut out = String::new();
     let mut rest = ms;
-    for (unit, n) in [("d", 86_400_000), ("h", 3_600_000), ("m", 60_000), ("s", 1_000), ("ms", 1)] {
+    for (unit, n) in [
+        ("d", 86_400_000),
+        ("h", 3_600_000),
+        ("m", 60_000),
+        ("s", 1_000),
+        ("ms", 1),
+    ] {
         if rest >= n {
             out.push_str(&format!("{}{unit}", rest / n));
             rest %= n;
@@ -378,7 +384,8 @@ fn lex(src: &str) -> Result<Vec<Tok>, ExprError> {
                 while i < b.len() && (b[i].is_ascii_alphanumeric() || b[i] == b'.' || b[i] == b'_') {
                     // An exponent sign: 1e-3.
                     i += 1;
-                    if i < b.len() && (b[i] == b'-' || b[i] == b'+') && matches!(b[i - 1], b'e' | b'E') && !in_brackets {
+                    if i < b.len() && (b[i] == b'-' || b[i] == b'+') && matches!(b[i - 1], b'e' | b'E') && !in_brackets
+                    {
                         i += 1;
                     }
                 }
@@ -476,7 +483,13 @@ impl Parser {
     fn unary(&mut self) -> Result<Expr, ExprError> {
         if self.peek() == Some(&Tok::Minus) {
             self.pos += 1;
-            return Ok(Expr::Neg(Box::new(self.unary()?)));
+            self.depth += 1;
+            if self.depth > MAX_DEPTH {
+                return err("the expression is nested too deeply");
+            }
+            let e = Expr::Neg(Box::new(self.unary()?));
+            self.depth -= 1;
+            return Ok(e);
         }
         self.primary()
     }
@@ -1028,6 +1041,7 @@ fn map(v: Value, f: impl Fn(f64) -> f64) -> Value {
 
 /// Comparison of a rule.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
+#[schema(as = AlertComparison)]
 pub enum CmpOp {
     /// `>`
     #[serde(rename = ">")]
@@ -1122,6 +1136,8 @@ mod tests {
             ("x{a=~\"(\"}", "regular expression"),
             ("", "empty"),
             ("x > 1", "unexpected"),
+            (&"-".repeat(200), "nested too deeply"),
+            (&format!("{}x{}", "(".repeat(100), ")".repeat(100)), "nested too deeply"),
         ] {
             let e = parse(src).expect_err(src);
             assert!(e.0.contains(needle), "{src}: {e}");

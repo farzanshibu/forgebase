@@ -391,7 +391,11 @@ pub(crate) mod tests {
         assert_eq!(span.iter().filter(|f| f.0 == 9).count(), 2, "attributes");
         let status = fields(&get(15));
         assert_eq!(status[0].2, b"boom");
-        assert_eq!(u64::from_le_bytes(status[1].2.clone().try_into().expect("8")), 2, "error");
+        assert_eq!(
+            u64::from_le_bytes(status[1].2.clone().try_into().expect("8")),
+            2,
+            "error"
+        );
     }
 
     #[test]
@@ -420,8 +424,8 @@ pub(crate) mod tests {
             attributes: vec![("subscription".into(), AttrValue::Str("s".into()))],
             trace: Some(([7; 16], [8; 8], true)),
         };
-        let v: Json = serde_json::from_slice(&logs(&opts(OtlpProtocol::HttpJson), std::slice::from_ref(&l)))
-            .expect("json");
+        let v: Json =
+            serde_json::from_slice(&logs(&opts(OtlpProtocol::HttpJson), std::slice::from_ref(&l))).expect("json");
         let r = &v["resourceLogs"][0]["scopeLogs"][0]["logRecords"][0];
         assert_eq!(r["severityNumber"], 13);
         assert_eq!(r["body"]["stringValue"], "hello");

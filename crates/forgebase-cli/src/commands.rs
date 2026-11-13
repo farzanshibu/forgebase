@@ -552,9 +552,10 @@ pub async fn serve(g: &GlobalArgs) -> anyhow::Result<ExitCode> {
     let result = server.run_until_signals(signals).await;
     // Spans and logs still queued go out (up to five seconds).
     if config.observability.otlp.enabled {
-        let flushed = tokio::task::spawn_blocking(|| forgebase_observability::otlp::flush(std::time::Duration::from_secs(5)))
-            .await
-            .unwrap_or(false);
+        let flushed =
+            tokio::task::spawn_blocking(|| forgebase_observability::otlp::flush(std::time::Duration::from_secs(5)))
+                .await
+                .unwrap_or(false);
         if !flushed {
             eprintln!("forgebase: not every span was exported before exit");
         }

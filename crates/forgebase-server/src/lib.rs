@@ -727,7 +727,10 @@ async fn start_on(
     }
     let opts = RouterOptions {
         // SLO request counting.
-        http_observers: alerts.iter().map(forgebase_alerts::AlertService::http_observer).collect(),
+        http_observers: alerts
+            .iter()
+            .map(forgebase_alerts::AlertService::http_observer)
+            .collect(),
         extensions,
         graph: Some(graph.clone()),
         gates: vec![

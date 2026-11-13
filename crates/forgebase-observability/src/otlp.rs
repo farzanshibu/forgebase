@@ -224,7 +224,9 @@ impl OtlpOptions {
                 })?;
                 let v = percent_decode(v.trim());
                 if v.contains(['\r', '\n', '\0']) {
-                    return Err(OtlpError::Config("FORGEBASE_OTLP_HEADERS holds a control character".into()));
+                    return Err(OtlpError::Config(
+                        "FORGEBASE_OTLP_HEADERS holds a control character".into(),
+                    ));
                 }
                 headers.push((k.trim().to_ascii_lowercase(), v));
             }
@@ -256,9 +258,10 @@ impl OtlpOptions {
         let ca_pem = if c.ca_file.trim().is_empty() {
             None
         } else {
-            Some(std::fs::read(c.ca_file.trim()).map_err(|e| {
-                OtlpError::Config(format!("observability.otlp.ca_file {}: {e}", c.ca_file.trim()))
-            })?)
+            Some(
+                std::fs::read(c.ca_file.trim())
+                    .map_err(|e| OtlpError::Config(format!("observability.otlp.ca_file {}: {e}", c.ca_file.trim())))?,
+            )
         };
         Ok(Self {
             traces_url: url("traces"),
@@ -422,13 +425,31 @@ fn run(opts: OtlpOptions, tls: std::sync::Arc<rustls::ClientConfig>, rx: Receive
                 let n = spans.len().min(opts.batch_size);
                 let batch: Vec<SpanData> = spans.drain(..n).collect();
                 let body = crate::otlp_encode::traces(&opts, &batch);
-                export(&rt, &opts, &tls, &opts.traces_url, body, "traces", batch.len(), &mut last_warn);
+                export(
+                    &rt,
+                    &opts,
+                    &tls,
+                    &opts.traces_url,
+                    body,
+                    "traces",
+                    batch.len(),
+                    &mut last_warn,
+                );
             }
             while !logs.is_empty() {
                 let n = logs.len().min(opts.batch_size);
                 let batch: Vec<LogData> = logs.drain(..n).collect();
                 let body = crate::otlp_encode::logs(&opts, &batch);
-                export(&rt, &opts, &tls, &opts.logs_url, body, "logs", batch.len(), &mut last_warn);
+                export(
+                    &rt,
+                    &opts,
+                    &tls,
+                    &opts.logs_url,
+                    body,
+                    "logs",
+                    batch.len(),
+                    &mut last_warn,
+                );
             }
             for f in flushers {
                 let _ = f.send(());
@@ -512,8 +533,14 @@ mod tests {
         assert!(o.headers.contains(&("x-plain".into(), "v".into())));
         assert!(o.headers.contains(&("authorization".into(), "Bearer abc".into())));
         assert!(o.headers.contains(&("x-two".into(), "2".into())));
-        assert_eq!(o.resource[0], ("service.name".into(), AttrValue::Str("forgebase".into())));
-        assert!(o.resource.contains(&("service.instance.id".into(), AttrValue::Str("inst-1".into()))));
+        assert_eq!(
+            o.resource[0],
+            ("service.name".into(), AttrValue::Str("forgebase".into()))
+        );
+        assert!(
+            o.resource
+                .contains(&("service.instance.id".into(), AttrValue::Str("inst-1".into())))
+        );
         assert!(
             o.resource
                 .contains(&("deployment.environment.name".into(), AttrValue::Str("prod".into())))

@@ -267,7 +267,10 @@ pub fn init_telemetry(
     } else {
         let registry = tracing_subscriber::registry().with(filter);
         match format {
-            LogFormat::Json => registry.with(trace::ContextLayer::ids_only()).with(json_layer()).try_init(),
+            LogFormat::Json => registry
+                .with(trace::ContextLayer::ids_only())
+                .with(json_layer())
+                .try_init(),
             LogFormat::Pretty => registry.with(pretty_layer()).try_init(),
         }
     };
@@ -359,9 +362,7 @@ where
             };
         }
         match &self.logs {
-            Some(f) if !meta.target().starts_with("forgebase_observability") => {
-                Filter::<S>::callsite_enabled(f, meta)
-            }
+            Some(f) if !meta.target().starts_with("forgebase_observability") => Filter::<S>::callsite_enabled(f, meta),
             _ => Interest::never(),
         }
     }
@@ -530,8 +531,14 @@ fn describe() {
     describe_counter!(names::OTLP_DROPPED_TOTAL, "Spans and log records not exported.");
     describe_counter!(names::JOBS_COMPLETED_TOTAL, "Finished job attempts by outcome.");
     describe_gauge!(names::ALERTS, "Alerts by state and severity.");
-    describe_counter!(names::ALERT_NOTIFICATIONS_TOTAL, "Alert notification attempts by outcome.");
-    describe_counter!(names::ALERT_EVALUATION_FAILURES_TOTAL, "Alert rule evaluations that failed.");
+    describe_counter!(
+        names::ALERT_NOTIFICATIONS_TOTAL,
+        "Alert notification attempts by outcome."
+    );
+    describe_counter!(
+        names::ALERT_EVALUATION_FAILURES_TOTAL,
+        "Alert rule evaluations that failed."
+    );
     describe_gauge!(names::SLO_SLI, "Share of good events over the SLO window.");
     describe_gauge!(names::SLO_OBJECTIVE, "SLO objective.");
     describe_gauge!(names::SLO_ERROR_BUDGET_REMAINING, "Share of the SLO error budget left.");
@@ -561,8 +568,95 @@ mod tests {
         assert!(text.contains("# TYPE process_cpu_seconds_total counter"), "{text}");
     }
 
+    /// Tests that touch the process-wide trace options.
+    static OPTIONS_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn json_lines_carry_the_trace_and_span_id() {
+        use std::sync::{Arc, Mutex};
+        let buf: Arc<Mutex<Vec<u8>>> = Arc::default();
+        #[derive(Clone)]
+        struct W(Arc<Mutex<Vec<u8>>>);
+        impl std::io::Write for W {
+            fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap_or_else(|p| p.into_inner()).extend_from_slice(b);
+                Ok(b.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let w = W(buf.clone());
+        let layer = tracing_subscriber::fmt::layer()
+            .fmt_fields(format::JsonFields::new())
+            .event_format(WithTraceIds(
+                format().json().with_current_span(true).with_span_list(false),
+            ))
+            .with_writer(move || w.clone());
+        let sub = tracing_subscriber::registry()
+            .with(trace::ContextLayer::ids_only())
+            .with(layer);
+        let tp = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
+        let span_id = tracing::subscriber::with_default(sub, || {
+            let span = tracing::info_span!("http", otel.parent = tp, request_id = "r1");
+            let ctx = trace::span_context(&span).expect("a context");
+            assert_eq!(ctx.trace_id_hex(), "4bf92f3577b34da6a3ce929d0e0e4736");
+            assert_ne!(ctx.span_id_hex(), "00f067aa0ba902b7", "a child of the remote span");
+            span.in_scope(|| {
+                assert_eq!(trace::current().map(|c| c.span_id), Some(ctx.span_id));
+                tracing::info!(x = 1, "inside");
+            });
+            tracing::info!("outside");
+            ctx.span_id_hex()
+        });
+        let text = String::from_utf8(buf.lock().unwrap_or_else(|p| p.into_inner()).clone()).unwrap_or_default();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 2, "{text}");
+        let first: serde_json::Value = serde_json::from_str(lines[0]).unwrap_or_default();
+        assert_eq!(first["trace_id"], "4bf92f3577b34da6a3ce929d0e0e4736", "{text}");
+        assert_eq!(first["span_id"], span_id.as_str());
+        assert_eq!(first["fields"]["message"], "inside");
+        assert_eq!(first["span"]["request_id"], "r1", "the rest of the format is unchanged");
+        assert!(lines[0].starts_with("{\"trace_id\":"), "first keys: {}", lines[0]);
+        let second: serde_json::Value = serde_json::from_str(lines[1]).unwrap_or_default();
+        assert!(second.get("trace_id").is_none(), "no span, no ids: {}", lines[1]);
+    }
+
+    #[test]
+    fn incoming_trace_context_follows_the_trust_rules() {
+        use forgebase_core::config::telemetry_config::TraceTrust;
+        let _g = OPTIONS_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let tp = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
+        let set = |trust, trust_proxy| {
+            trace::configure(trace::TraceOptions {
+                // Nothing new is sampled: only a trusted caller's flag records.
+                sampling_ratio: 0.0,
+                trust,
+                trust_proxy,
+                propagate: true,
+            })
+        };
+        set(TraceTrust::Auto, false);
+        assert!(!trace::caller_trusted(false));
+        assert!(trace::caller_trusted(true), "a direct loopback caller");
+        let untrusted = trace::accept_incoming(Some(tp), Some("v=1"), false).expect("the trace is kept");
+        assert_eq!(untrusted.trace_id_hex(), "4bf92f3577b34da6a3ce929d0e0e4736");
+        assert!(!untrusted.sampled, "an outside caller cannot force recording");
+        assert_eq!(untrusted.trace_state.as_deref(), Some("v=1"));
+        assert!(trace::accept_incoming(Some(tp), None, true).expect("kept").sampled);
+        set(TraceTrust::Auto, true);
+        assert!(trace::caller_trusted(false), "behind a declared proxy");
+        set(TraceTrust::Always, false);
+        assert!(trace::accept_incoming(Some(tp), None, false).expect("kept").sampled);
+        set(TraceTrust::Never, false);
+        assert!(trace::accept_incoming(Some(tp), None, true).is_none());
+        assert!(trace::accept_incoming(Some("garbage"), None, true).is_none());
+        trace::configure(trace::TraceOptions::default());
+    }
+
     #[test]
     fn bad_log_level_is_rejected() {
+        let _g = OPTIONS_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         assert!(init_logging("not a [valid filter", LogFormat::Pretty).is_err());
         assert!(init_logging("info", LogFormat::Json).is_ok());
         assert!(

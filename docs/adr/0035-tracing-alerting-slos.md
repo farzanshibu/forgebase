@@ -5,7 +5,7 @@
 - Scope: `crates/forgebase-observability` (`trace.rs`, `otlp.rs`, `otlp_encode.rs`, `http_client.rs`, the
   JSON log format, metric names, `HttpObserver`), the new crate `crates/forgebase-alerts`, instrumentation in
   `forgebase-api` (server span, `traceparent` response header, HTTP observers), `forgebase-functions`
-  (function span, fetch client span and header injection, `trace_id` on execution logs, `ctx.trace`),
+  (function span, fetch client span and header injection, `trace_id` on execution logs),
   `forgebase-queue` (publish and delivery spans, the `traceparent` message attribute), `forgebase-jobs` (stored
   trace context, run span, `forgebase_jobs_completed_total`), `forgebase-core` (`[observability]`,
   `[alerts]`), migrations `0058_alerts_slos` and `0059_trace_context` (both backends), server and CLI wiring.
@@ -79,8 +79,9 @@ unchanged). Propagation, only while export is on:
   receiver sees the original trace id. Transactional publishes take the current span's context.
 - **Jobs.** `_forgebase_jobs.traceparent` (0059) stores the enqueuing span's context; the run is a consumer
   span continuing it; the job JSON shows it for external workers.
-- **Functions.** A run is a span `function <name>`; `_forgebase_function_logs.trace_id` (0059) and
-  `ctx.trace` in JavaScript expose its ids.
+- **Functions.** A run is a span `function <name>`; `_forgebase_function_logs.trace_id` (0059) puts its
+  trace id on every execution log. `ctx.trace` in JavaScript is a follow-up: the prelude is compiled into the
+  prebuilt QuickJS engine (`forgebase-js.wasm`), which has to be rebuilt to read a new input field.
 
 ### 3. Alerting engine (`forgebase-alerts`)
 

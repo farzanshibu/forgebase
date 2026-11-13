@@ -231,16 +231,15 @@ pub fn configure(opts: TraceOptions) {
 
 /// The process-wide options.
 pub fn options() -> TraceOptions {
-    OPTIONS
-        .read()
-        .ok()
-        .and_then(|g| g.clone())
-        .unwrap_or_default()
+    OPTIONS.read().ok().and_then(|g| g.clone()).unwrap_or_default()
 }
 
 /// Whether trace context is propagated (headers, message attributes, jobs).
 pub fn propagation_enabled() -> bool {
-    OPTIONS.read().ok().is_some_and(|g| g.as_ref().is_some_and(|o| o.propagate))
+    OPTIONS
+        .read()
+        .ok()
+        .is_some_and(|g| g.as_ref().is_some_and(|o| o.propagate))
 }
 
 /// The ratio sampler: whether a new trace with `trace_id` is recorded. It
@@ -562,7 +561,9 @@ where
         }
         let Some(span) = ctx.span(&id) else { return };
         let mut ext = span.extensions_mut();
-        let Some(state) = ext.get_mut::<SpanState>() else { return };
+        let Some(state) = ext.get_mut::<SpanState>() else {
+            return;
+        };
         let Some(rec) = state.rec.take() else { return };
         let Some(exporter) = otlp::exporter() else { return };
         let rec = *rec;

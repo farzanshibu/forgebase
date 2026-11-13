@@ -29,7 +29,7 @@ authoritative description of each crate is its `lib.rs` module docs.
 | Layer | Crate | Job |
 |---|---|---|
 | Foundations | `forgebase-core` | Config model and precedence, error codes, data-directory layout. Depends on no other ForgeBase crate. |
-| | `forgebase-observability` | `tracing` subscriber and Prometheus recorder. |
+| | `forgebase-observability` | `tracing` subscriber, Prometheus recorder, W3C trace context and OTLP export (ADR-0035). |
 | Storage | `forgebase-migrations` | Embedded system migrations, SHA-256 checksums, atomic apply. |
 | | `forgebase-db` | SQLite pools, pragmas, WAL, integrity and stats, pre-migration snapshots. |
 | Data model | `forgebase-schema` | Collection and field model; validates and normalises values. No I/O. |
@@ -46,6 +46,7 @@ authoritative description of each crate is its `lib.rs` module docs.
 | | `forgebase-functions` | WebAssembly server functions on Wasmtime, with capability-scoped host calls (ADR-0017). |
 | Background work | `forgebase-jobs` | Durable jobs, schedules, leases, retries, dead-letter queue, queues, workflows (ADR-0007, ADR-0023). |
 | | `forgebase-realtime` | Transactional outbox, WebSocket and SSE delivery, channels, presence (ADR-0011). |
+| Operations | `forgebase-alerts` | Alert rules over metrics and health signals, alert history, silences, notifiers, SLOs with error budgets and burn-rate alerts (ADR-0035). |
 | Money | `forgebase-credits` | Append-only credit ledger per subject; top-ups, spend, expiry (ADR-0016). |
 | | `forgebase-billing` | Catalog, subscriptions, invoices, payments, provider webhooks. On by default (ADR-0021); `[billing] enabled = false` turns it off. |
 | Product | `forgebase-customize` | Custom domains, branding, transactional email, legal agreements (ADR-0020). |
@@ -147,6 +148,7 @@ audit or outbox row, and any usage metering commit together:
 | Credits | ADR-0016 | `/api/v1/credits/*` |
 | Billing | ADR-0021 | `/api/v1/billing/*` (unless `[billing] enabled = false`) |
 | Product customization | ADR-0020 | `/api/v1/customize/*` |
+| Tracing, alerts and SLOs | ADR-0035, [observability.md](observability.md) | `/api/v1/alerts/*`, `/api/v1/slos/*` |
 | Dashboard | ADR-0014 | `/admin/` |
 
 The exact paths are in the OpenAPI document served by the running server,

@@ -111,8 +111,9 @@ fields (`path`, `request_id`, `error`, …) stay in the local log.
 * **Jobs.** A job stores the `traceparent` of the span that enqueued it
   (`traceparent` in the job JSON); its run is a child of it. External
   workers can continue it the same way.
-* **Functions.** JavaScript functions get `ctx.trace` (`trace_id`,
-  `span_id`, `traceparent`, `sampled`); every execution log has `trace_id`.
+* **Functions.** Every execution log (`GET /api/v1/functions/{name}/logs`)
+  has the run's `trace_id`, so a function's log lines join its trace; its
+  `fetch` calls carry the `traceparent` of their client span.
 
 ## 2. Alerts
 

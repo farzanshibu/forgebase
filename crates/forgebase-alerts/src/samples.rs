@@ -135,6 +135,11 @@ fn parse_line(line: &str) -> Option<(String, Labels, f64)> {
     Some((name, labels, value))
 }
 
+/// Series kept per metric name in the history (more are ignored).
+pub const MAX_SERIES_PER_NAME: usize = 10_000;
+/// Points kept per series, about (a longer window keeps sparser points).
+pub const MAX_POINTS: i64 = 720;
+
 /// A series of one metric: its labels without `__name__`, sorted.
 type SeriesKey = (String, Vec<(String, String)>);
 
@@ -182,20 +187,38 @@ impl History {
         self.points.retain(|(n, _), _| names.contains(n));
     }
 
-    /// Records the series of `snap` this history keeps.
+    /// Records the series of `snap` this history keeps. Memory is bounded:
+    /// at most [`MAX_SERIES_PER_NAME`] series per metric and about
+    /// [`MAX_POINTS`] points per series (a long window keeps fewer, evenly
+    /// spaced points; the newest value always replaces a too-recent one).
     pub fn record(&mut self, snap: &Snapshot) {
         let t = snap.at_ms;
         if self.times.back().is_some_and(|last| *last >= t) {
             return;
         }
         self.times.push_back(t);
+        let gap = self.keep_ms / MAX_POINTS;
         for name in &self.names {
             if let Some(series) = snap.series.get(name) {
+                let mut count = self.points.keys().filter(|(n, _)| n == name).count();
                 for s in series {
-                    self.points
-                        .entry((name.clone(), key_of(&s.labels)))
-                        .or_default()
-                        .push_back((t, s.value));
+                    let key = (name.clone(), key_of(&s.labels));
+                    if !self.points.contains_key(&key) {
+                        if count >= MAX_SERIES_PER_NAME {
+                            continue;
+                        }
+                        count += 1;
+                    }
+                    let pts = self.points.entry(key).or_default();
+                    // Two points closer than `gap`: the newer replaces the
+                    // last one, unless that one is the only anchor older.
+                    if pts.len() >= 2
+                        && let Some(&(prev, _)) = pts.iter().rev().nth(1)
+                        && t - prev < gap
+                    {
+                        pts.pop_back();
+                    }
+                    pts.push_back((t, s.value));
                 }
             }
         }
@@ -225,11 +248,7 @@ impl History {
             if n != name {
                 continue;
             }
-            let points: Vec<(i64, f64)> = pts
-                .iter()
-                .filter(|(t, _)| *t > from && *t <= at_ms)
-                .copied()
-                .collect();
+            let points: Vec<(i64, f64)> = pts.iter().filter(|(t, _)| *t > from && *t <= at_ms).copied().collect();
             if points.is_empty() {
                 continue;
             }

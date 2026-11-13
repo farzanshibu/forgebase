@@ -65,7 +65,10 @@ pub fn router<S: Clone + Send + Sync + 'static>(svc: AlertService) -> Router<S> 
         .route("/alerts/history", get(history))
         .route("/alerts/query", post(query))
         .route("/alerts/rules", get(list_rules).post(create_rule))
-        .route("/alerts/rules/{id}", get(get_rule).patch(update_rule).delete(delete_rule))
+        .route(
+            "/alerts/rules/{id}",
+            get(get_rule).patch(update_rule).delete(delete_rule),
+        )
         .route("/alerts/silences", get(list_silences).post(create_silence))
         .route(
             "/alerts/silences/{id}",
@@ -180,7 +183,11 @@ async fn list_rules(State(s): State<AlertService>, Access(ctx): Access) -> ApiRe
     request_body = RuleInput,
     responses((status = 201, description = "Created", body = Rule), (status = 400, description = "invalid_alert_rule"),
         (status = 409, description = "alert_rule_exists")))]
-async fn create_rule(State(s): State<AlertService>, Access(ctx): Access, ApiJson(input): ApiJson<RuleInput>) -> ApiResult {
+async fn create_rule(
+    State(s): State<AlertService>,
+    Access(ctx): Access,
+    ApiJson(input): ApiJson<RuleInput>,
+) -> ApiResult {
     created(s.create_rule(&ctx, input).await.map_err(api)?)
 }
 
@@ -357,7 +364,11 @@ async fn list_slos(State(s): State<AlertService>, Access(ctx): Access) -> ApiRes
     request_body = SloInput,
     responses((status = 201, description = "Created", body = Slo), (status = 400, description = "invalid_slo"),
         (status = 409, description = "slo_exists")))]
-async fn create_slo(State(s): State<AlertService>, Access(ctx): Access, ApiJson(input): ApiJson<SloInput>) -> ApiResult {
+async fn create_slo(
+    State(s): State<AlertService>,
+    Access(ctx): Access,
+    ApiJson(input): ApiJson<SloInput>,
+) -> ApiResult {
     created(s.create_slo(&ctx, input).await.map_err(api)?)
 }
 

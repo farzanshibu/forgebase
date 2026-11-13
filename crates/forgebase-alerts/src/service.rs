@@ -77,7 +77,8 @@ impl AlertSettings {
             interval: Duration::from_secs(c.evaluation_interval_secs.max(1)),
             disabled_rules: c.disabled_rules.clone(),
             allow_http: c.allow_http,
-            history_retention_ms: i64::try_from(c.history_retention_days.saturating_mul(86_400_000)).unwrap_or(i64::MAX),
+            history_retention_ms: i64::try_from(c.history_retention_days.saturating_mul(86_400_000))
+                .unwrap_or(i64::MAX),
             tls_cert_expiry_metric: c.tls_cert_expiry_metric.clone(),
             config_rules: c.rules.clone(),
             max_attempts: 8,
@@ -213,7 +214,10 @@ impl NotifierRow {
                 let g = strs("group_by");
                 if g.is_empty() { vec!["alertname".to_owned()] } else { g }
             },
-            repeat_ms: cfg.get("repeat_interval_ms").and_then(Json::as_i64).unwrap_or(4 * 3_600_000),
+            repeat_ms: cfg
+                .get("repeat_interval_ms")
+                .and_then(Json::as_i64)
+                .unwrap_or(4 * 3_600_000),
             secret: r.blob("secret"),
             enabled: r.int("enabled") == 1,
             send_resolved: r.int("send_resolved") == 1,
@@ -348,10 +352,18 @@ fn check_url(raw: &str, allow_http: bool, what: &str) -> Result<String> {
                 format!("{what} must start with https:// (set [alerts] allow_http = true for http://)"),
             ));
         }
-        _ => return Err(AlertError::invalid("invalid_notifier", format!("{what} must be an https:// URL"))),
+        _ => {
+            return Err(AlertError::invalid(
+                "invalid_notifier",
+                format!("{what} must be an https:// URL"),
+            ));
+        }
     }
     if !u.username().is_empty() || u.password().is_some() {
-        return Err(AlertError::invalid("invalid_notifier", format!("{what} may not carry a user or password")));
+        return Err(AlertError::invalid(
+            "invalid_notifier",
+            format!("{what} may not carry a user or password"),
+        ));
     }
     let host = u
         .host_str()
@@ -428,8 +440,15 @@ impl AlertService {
     // ------------------------------------------------------------- rules
 
     async fn rule_settings(&self) -> Result<HashMap<String, bool>> {
-        let rows = read(self.db(), "SELECT rule_id, enabled FROM _forgebase_alert_rule_settings", vec![]).await?;
-        Ok(Row::all(&rows).map(|r| (r.text("rule_id"), r.int("enabled") == 1)).collect())
+        let rows = read(
+            self.db(),
+            "SELECT rule_id, enabled FROM _forgebase_alert_rule_settings",
+            vec![],
+        )
+        .await?;
+        Ok(Row::all(&rows)
+            .map(|r| (r.text("rule_id"), r.int("enabled") == 1))
+            .collect())
     }
 
     fn api_rule(r: &Row<'_>) -> Option<RuleDef> {
@@ -602,7 +621,12 @@ impl AlertService {
                      VALUES (?1, ?2, ?3, ?4)
                      ON CONFLICT (rule_id) DO UPDATE SET enabled = excluded.enabled,
                          updated_by = excluded.updated_by, updated_at = excluded.updated_at",
-                    vec![id.into(), i64::from(enabled).into(), ctx.principal_key().into(), now.into()],
+                    vec![
+                        id.into(),
+                        i64::from(enabled).into(),
+                        ctx.principal_key().into(),
+                        now.into(),
+                    ],
                 )],
             )
             .await?;
@@ -660,7 +684,10 @@ impl AlertService {
         }
         write(
             self.db(),
-            vec![Statement::new("DELETE FROM _forgebase_alert_rules WHERE id = ?1", vec![id.into()])],
+            vec![Statement::new(
+                "DELETE FROM _forgebase_alert_rules WHERE id = ?1",
+                vec![id.into()],
+            )],
         )
         .await?;
         self.wake();
@@ -674,7 +701,9 @@ impl AlertService {
         self.require_admin(ctx)?;
         let rows = read(
             self.db(),
-            &format!("SELECT {ALERT_COLS} FROM _forgebase_alerts WHERE state IN ('pending', 'firing') ORDER BY active_at"),
+            &format!(
+                "SELECT {ALERT_COLS} FROM _forgebase_alerts WHERE state IN ('pending', 'firing') ORDER BY active_at"
+            ),
             vec![],
         )
         .await?;
@@ -715,7 +744,10 @@ impl AlertService {
         };
         if let Some(s) = state {
             if AlertState::parse(s).is_none() {
-                return Err(AlertError::invalid("invalid_query", "state is pending, firing or resolved"));
+                return Err(AlertError::invalid(
+                    "invalid_query",
+                    "state is pending, firing or resolved",
+                ));
             }
             add(" AND state = ?", s.into(), &mut params);
         }
@@ -801,7 +833,14 @@ impl AlertService {
             .history
             .lock()
             .map_err(|_| AlertError::Internal("history lock".into()))?;
-        let samples = expr::eval(&e, &expr::Context { now: &snap, history: &history }).into_samples();
+        let samples = expr::eval(
+            &e,
+            &expr::Context {
+                now: &snap,
+                history: &history,
+            },
+        )
+        .into_samples();
         Ok(QueryResult {
             at: iso(snap.at_ms),
             samples: samples
@@ -856,16 +895,23 @@ impl AlertService {
 
     fn silence_window(&self, input: &SilenceInput) -> Result<(i64, i64)> {
         if input.matchers.is_empty() || input.matchers.len() > 16 {
-            return Err(AlertError::invalid("invalid_silence", "a silence needs 1 to 16 matchers"));
+            return Err(AlertError::invalid(
+                "invalid_silence",
+                "a silence needs 1 to 16 matchers",
+            ));
         }
         compile_matchers(&input.matchers).map_err(|e| AlertError::invalid("invalid_silence", e.to_string()))?;
         let now = self.now();
         let start = match &input.starts_at {
-            Some(s) => parse_iso(s).ok_or_else(|| AlertError::invalid("invalid_silence", "starts_at is not RFC 3339"))?,
+            Some(s) => {
+                parse_iso(s).ok_or_else(|| AlertError::invalid("invalid_silence", "starts_at is not RFC 3339"))?
+            }
             None => now,
         };
         let end = match (&input.ends_at, &input.duration) {
-            (Some(e), _) => parse_iso(e).ok_or_else(|| AlertError::invalid("invalid_silence", "ends_at is not RFC 3339"))?,
+            (Some(e), _) => {
+                parse_iso(e).ok_or_else(|| AlertError::invalid("invalid_silence", "ends_at is not RFC 3339"))?
+            }
             (None, Some(d)) => {
                 start
                     + expr::parse_duration(d)
@@ -875,7 +921,10 @@ impl AlertService {
             (None, None) => return Err(AlertError::invalid("invalid_silence", "give ends_at or duration")),
         };
         if end <= start || end <= now {
-            return Err(AlertError::invalid("invalid_silence", "ends_at must be after starts_at and in the future"));
+            return Err(AlertError::invalid(
+                "invalid_silence",
+                "ends_at must be after starts_at and in the future",
+            ));
         }
         if end - start > 366 * 86_400_000 {
             return Err(AlertError::invalid("invalid_silence", "a silence lasts at most a year"));
@@ -910,7 +959,12 @@ impl AlertService {
     /// One silence.
     pub async fn silence(&self, ctx: &AccessContext, id: &str) -> Result<Silence> {
         self.require_admin(ctx)?;
-        let rows = read(self.db(), "SELECT * FROM _forgebase_alert_silences WHERE id = ?1", vec![id.into()]).await?;
+        let rows = read(
+            self.db(),
+            "SELECT * FROM _forgebase_alert_silences WHERE id = ?1",
+            vec![id.into()],
+        )
+        .await?;
         Row::all(&rows)
             .next()
             .map(|r| self.silence_from(&r))
@@ -1051,11 +1105,16 @@ impl AlertService {
             None => existing.map_or(4 * 3_600_000, |e| e.repeat_ms),
             Some(r) => expr::parse_duration(r)
                 .filter(|d| (60_000..=7 * 86_400_000).contains(d))
-                .ok_or_else(|| AlertError::invalid("invalid_notifier", "repeat_interval is from 1m to 7d, such as 4h"))?,
+                .ok_or_else(|| {
+                    AlertError::invalid("invalid_notifier", "repeat_interval is from 1m to 7d, such as 4h")
+                })?,
         };
         let group_by = input.group_by.clone().unwrap_or_else(|| vec!["alertname".into()]);
         if group_by.len() > 16 {
-            return Err(AlertError::invalid("invalid_notifier", "group_by names at most 16 labels"));
+            return Err(AlertError::invalid(
+                "invalid_notifier",
+                "group_by names at most 16 labels",
+            ));
         }
         let mut cfg = json!({
             "matchers": input.matchers,
@@ -1090,14 +1149,24 @@ impl AlertService {
                     secret = Some(url);
                 }
                 None if same_kind.is_some() => cfg["url"] = json!(same_kind.and_then(|e| e.url.clone())),
-                None => return Err(AlertError::invalid("invalid_notifier", "a Slack notifier needs its webhook url")),
+                None => {
+                    return Err(AlertError::invalid(
+                        "invalid_notifier",
+                        "a Slack notifier needs its webhook url",
+                    ));
+                }
             },
             NotifierKind::Pagerduty => {
                 let url = input.url.as_deref().unwrap_or(PAGERDUTY_EVENTS_URL);
                 cfg["url"] = json!(check_url(url, allow_http, "url")?);
                 match input.routing_key.as_deref().map(str::trim) {
                     Some(k) if !k.is_empty() && k.len() <= 128 => secret = Some(k.to_owned()),
-                    Some(_) => return Err(AlertError::invalid("invalid_notifier", "routing_key is 1 to 128 characters")),
+                    Some(_) => {
+                        return Err(AlertError::invalid(
+                            "invalid_notifier",
+                            "routing_key is 1 to 128 characters",
+                        ));
+                    }
                     None if same_kind.is_some() => {}
                     None => {
                         return Err(AlertError::invalid(
@@ -1109,7 +1178,10 @@ impl AlertService {
             }
             NotifierKind::Email => {
                 if input.to.is_empty() || input.to.len() > 20 {
-                    return Err(AlertError::invalid("invalid_notifier", "an email notifier needs 1 to 20 recipients in to"));
+                    return Err(AlertError::invalid(
+                        "invalid_notifier",
+                        "an email notifier needs 1 to 20 recipients in to",
+                    ));
                 }
                 for a in &input.to {
                     if !valid_email(a) {
@@ -1278,7 +1350,12 @@ impl AlertService {
     // -------------------------------------------------------------- SLOs
 
     pub(crate) async fn slos_unchecked(&self) -> Result<Vec<Slo>> {
-        let rows = read(self.db(), &format!("SELECT {SLO_COLS} FROM _forgebase_slos ORDER BY name"), vec![]).await?;
+        let rows = read(
+            self.db(),
+            &format!("SELECT {SLO_COLS} FROM _forgebase_slos ORDER BY name"),
+            vec![],
+        )
+        .await?;
         Ok(Row::all(&rows).map(|r| slo_from(&r)).collect())
     }
 
@@ -1316,7 +1393,10 @@ impl AlertService {
                 .ok_or_else(|| AlertError::invalid("invalid_slo", "window is from 1h to 90d, such as 30d"))?,
         };
         if input.route_prefix.is_some() && input.route_regex.is_some() {
-            return Err(AlertError::invalid("invalid_slo", "give route_prefix or route_regex, not both"));
+            return Err(AlertError::invalid(
+                "invalid_slo",
+                "give route_prefix or route_regex, not both",
+            ));
         }
         if let Some(p) = &input.route_prefix
             && !p.starts_with('/')
@@ -1332,7 +1412,10 @@ impl AlertService {
         }
         for m in &input.methods {
             if m.is_empty() || m.len() > 16 || !m.bytes().all(|b| b.is_ascii_uppercase()) {
-                return Err(AlertError::invalid("invalid_slo", "methods are upper case, such as GET"));
+                return Err(AlertError::invalid(
+                    "invalid_slo",
+                    "methods are upper case, such as GET",
+                ));
             }
         }
         match (input.kind, input.latency_threshold_ms) {
@@ -1344,13 +1427,19 @@ impl AlertService {
                 ));
             }
             (SloKind::Availability, Some(_)) => {
-                return Err(AlertError::invalid("invalid_slo", "latency_threshold_ms is for latency SLOs"));
+                return Err(AlertError::invalid(
+                    "invalid_slo",
+                    "latency_threshold_ms is for latency SLOs",
+                ));
             }
             (SloKind::Availability, None) => {}
         }
         for reserved in ["slo", "tier", "alertname", "severity"] {
             if input.labels.contains_key(reserved) {
-                return Err(AlertError::invalid("invalid_slo", format!("the label {reserved} is set by the SLO")));
+                return Err(AlertError::invalid(
+                    "invalid_slo",
+                    format!("the label {reserved} is set by the SLO"),
+                ));
             }
         }
         Ok(window)
@@ -1373,7 +1462,10 @@ impl AlertService {
         self.require_admin(ctx)?;
         let window = Self::check_slo(&input)?;
         if self.slo_row(&input.name).await.is_ok() {
-            return Err(AlertError::conflict("slo_exists", format!("an SLO named {} exists", input.name)));
+            return Err(AlertError::conflict(
+                "slo_exists",
+                format!("an SLO named {} exists", input.name),
+            ));
         }
         let id = new_id("slo");
         let now = self.now();
@@ -1414,7 +1506,10 @@ impl AlertService {
         let cur = self.slo_row(id).await?;
         let window = Self::check_slo(&input)?;
         if input.name != cur.name && self.slo_row(&input.name).await.is_ok() {
-            return Err(AlertError::conflict("slo_exists", format!("an SLO named {} exists", input.name)));
+            return Err(AlertError::conflict(
+                "slo_exists",
+                format!("an SLO named {} exists", input.name),
+            ));
         }
         write(
             self.db(),
@@ -1452,8 +1547,14 @@ impl AlertService {
         write(
             self.db(),
             vec![
-                Statement::new("DELETE FROM _forgebase_slo_minutes WHERE slo_id = ?1", vec![cur.id.as_str().into()]),
-                Statement::new("DELETE FROM _forgebase_slos WHERE id = ?1", vec![cur.id.as_str().into()]),
+                Statement::new(
+                    "DELETE FROM _forgebase_slo_minutes WHERE slo_id = ?1",
+                    vec![cur.id.as_str().into()],
+                ),
+                Statement::new(
+                    "DELETE FROM _forgebase_slos WHERE id = ?1",
+                    vec![cur.id.as_str().into()],
+                ),
             ],
         )
         .await?;
@@ -1539,7 +1640,9 @@ fn valid_email(a: &str) -> bool {
         && !domain.starts_with('.')
         && !domain.ends_with('.')
         && !domain.contains('@')
-        && !a.chars().any(|c| c.is_whitespace() || c.is_control() || matches!(c, '<' | '>' | ',' | ';'))
+        && !a
+            .chars()
+            .any(|c| c.is_whitespace() || c.is_control() || matches!(c, '<' | '>' | ',' | ';'))
 }
 
 /// Ids of the silences matching `labels`.

@@ -72,19 +72,26 @@ fn lines(payload: &Json) -> Vec<String> {
         .map(|a| {
             a.iter()
                 .map(|x| {
-                    let summary = x["annotations"]["summary"].as_str().map(str::to_owned).unwrap_or_else(|| {
-                        let labels: BTreeMap<String, String> =
-                            serde_json::from_value(x["labels"].clone()).unwrap_or_default();
-                        labels
-                            .iter()
-                            .filter(|(k, _)| k.as_str() != "alertname" && k.as_str() != "severity")
-                            .map(|(k, v)| format!("{k}={v}"))
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    });
+                    let summary = x["annotations"]["summary"]
+                        .as_str()
+                        .map(str::to_owned)
+                        .unwrap_or_else(|| {
+                            let labels: BTreeMap<String, String> =
+                                serde_json::from_value(x["labels"].clone()).unwrap_or_default();
+                            labels
+                                .iter()
+                                .filter(|(k, _)| k.as_str() != "alertname" && k.as_str() != "severity")
+                                .map(|(k, v)| format!("{k}={v}"))
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        });
                     format!(
                         "{} {} ({}): {summary}",
-                        if x["status"] == "resolved" { "RESOLVED" } else { "FIRING" },
+                        if x["status"] == "resolved" {
+                            "RESOLVED"
+                        } else {
+                            "FIRING"
+                        },
                         x["name"].as_str().unwrap_or(""),
                         x["severity"].as_str().unwrap_or("")
                     )
@@ -311,7 +318,10 @@ mod tests {
         });
         assert_eq!(title(&p), "[FIRING:1] QueuePushPaused");
         let l = lines(&p);
-        assert_eq!(l[0], "FIRING QueuePushPaused (critical): Push delivery of orders is paused");
+        assert_eq!(
+            l[0],
+            "FIRING QueuePushPaused (critical): Push delivery of orders is paused"
+        );
         assert_eq!(l[1], "RESOLVED QueuePushPaused (critical): subscription=b");
         assert_eq!(pd_severity(&p), "critical");
         assert_eq!(dedup_key("n", "g"), dedup_key("n", "g"));

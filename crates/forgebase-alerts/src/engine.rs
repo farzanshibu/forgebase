@@ -81,8 +81,12 @@ impl AlertService {
         {
             tracing::debug!(error = %e, "disk signals not collected");
             failed.extend(
-                ["forgebase:data_dir_free_bytes", "forgebase:data_dir_total_bytes", "forgebase:data_dir_free_ratio"]
-                    .map(str::to_owned),
+                [
+                    "forgebase:data_dir_free_bytes",
+                    "forgebase:data_dir_total_bytes",
+                    "forgebase:data_dir_free_ratio",
+                ]
+                .map(str::to_owned),
             );
         }
         if want("forgebase:backup_")
@@ -103,8 +107,12 @@ impl AlertService {
         {
             tracing::debug!(error = %e, "SLO signals not collected");
             failed.extend(
-                ["forgebase:slo_burn_rate", "forgebase:slo_error_budget_remaining", "forgebase:slo_sli"]
-                    .map(str::to_owned),
+                [
+                    "forgebase:slo_burn_rate",
+                    "forgebase:slo_error_budget_remaining",
+                    "forgebase:slo_sli",
+                ]
+                .map(str::to_owned),
             );
         }
         (snap, failed)
@@ -133,7 +141,11 @@ impl AlertService {
             snap.push("forgebase:queue_dead_lettered_total", &l, m.dead_lettered_total as f64);
             snap.push("forgebase:queue_dead_letters", &l, m.dead_letters as f64);
             if s.push.is_some() {
-                snap.push("forgebase:queue_push_paused", &l, f64::from(u8::from(s.paused_at.is_some())));
+                snap.push(
+                    "forgebase:queue_push_paused",
+                    &l,
+                    f64::from(u8::from(s.paused_at.is_some())),
+                );
             }
         }
         Ok(())
@@ -167,12 +179,13 @@ impl AlertService {
             .await
             .map_err(|e| AlertError::Internal(e.to_string()))?
             .map_err(|e| AlertError::Internal(e.to_string()))?;
-        let last = list
-            .iter()
-            .filter_map(|s| parse_iso(&s.manifest.created))
-            .max();
+        let last = list.iter().filter_map(|s| parse_iso(&s.manifest.created)).max();
         if let Some(at) = last {
-            snap.push("forgebase:backup_last_success_timestamp_seconds", &[], at as f64 / 1000.0);
+            snap.push(
+                "forgebase:backup_last_success_timestamp_seconds",
+                &[],
+                at as f64 / 1000.0,
+            );
             snap.push(
                 "forgebase:backup_last_success_age_seconds",
                 &[],
@@ -190,14 +203,22 @@ impl AlertService {
             let l = [("slo", name.as_str())];
             for (w, v) in &st.burn_rates {
                 if let Some(v) = v {
-                    snap.push("forgebase:slo_burn_rate", &[("slo", name.as_str()), ("window", w.as_str())], *v);
+                    snap.push(
+                        "forgebase:slo_burn_rate",
+                        &[("slo", name.as_str()), ("window", w.as_str())],
+                        *v,
+                    );
                 }
                 if gauges {
                     metrics::gauge!(names::SLO_BURN_RATE, "slo" => name.clone(), "window" => w.clone())
                         .set(v.unwrap_or(0.0));
                 }
             }
-            snap.push("forgebase:slo_error_budget_remaining", &l, st.error_budget.remaining_ratio);
+            snap.push(
+                "forgebase:slo_error_budget_remaining",
+                &l,
+                st.error_budget.remaining_ratio,
+            );
             if let Some(s) = st.sli {
                 snap.push("forgebase:slo_sli", &l, s);
             }
@@ -234,8 +255,12 @@ impl AlertService {
         if let Err(e) = self.slo_signals(&mut snap, true).await {
             tracing::debug!(error = %e, "SLO signals not collected");
             failed.extend(
-                ["forgebase:slo_burn_rate", "forgebase:slo_error_budget_remaining", "forgebase:slo_sli"]
-                    .map(str::to_owned),
+                [
+                    "forgebase:slo_burn_rate",
+                    "forgebase:slo_error_budget_remaining",
+                    "forgebase:slo_sli",
+                ]
+                .map(str::to_owned),
             );
         }
         let now = snap.at_ms;
@@ -313,7 +338,11 @@ impl AlertService {
                     .map(|(k, v)| (k.clone(), rules::render(v, &labels, s.value)))
                     .collect();
                 let ann = to_json(&annotations)?;
-                let value: Value = if s.value.is_finite() { s.value.into() } else { Value::Null };
+                let value: Value = if s.value.is_finite() {
+                    s.value.into()
+                } else {
+                    Value::Null
+                };
                 match open.remove(&fp) {
                     Some(row) if row.state == AlertState::Pending && now - row.active_at >= rule.for_ms => {
                         stmts.push(Statement::new(
@@ -359,7 +388,11 @@ impl AlertService {
                                 ann.into(),
                                 value.clone(),
                                 now.into(),
-                                if state == AlertState::Firing { now.into() } else { Value::Null },
+                                if state == AlertState::Firing {
+                                    now.into()
+                                } else {
+                                    Value::Null
+                                },
                             ],
                         ));
                         stmts.push(event(&id, now, AlertState::Pending, value.clone()));
@@ -412,7 +445,10 @@ impl AlertService {
             .collect();
         for state in ["pending", "firing"] {
             for sev in [Severity::Info, Severity::Warning, Severity::Critical] {
-                let n = counts.get(&(state.to_owned(), sev.as_str().to_owned())).copied().unwrap_or(0);
+                let n = counts
+                    .get(&(state.to_owned(), sev.as_str().to_owned()))
+                    .copied()
+                    .unwrap_or(0);
                 metrics::gauge!(names::ALERTS, "state" => state, "severity" => sev.as_str()).set(n as f64);
             }
         }
@@ -464,7 +500,12 @@ impl AlertService {
             )
             .await?;
             let stored: HashMap<String, (Vec<String>, i64)> = Row::all(&stored)
-                .map(|r| (r.text("group_key"), (r.json::<Vec<String>>("firing"), r.int("last_sent_at"))))
+                .map(|r| {
+                    (
+                        r.text("group_key"),
+                        (r.json::<Vec<String>>("firing"), r.int("last_sent_at")),
+                    )
+                })
                 .collect();
             let mut stmts = Vec::new();
             for (key, (gl, alerts)) in &groups {
@@ -490,7 +531,12 @@ impl AlertService {
                      VALUES (?1, ?2, ?3, ?4)
                      ON CONFLICT (notifier_id, group_key) DO UPDATE SET firing = excluded.firing,
                          last_sent_at = excluded.last_sent_at",
-                    vec![n.id.as_str().into(), key.as_str().into(), to_json(&fps)?.into(), now.into()],
+                    vec![
+                        n.id.as_str().into(),
+                        key.as_str().into(),
+                        to_json(&fps)?.into(),
+                        now.into(),
+                    ],
                 ));
                 queued += 1;
             }
@@ -530,7 +576,9 @@ impl AlertService {
         for fp in fps {
             let rows = read(
                 self.db(),
-                &format!("SELECT {ALERT_COLS} FROM _forgebase_alerts WHERE fingerprint = ?1 ORDER BY active_at DESC LIMIT 1"),
+                &format!(
+                    "SELECT {ALERT_COLS} FROM _forgebase_alerts WHERE fingerprint = ?1 ORDER BY active_at DESC LIMIT 1"
+                ),
                 vec![fp.as_str().into()],
             )
             .await?;
@@ -737,7 +785,9 @@ impl AlertService {
             last_evaluated_at: iso(now),
             silenced_by: Vec::new(),
         };
-        let gl: BTreeMap<String, String> = [("alertname".to_owned(), "ForgeBaseTest".to_owned())].into_iter().collect();
+        let gl: BTreeMap<String, String> = [("alertname".to_owned(), "ForgeBaseTest".to_owned())]
+            .into_iter()
+            .collect();
         let key = format!("test:{}", new_id("t"));
         let payload = self.payload(&n, &key, &gl, "test", &[&test], &[], now);
         let delivery_id = new_id("ntn");

@@ -125,8 +125,7 @@ pub async fn track_metrics(State(observers): State<Observers>, req: Request, nex
     let status = code.to_string();
     metrics::counter!(names::HTTP_REQUESTS_TOTAL, "method" => method.clone(), "route" => route.clone(), "status" => status)
         .increment(1);
-    metrics::histogram!(names::HTTP_REQUEST_DURATION_SECONDS, "method" => method, "route" => route)
-        .record(elapsed);
+    metrics::histogram!(names::HTTP_REQUEST_DURATION_SECONDS, "method" => method, "route" => route).record(elapsed);
     res
 }
 

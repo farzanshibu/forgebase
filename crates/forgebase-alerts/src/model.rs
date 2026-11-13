@@ -34,6 +34,7 @@ pub fn parse_iso(s: &str) -> Option<i64> {
 /// How urgent an alert is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "lowercase")]
+#[schema(as = AlertSeverity)]
 pub enum Severity {
     /// Worth knowing.
     Info,
@@ -67,6 +68,7 @@ impl Severity {
 /// Where a rule comes from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "lowercase")]
+#[schema(as = AlertRuleSource)]
 pub enum RuleSource {
     /// The built-in pack.
     Builtin,
@@ -80,6 +82,7 @@ pub enum RuleSource {
 
 /// An alert rule.
 #[derive(Debug, Clone, PartialEq, Serialize, ToSchema)]
+#[schema(as = AlertRule)]
 pub struct Rule {
     /// Id: the built-in id (`queue_backlog_high`), `config:<name>`, `rule-…` or `slo:<slo>:<tier>`.
     pub id: String,
@@ -119,6 +122,7 @@ pub struct Rule {
 /// A new custom rule.
 #[derive(Debug, Clone, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
+#[schema(as = AlertRuleInput)]
 pub struct RuleInput {
     /// The `alertname` label (letters, digits, `_`, `-`, `.`; 1-128).
     pub name: String,
@@ -149,6 +153,7 @@ pub struct RuleInput {
 /// A change to a rule. Built-in, file and SLO rules take `enabled` only.
 #[derive(Debug, Clone, Default, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
+#[schema(as = AlertRulePatch)]
 pub struct RulePatch {
     /// Switch the rule on or off.
     #[serde(default)]
@@ -179,6 +184,7 @@ pub struct RulePatch {
 /// An expression evaluated now.
 #[derive(Debug, Clone, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
+#[schema(as = AlertQueryInput)]
 pub struct QueryInput {
     /// Expression.
     pub expr: String,
@@ -186,6 +192,7 @@ pub struct QueryInput {
 
 /// One sample of a query.
 #[derive(Debug, Clone, PartialEq, Serialize, ToSchema)]
+#[schema(as = AlertQuerySample)]
 pub struct QuerySample {
     /// Labels.
     pub labels: BTreeMap<String, String>,
@@ -195,6 +202,7 @@ pub struct QuerySample {
 
 /// The result of a query.
 #[derive(Debug, Clone, PartialEq, Serialize, ToSchema)]
+#[schema(as = AlertQueryResult)]
 pub struct QueryResult {
     /// Evaluation time.
     pub at: String,
@@ -301,6 +309,7 @@ pub struct AlertPage {
 /// A label matcher of a silence or notifier.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
+#[schema(as = AlertMatcher)]
 pub struct LabelMatcher {
     /// Label name.
     pub label: String,
@@ -317,6 +326,7 @@ fn eq_op() -> String {
 
 /// A silence: notifications of matching alerts are muted until `ends_at`.
 #[derive(Debug, Clone, PartialEq, Serialize, ToSchema)]
+#[schema(as = AlertSilence)]
 pub struct Silence {
     /// Id.
     pub id: String,
@@ -339,6 +349,7 @@ pub struct Silence {
 /// A new silence (or a change: every field replaces).
 #[derive(Debug, Clone, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
+#[schema(as = AlertSilenceInput)]
 pub struct SilenceInput {
     /// At least one; all must match.
     pub matchers: Vec<LabelMatcher>,
@@ -359,6 +370,7 @@ pub struct SilenceInput {
 /// Where notifications go.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "lowercase")]
+#[schema(as = AlertNotifierKind)]
 pub enum NotifierKind {
     /// Signed JSON `POST` (the ADR-0031 header scheme).
     Webhook,
@@ -400,6 +412,7 @@ impl NotifierKind {
 /// A notification destination. Secrets (the webhook signing secret, the
 /// Slack URL, the PagerDuty routing key) are sealed and never listed.
 #[derive(Debug, Clone, PartialEq, Serialize, ToSchema)]
+#[schema(as = AlertNotifier)]
 pub struct Notifier {
     /// Id.
     pub id: String,
@@ -444,6 +457,7 @@ pub struct Notifier {
 /// when not given).
 #[derive(Debug, Clone, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
+#[schema(as = AlertNotifierInput)]
 pub struct NotifierInput {
     /// Unique name (letters, digits, `_`, `-`, `.`; 1-64).
     pub name: String,
@@ -484,6 +498,7 @@ pub struct NotifierInput {
 
 /// One notification and its delivery.
 #[derive(Debug, Clone, PartialEq, Serialize, ToSchema)]
+#[schema(as = AlertDelivery)]
 pub struct Delivery {
     /// Id.
     pub id: String,
@@ -514,6 +529,7 @@ pub struct Delivery {
 
 /// A page of deliveries.
 #[derive(Debug, Clone, PartialEq, Serialize, ToSchema)]
+#[schema(as = AlertDeliveryPage)]
 pub struct DeliveryPage {
     /// Newest first.
     pub items: Vec<Delivery>,
@@ -612,6 +628,7 @@ pub struct SloInput {
 
 /// Error budget of an SLO over its window.
 #[derive(Debug, Clone, PartialEq, Serialize, ToSchema)]
+#[schema(as = SloErrorBudget)]
 pub struct ErrorBudget {
     /// Bad events the objective allows over the window: `(1 - objective) * total`.
     pub allowed: f64,
@@ -623,6 +640,7 @@ pub struct ErrorBudget {
 
 /// One burn-rate alert tier.
 #[derive(Debug, Clone, PartialEq, Serialize, ToSchema)]
+#[schema(as = SloBurnTier)]
 pub struct BurnTier {
     /// Rule id.
     pub rule_id: String,
