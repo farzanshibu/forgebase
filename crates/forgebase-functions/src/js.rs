@@ -171,6 +171,7 @@ impl JsRuntime {
                     result: Err(ExecError::Trap(e.to_string())),
                     fuel_used: 0,
                     logs: Vec::new(),
+                    profile: crate::profile::Profile::default(),
                 };
             }
         };
@@ -260,7 +261,12 @@ async fn js_call(
         _ => {}
     }
     let env = caller.data().env.clone();
+    let timer = caller.data().prof.begin();
     let res = crate::jsops::run(&env, &op, &args).await;
+    caller
+        .data_mut()
+        .prof
+        .end(timer, crate::profile::canonical_op(&op), res.is_ok());
     Ok(finish(caller, res))
 }
 

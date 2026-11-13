@@ -28,6 +28,7 @@ pub mod jobs;
 pub mod js;
 mod jsops;
 pub mod model;
+pub mod profile;
 pub mod runtime;
 pub mod services;
 mod store;
@@ -53,7 +54,7 @@ pub use http::{extension, openapi, router};
 pub use jobs::{INVOKE_JOB, register_jobs};
 pub use model::{
     CAPABILITIES, DeployRequest, Deployed, ExecutionLog, FunctionInfo, FunctionRuntime, HookEvent, HookSpec,
-    InvokeAccess, KvAccess, KvRule, Language, Limits, LimitsInput, LogLine, Outcome, SERVICE_ROLE, SecretInfo, Trigger,
+    InvocationDetail, InvokeAccess, KvAccess, KvRule, Language, Limits, LimitsInput, LogLine, Outcome, SERVICE_ROLE, SecretInfo, Trigger,
     VersionConfig, VersionInfo, VersionSource,
 };
 pub use services::{QueueMessage, QueuePublisher, ServiceError, Services};
@@ -110,6 +111,29 @@ impl Default for FunctionsConfig {
             fetcher: None,
         }
     }
+}
+
+/// Filters of [`FunctionService::invocations`].
+#[derive(Debug, Clone, Default)]
+pub struct InvocationQuery {
+    /// Only this function.
+    pub function: Option<String>,
+    /// Only this version.
+    pub version: Option<i64>,
+    /// Only this status (`ok`, `failed`, `timeout`, ...).
+    pub status: Option<String>,
+    /// Only this trigger (`http`, `hook`, `job`, `test`).
+    pub trigger: Option<String>,
+    /// Only the executions of this request.
+    pub request_id: Option<String>,
+    /// Only rows with an id below this (paging backwards).
+    pub before_id: Option<i64>,
+    /// Only executions that did not end `ok`.
+    pub only_errors: bool,
+    /// Only executions at least this long.
+    pub min_duration_ms: Option<i64>,
+    /// Page size (1 to 500).
+    pub limit: u32,
 }
 
 /// A loaded function with its active configuration.
@@ -246,6 +270,8 @@ pub(crate) struct Inner {
     after_lock: tokio::sync::Mutex<()>,
     log_counter: AtomicU64,
     tasks: Mutex<Vec<JoinHandle<()>>>,
+    /// Aggregates of the host-call profiles (ADR-0036 §3).
+    profiler: Arc<profile::FnProfiler>,
 }
 
 impl Drop for Inner {
@@ -344,6 +370,7 @@ impl FunctionService {
                 write_lock: tokio::sync::Mutex::new(()),
                 log_counter: AtomicU64::new(0),
                 tasks: Mutex::new(Vec::new()),
+                profiler: Arc::new(profile::FnProfiler::default()),
             }),
         };
         let guard = hooks::HookGuard::new(&svc);
@@ -983,6 +1010,46 @@ impl FunctionService {
         Ok(module)
     }
 
+    /// Whether the module of `t` is already compiled and cached.
+    fn module_cached(&self, e: &Entry, t: &Target) -> bool {
+        self.inner
+            .modules
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .contains_key(&(e.row.id.clone(), t.version))
+    }
+
+    /// Whether the script of `t` is already loaded and cached.
+    fn script_cached(&self, e: &Entry, t: &Target) -> bool {
+        self.inner
+            .scripts
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .contains_key(&(e.row.id.clone(), t.version))
+    }
+
+    /// The host-call profile aggregates (ADR-0036 §3): drained by
+    /// `forgebase-insights`, switched by `[observability] function_profiling`.
+    pub fn profiler(&self) -> &Arc<profile::FnProfiler> {
+        &self.inner.profiler
+    }
+
+    /// Recorded executions with their profiles, newest first (no access
+    /// check: the caller is an administrator-only endpoint).
+    pub async fn invocations(&self, q: InvocationQuery) -> Result<Vec<InvocationDetail>> {
+        let f = store::InvocationFilter {
+            function: q.function,
+            version: q.version,
+            status: q.status,
+            trigger: q.trigger,
+            request_id: q.request_id,
+            before_id: q.before_id,
+            only_errors: q.only_errors,
+            min_duration_ms: q.min_duration_ms,
+        };
+        store::invocations(self.backend().as_ref(), &f, i64::from(q.limit.clamp(1, 500))).await
+    }
+
     /// The JavaScript of a JS/TS version.
     async fn script(&self, e: &Entry, t: &Target) -> Result<Arc<Script>> {
         let key = (e.row.id.clone(), t.version);
@@ -1260,18 +1327,32 @@ impl FunctionService {
             caller,
             services,
             kv_rules: self.rules_of(&e.row.id),
+            profile: self.inner.profiler.enabled(),
         });
+        let tenant = env.caller.tenant.clone();
         let started_at = now();
         let start = Instant::now();
+        let cold: bool;
+        let mut prepare_us = 0u64;
         let run = match config.runtime {
             FunctionRuntime::Wasm => {
+                let loaded = Instant::now();
+                cold = !self.module_cached(e, &target);
                 let module = self.module(e, &target).await?;
+                if cold {
+                    prepare_us = u64::try_from(loaded.elapsed().as_micros()).unwrap_or(u64::MAX);
+                }
                 DEPTH
                     .scope(depth + 1, self.inner.runtime.run(&module, &config.limits, env, input))
                     .await
             }
             FunctionRuntime::Js => {
+                let loaded = Instant::now();
+                cold = !self.script_cached(e, &target);
                 let script = self.script(e, &target).await?;
+                if cold {
+                    prepare_us = u64::try_from(loaded.elapsed().as_micros()).unwrap_or(u64::MAX);
+                }
                 let mut run = DEPTH
                     .scope(
                         depth + 1,
@@ -1311,6 +1392,23 @@ impl FunctionService {
             },
             Err(err) => (err.status(), Some(err.to_string())),
         };
+        let detail = self.inner.profiler.enabled().then(|| {
+            let fin = profile::Finished {
+                function: &e.row.name,
+                version: target.version,
+                status,
+                duration_us: u64::try_from(elapsed.as_micros()).unwrap_or(u64::MAX),
+                fuel_used: run.fuel_used,
+                fuel_limit: config.limits.fuel,
+                memory_limit: config.limits.memory_bytes,
+                cold,
+                prepare_us,
+                tenant: tenant.as_deref(),
+                profile: &run.profile,
+            };
+            self.inner.profiler.record(&fin);
+            fin.detail_json().to_string()
+        });
         let n = self.inner.log_counter.fetch_add(1, Ordering::Relaxed);
         let keep = (n % 64 == 63).then_some(self.inner.cfg.log_retention);
         let log = store::NewLog {
@@ -1325,6 +1423,7 @@ impl FunctionService {
             logs: &run.logs,
             request_id,
             created_at: started_at,
+            profile: detail,
         };
         if let Err(err) = store::insert_log(self.backend().as_ref(), log, keep).await {
             tracing::warn!(function = %e.row.name, error = %err, "execution log not written");

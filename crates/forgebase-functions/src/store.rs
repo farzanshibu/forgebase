@@ -290,6 +290,8 @@ pub(crate) struct NewLog<'a> {
     pub(crate) logs: &'a [LogLine],
     pub(crate) request_id: Option<String>,
     pub(crate) created_at: String,
+    /// The execution's profile as JSON (ADR-0036 §3).
+    pub(crate) profile: Option<String>,
 }
 
 /// Inserts an execution log row; with `keep`, prunes the function's rows
@@ -298,8 +300,8 @@ pub(crate) async fn insert_log(db: &dyn Backend, log: NewLog<'_>, keep: Option<i
     let lines = serde_json::to_string(log.logs).unwrap_or_else(|_| "[]".into());
     let mut stmts = vec![Statement::new(
         "INSERT INTO _forgebase_function_logs
-             (function_id, function, version, trigger, status, duration_ms, fuel_used, error, logs, request_id, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+             (function_id, function, version, trigger, status, duration_ms, fuel_used, error, logs, request_id, created_at, profile)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
         vec![
             log.function_id.into(),
             log.function.into(),
@@ -312,6 +314,7 @@ pub(crate) async fn insert_log(db: &dyn Backend, log: NewLog<'_>, keep: Option<i
             lines.into(),
             log.request_id.into(),
             log.created_at.into(),
+            log.profile.into(),
         ],
     )];
     if let Some(keep) = keep {
@@ -377,4 +380,78 @@ pub(crate) async fn set_cursor(db: &dyn Backend, name: &str, seq: i64, now: &str
         )],
     )
     .await
+}
+
+/// Filters of [`invocations`].
+#[derive(Debug, Clone, Default)]
+pub(crate) struct InvocationFilter {
+    pub(crate) function: Option<String>,
+    pub(crate) version: Option<i64>,
+    pub(crate) status: Option<String>,
+    pub(crate) trigger: Option<String>,
+    pub(crate) request_id: Option<String>,
+    /// Only rows with an id below this (paging backwards).
+    pub(crate) before_id: Option<i64>,
+    pub(crate) only_errors: bool,
+    pub(crate) min_duration_ms: Option<i64>,
+}
+
+/// Newest executions with their profile, over all functions or one.
+pub(crate) async fn invocations(
+    db: &dyn Backend,
+    f: &InvocationFilter,
+    limit: i64,
+) -> Result<Vec<crate::model::InvocationDetail>> {
+    let rows = db
+        .fetch_all(&Statement::new(
+            "SELECT id, function, version, trigger, status, duration_ms, fuel_used, error, logs, request_id, created_at, profile
+             FROM _forgebase_function_logs
+             WHERE (CAST(?1 AS TEXT) IS NULL OR function = ?1)
+               AND (CAST(?2 AS BIGINT) IS NULL OR version = ?2)
+               AND (CAST(?3 AS TEXT) IS NULL OR status = ?3)
+               AND (CAST(?4 AS TEXT) IS NULL OR trigger = ?4)
+               AND (CAST(?5 AS TEXT) IS NULL OR request_id = ?5)
+               AND (CAST(?6 AS BIGINT) IS NULL OR id < ?6)
+               AND (?7 = 0 OR status <> 'ok')
+               AND (CAST(?8 AS BIGINT) IS NULL OR duration_ms >= ?8)
+             ORDER BY id DESC LIMIT ?9",
+            vec![
+                f.function.clone().into(),
+                f.version.into(),
+                f.status.clone().into(),
+                f.trigger.clone().into(),
+                f.request_id.clone().into(),
+                f.before_id.into(),
+                i64::from(f.only_errors).into(),
+                f.min_duration_ms.into(),
+                limit.into(),
+            ],
+        ))
+        .await?;
+    Ok(rows
+        .rows
+        .iter()
+        .map(|r| crate::model::InvocationDetail {
+            log: ExecutionLog {
+                id: int(r, 0),
+                function: text(r, 1),
+                version: int(r, 2),
+                trigger: text(r, 3),
+                status: text(r, 4),
+                duration_ms: int(r, 5),
+                fuel_used: int(r, 6),
+                error: r.get(7).and_then(Value::as_str).map(str::to_owned),
+                logs: serde_json::from_str::<Json>(&text(r, 8))
+                    .ok()
+                    .and_then(|j| serde_json::from_value(j).ok())
+                    .unwrap_or_default(),
+                request_id: r.get(9).and_then(Value::as_str).map(str::to_owned),
+                created_at: text(r, 10),
+            },
+            profile: r
+                .get(11)
+                .and_then(Value::as_str)
+                .and_then(|p| serde_json::from_str::<Json>(p).ok()),
+        })
+        .collect())
 }

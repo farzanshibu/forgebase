@@ -160,6 +160,8 @@ pub static POSTGRES_MIGRATIONS: &[Migration] = &[
         "billing_webhook_deliveries",
         include_str!("../../../migrations/postgres/0053_billing_webhook_deliveries.sql"),
     ),
+    Migration::new(60, "insights", include_str!("../../../migrations/postgres/0060_insights.sql")),
+    Migration::new(61, "audit_search", include_str!("../../../migrations/postgres/0061_audit_search.sql")),
 ];
 
 /// The SQLite migrations the baseline stands for (versions up to
