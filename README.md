@@ -201,6 +201,13 @@ health check on `/health`.
 ForgeBase under a dedicated user with state in `/var/lib/forgebase`. The header
 of the file has the install steps.
 
+## Kubernetes
+
+A Helm chart ([deploy/helm/forgebase](deploy/helm/forgebase/README.md)) and Kustomize
+manifests ([deploy/kubernetes](deploy/kubernetes/README.md)) run ForgeBase as one
+StatefulSet pod on a PVC, with the bundled PostgreSQL, an external PostgreSQL
+server or SQLite. See [docs/deployment.md §9](docs/deployment.md#9-kubernetes).
+
 ## Roadmap
 
 The phases, scope and acceptance criteria are in [docs/PLAN.md](docs/PLAN.md).

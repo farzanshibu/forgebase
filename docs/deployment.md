@@ -545,3 +545,117 @@ test-mode keys are accepted (see [security.md §3](security.md#3-trust-boundarie
 - [ ] `log.format` is `json` for log collection.
 - [ ] `resp.enabled` is `false`, or the Redis port is on loopback.
 - [ ] `/health` and `/health/ready` return `200`.
+
+## 9. Kubernetes
+
+ForgeBase runs on Kubernetes as **one pod**: a StatefulSet with `replicas: 1` and
+its data directory on a PersistentVolumeClaim. There are two ways to deploy it, with
+the same pod spec:
+
+| | Where | Use when |
+|---|---|---|
+| Helm chart | [`deploy/helm/forgebase`](../deploy/helm/forgebase/README.md) | You want options: Ingress or Gateway API route, ServiceMonitor, NetworkPolicy, backup CronJob, first-administrator bootstrap. Has a values table and a JSON schema. |
+| Kustomize | [`deploy/kubernetes`](../deploy/kubernetes/README.md) | You want plain manifests to read and patch: a base, three overlays (`bundled-postgres`, `sqlite`, `external-postgres`) and optional components (ingress, network policy, backup). |
+
+```sh
+# Helm
+helm install forgebase ./deploy/helm/forgebase -n forgebase --create-namespace
+# Kustomize (bundled PostgreSQL)
+kubectl create namespace forgebase
+kubectl apply -k deploy/kubernetes/overlays/bundled-postgres -n forgebase
+# Either: reach the dashboard
+kubectl -n forgebase port-forward svc/forgebase 8090:8090   # then /admin/
+```
+
+The image is `ghcr.io/farzanshibu/forgebase:<version>` (the standard image). The
+release workflow does not publish a `-lite` image; build it from the Dockerfile
+without `ENGINE_ARCHIVE` if you want one. The standard image also runs SQLite
+(`database.backend=sqlite`).
+
+### 9.1 Why one replica
+
+ForgeBase has a single writer: one process owns the data directory, holds
+`.forgebase.lock`, runs the database engine and the background workers, and keeps
+rate limits in memory (security.md §8, item 2). There is no clustering in this
+release (§1), and the replica topology of ADR-0029 needs TLS between hosts, which this
+version does not set up (§3.5). So the chart and the manifests pin `replicas: 1`, allow
+only a single-writer access mode (`ReadWriteOnce` or `ReadWriteOncePod`, never
+`ReadWriteMany`), and the chart's JSON schema rejects any other `replicaCount`.
+Upgrades and config changes restart the pod: expect a short outage. A node failure
+leaves the pod `Terminating` until the node is declared gone, as for any StatefulSet.
+
+### 9.2 What the pod needs
+
+* **Non-root.** The pod runs as uid and gid 10001 (PostgreSQL refuses root) with
+  `runAsNonRoot`, seccomp `RuntimeDefault`, no privilege escalation, all capabilities
+  dropped and a read-only root filesystem, as the Compose file does (§2.2). It
+  satisfies the `restricted` Pod Security Standard.
+* **Writable paths.** `/data` (the PVC: database or cluster, extracted engine, socket,
+  storage, keys, backups), `/tmp` (an emptyDir) and, with the bundled PostgreSQL,
+  `/dev/shm`.
+* **Shared memory.** Kubernetes gives a pod 64 MB of `/dev/shm`, as Docker does (§2.2).
+  The chart and the `bundled-postgres` overlay mount a memory-backed emptyDir of 256 Mi,
+  which counts against the memory limit.
+* **Volume ownership.** `fsGroup: 10001` with `fsGroupChangePolicy: OnRootMismatch`.
+  A recursive ownership change would add group bits to `roles.secret` and the
+  PostgreSQL data directory, which ForgeBase and PostgreSQL refuse.
+* **No service links.** `enableServiceLinks: false`: for a Service named `forgebase`
+  Kubernetes would inject `FORGEBASE_PORT=tcp://…`, and the binary rejects unknown
+  `FORGEBASE_*` variables (§3.3).
+* **Probes.** Startup and readiness on `GET /health/ready`, liveness on `GET /health`
+  (both open regardless of `ops_access`). The startup probe waits up to 15 minutes:
+  the first start extracts the engine, runs `initdb` and every migration.
+* **Grace period.** 90 s: the server drains requests for `shutdown_timeout_secs`
+  (30 s), then checkpoints and stops PostgreSQL.
+
+### 9.3 Database, configuration and secrets
+
+* **Bundled PostgreSQL** (default): inside the pod, on the PVC.
+* **External PostgreSQL**: `[database.postgres] mode = "external"`; the URL is read from
+  the Secret key and set as `FORGEBASE_DATABASE_URL` (§3.3). The PVC still holds
+  object storage and `auth/master.key`.
+* **SQLite**: one file on the PVC.
+
+`forgebase.toml` is mounted from a ConfigMap and named by `FORGEBASE_CONFIG`
+(§3.1). Secrets (database URL, S3 credentials, the administrator's password) come
+from Secrets as environment variables and never go into the ConfigMap.
+
+**First administrator.** Without bootstrap, the one-time setup link of §2.4 is
+printed to standard output, so it is in `kubectl logs forgebase-0` until used. The
+chart can create the administrator before the server starts, with an init container
+that runs `forgebase init --config … --admin-email … --admin-password-stdin`
+(§2.4, option 2), which keeps an existing administrator.
+
+### 9.4 TLS, routing and metrics
+
+The binary serves plain HTTP (§5): terminate TLS at an Ingress (with cert-manager
+annotations) or a Gateway API Gateway, and set `server.public_url`. Set
+`auth.trust_forwarded_for = true` only when every request reaches the pod through a proxy
+that appends the client address, and restrict the pod with a NetworkPolicy then.
+`/metrics` follows `server.ops_access` (§5): another pod such as Prometheus is not
+"the same host", so scrape with an admin service-account API key that has the
+`system:read` scope (the chart's `serviceMonitor.authorization`). Native TLS in the
+binary (a `[tls]` section) is exposed in the chart as `tls.mode`, off by default;
+ForgeBase 0.3.4 does not know that section.
+
+### 9.5 Backups
+
+The optional CronJob runs `forgebase backup` **inside the server pod** with
+`kubectl exec` (a ServiceAccount that may exec into that one pod, and nothing else).
+A second pod mounting the PVC cannot do it: for the bundled PostgreSQL the CLI attaches
+to the running engine through the PID in `postmaster.pid`, which another pod's PID
+namespace does not show. Snapshots land in `/data/backups/snapshots` (or a second PVC),
+which shares a failure domain with the data: copy them elsewhere or use CSI volume
+snapshots. `auth/master.key` is not in the backup (§4): copy it once with
+`kubectl exec forgebase-0 -- cat /data/auth/master.key`. Restoring needs a stopped
+server: scale the StatefulSet to 0 and run `forgebase restore` in a one-off pod on the
+same PVC.
+
+### 9.6 Checks
+
+`deploy/helm/validate.sh` and `deploy/kubernetes/validate.sh` lint and render every
+variant, validate the output against the Kubernetes and CRD JSON schemas with
+[kubeconform](https://github.com/yannh/kubeconform), and check that a second replica or
+a `ReadWriteMany` claim is refused. The `kubernetes` job of `.github/workflows/ci.yml`
+runs both. They do not start a cluster: see the READMEs for what has not been run
+against one.
