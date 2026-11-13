@@ -211,8 +211,17 @@ if ($bad) { throw "missing DLLs" }
 
 Log "pack"
 $name = "forgebase-pg$PgVer-$BuildNo-$Target.tar.zst"
-python "$Here\engine.py" pack $Engine "$Out\$name" --postgres $PgVer --build $BuildNo --target $Target `
-  --zstd "$Deps\bin\zstd.exe" `
+# engine.py writes the tar; zstd runs from here. Python's subprocess failed to
+# start the zstd CLI on the runner (FileNotFoundError, engine-pg18.6-r3 and
+# -r4) although the same zstd.exe ran from this script moments before.
+$tar = "$Work\$($name -replace '\.zst$', '')"
+python "$Here\engine.py" pack $Engine $tar --postgres $PgVer --build $BuildNo --target $Target `
   --feature "pgvector=$(Lock sources.pgvector.version)" --feature "pg_cron=$(Lock sources.pg_cron.version)" `
   --feature "pgmq=$qv" --feature "pg_trgm=$PgVer" --feature "graph_cypher=false"
+& "$Deps\bin\zstd.exe" -q -f -19 --single-thread -o "$Out\$name.part" $tar
+Move-Item -Force "$Out\$name.part" "$Out\$name"
+Remove-Item -Force $tar
+$sha = (Get-FileHash -Algorithm SHA256 "$Out\$name").Hash.ToLower()
+[IO.File]::WriteAllText("$Out\$name.sha256", "$sha  $name`n")
+Write-Host "$sha  $Out\$name"
 Get-Item "$Out\$name" | Format-List Name, Length

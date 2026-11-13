@@ -256,9 +256,19 @@ def cmd_pack(args) -> None:
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     tmp = out.with_name(out.name + ".part")
+    if out.suffix == ".tar":
+        # The uncompressed tar, for a caller that runs zstd itself
+        # (build-windows.ps1: Python could not start the zstd CLI there).
+        tmp.write_bytes(buf.getvalue())
+        tmp.replace(out)
+        print(f"tar {out} ({len(buf.getvalue())} bytes, {len(files)} files, {len(links)} links)")
+        return
     z = zstd_cli(args.zstd)
-    subprocess.run([z, "-q", "-f", f"-{args.level}", "--single-thread", "-o", str(tmp)],
-                   input=buf.getvalue(), check=True)
+    try:
+        subprocess.run([z, "-q", "-f", f"-{args.level}", "--single-thread", "-o", str(tmp)],
+                       input=buf.getvalue(), check=True)
+    except OSError as e:
+        die(f"cannot run zstd {z!r} (exists: {os.path.exists(z)}, cwd {os.getcwd()!r}): {e}")
     tmp.replace(out)
     sha = sha256_file(out)
     (out.with_name(out.name + ".sha256")).write_text(f"{sha}  {out.name}\n")
@@ -271,6 +281,8 @@ def cmd_pack(args) -> None:
 # ---------------------------------------------------------------- extract
 
 def decompress(path: Path, zstd: str | None) -> bytes:
+    if path.suffix == ".tar":  # already decompressed (the Windows smoke test)
+        return path.read_bytes()
     try:
         from compression import zstd as zmod  # Python 3.14+
         return zmod.decompress(path.read_bytes())

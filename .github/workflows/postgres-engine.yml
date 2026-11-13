@@ -167,11 +167,21 @@ jobs:
       # Saved even when a later step fails, so fixing the PostgreSQL step does
       # not rebuild them. Each dependency is skipped only when its final file
       # exists (build-windows.ps1). Bump v1 to force a rebuild.
+      # Keyed on the pinned dependency sources only, so an engine.build bump
+      # (r2, r3, ...) does not rebuild them.
+      - name: Dependency cache key
+        id: depkey
+        shell: pwsh
+        run: |
+          $parts = foreach ($n in "openssl", "zlib", "lz4", "zstd") { python deploy/postgres-engine/engine.py get "sources.$n.sha256" }
+          $h = [BitConverter]::ToString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes(($parts -join ",")))).Replace("-", "").ToLower()
+          Add-Content $env:GITHUB_OUTPUT "key=engine-deps-windows-v1-$h"
+
       - id: deps
         uses: actions/cache/restore@v4
         with:
           path: ${{ runner.temp }}\engine\deps
-          key: engine-deps-windows-v1-${{ hashFiles('engine.lock') }}
+          key: ${{ steps.depkey.outputs.key }}
 
       - name: Build tools
         shell: pwsh
@@ -192,13 +202,15 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: ${{ runner.temp }}\engine\deps
-          key: engine-deps-windows-v1-${{ hashFiles('engine.lock') }}
+          key: ${{ steps.depkey.outputs.key }}
 
       - name: Smoke test from the archive
         shell: pwsh
         run: |
           $archive = (Get-ChildItem "$env:WORK\out\*.tar.zst").FullName
-          python deploy/postgres-engine/engine.py extract --zstd "$env:WORK\deps\bin\zstd.exe" $archive "$env:RUNNER_TEMP\x\engine"
+          # zstd runs from pwsh: Python's subprocess could not start it here (build-windows.ps1, pack).
+          & "$env:WORK\deps\bin\zstd.exe" -d -q -f -o "$env:RUNNER_TEMP\engine.tar" $archive
+          python deploy/postgres-engine/engine.py extract "$env:RUNNER_TEMP\engine.tar" "$env:RUNNER_TEMP\x\engine"
           deploy/postgres-engine/smoke-windows.ps1 -Engine "$env:RUNNER_TEMP\x\engine" -Work "$env:RUNNER_TEMP\x\w"
 
       - uses: actions/upload-artifact@v4
