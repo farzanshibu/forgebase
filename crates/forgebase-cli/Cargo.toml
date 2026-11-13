@@ -1,6 +1,6 @@
 [package]
 name = "forgebase-cli"
-description = "The `forgebase` command: init, serve, migrate, status, doctor, backup, restore, export, import, version, admin, functions."
+description = "The `forgebase` command: init, serve, migrate, status, doctor, backup, restore, export, import, version, admin, functions, project, deploy, new."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -37,8 +37,12 @@ forgebase-server.workspace = true
 fs4.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+# Project as code (ADR-0037): function code digests, project and function files, server URLs.
+sha2.workspace = true
 time.workspace = true
+toml.workspace = true
 toml_edit.workspace = true
+url.workspace = true
 # process: `forgebase db psql` runs the engine's psql.
 tokio = { workspace = true, features = ["process"] }
 tracing.workspace = true
@@ -128,6 +132,11 @@ path = "tests/convert_e2e.rs"
 [[test]]
 name = "node_e2e"
 path = "tests/node_e2e.rs"
+
+# ADR-0037: `forgebase new`, `project pull|plan|apply|drift` and `deploy` against a real server.
+[[test]]
+name = "project_e2e"
+path = "tests/project_e2e.rs"
 
 [lints]
 workspace = true

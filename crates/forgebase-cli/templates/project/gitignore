@@ -1,0 +1,6 @@
+# Local settings and credentials (copy .env.example to .env).
+.env
+# A local ForgeBase data directory, if you run `forgebase serve` here.
+forgebase-data/
+# Secrets exported by `forgebase project apply --secrets-out`.
+*.secrets.env

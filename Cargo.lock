@@ -1334,8 +1334,10 @@ dependencies = [
  "time",
  "tokio",
  "tokio-tungstenite",
+ "toml",
  "toml_edit",
  "tracing",
+ "url",
  "wat",
 ]
 
