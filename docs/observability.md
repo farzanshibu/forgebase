@@ -395,4 +395,4 @@ POST /api/v1/slos
 
 ## 4. What leaves the box
 
-See [security.md §4.14](security.md#414-tracing-export-and-alert-notifications).
+See [security.md §4.14](security.md#414-tracing-export-and-alert-notifications-adr-0035).
