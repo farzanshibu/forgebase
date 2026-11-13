@@ -187,7 +187,8 @@ docker compose up --build
 This starts ForgeBase on <http://127.0.0.1:8090> with data in the
 `forgebase-data` volume. The container listens on all interfaces inside the
 container; the compose file publishes the port on loopback only. Keep it that way unless
-a reverse proxy with TLS sits in front ([docs/security.md](docs/security.md)).
+a reverse proxy with TLS sits in front ([docs/security.md](docs/security.md)), or turn on
+native TLS with your certificate files or Let's Encrypt (`[tls]`, [docs/deployment.md §5](docs/deployment.md#5-tls)).
 
 Without Compose:
 

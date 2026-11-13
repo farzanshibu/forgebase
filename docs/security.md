@@ -40,7 +40,7 @@ To report a vulnerability, see [`SECURITY.md`](../SECURITY.md).
 
 | Boundary | Control | Decision |
 |---|---|---|
-| Network to HTTP API | TLS terminated by a reverse proxy you run. The binary speaks plain HTTP. Default bind is `127.0.0.1`. | [deployment.md](deployment.md#5-tls) |
+| Network to HTTP API | Either TLS terminated by a reverse proxy you run (default: the binary speaks plain HTTP, bound to `127.0.0.1`), or native TLS (`[tls] mode = "files"` or `"acme"`): rustls with the ring provider, TLS 1.2+ (or 1.3 only), certificate and key checked before start, optional HSTS. | [deployment.md](deployment.md#5-tls), ADR-0033 |
 | Credential to identity | Argon2id passwords (m = 19 MiB, t = 2, p = 1). Access tokens are 15-minute HS256 JWTs, checked against their session on each use. Refresh tokens rotate; reuse revokes the session. Alg must be `HS256` with a known `kid`. | ADR-0004 §§3, 6 |
 | Stored secrets | Tokens, codes, API-key secrets and cookies are HMAC-SHA256 under a pepper derived from the master key. Signing keys, TOTP seeds and provider secrets are XChaCha20-Poly1305 encrypted, bound to their row. Secrets are shown once. | ADR-0004 §6 |
 | Brute force | Per-IP fixed-window limits: 30 failed credential attempts per minute (a successful sign-in gives its attempt back), 20 mail-sending requests per hour. Admin sign-in has its own per-IP budget. Per-account lockout (5 failures in 15 minutes) persisted in the database. A known-device cookie lets an administrator's own browser past both (§4.1). | ADR-0004 §8; FB-80 |
@@ -57,7 +57,7 @@ To report a vulnerability, see [`SECURITY.md`](../SECURITY.md).
 | Payment webhooks | Signature checked in constant time; Stripe timestamp tolerance 300 s; event ids are deduplicated; out-of-order events ignored. Store notifications are verified JWS chains (Apple Root CA G3) or provider-signed. Only test-mode provider keys accepted. | ADR-0021 §§6, 9 |
 | Operational endpoints | `/metrics` and `/api/system/*` follow `[server] ops_access` (default `loopback`, §5). | FB-80 |
 | Logs and audit | Credentials are never logged. Audit detail is scrubbed of keys such as `password`, `token`, `code`, `secret`. Request spans log the path only (query strings may carry tokens). Internal errors reach clients without SQL, paths or stack traces. | ADR-0004 §6, ADR-0001 §7 |
-| Redis protocol | Off by default. Every connection must `AUTH` with an API key or PAT first; `kv:` scopes apply per namespace. No TLS: keep it on loopback or behind a tunnel. | ADR-0013 |
+| Redis protocol | Off by default. Every connection must `AUTH` with an API key or PAT first; `kv:` scopes apply per namespace. Plain TCP unless `[resp] tls = true` (the `[tls]` certificate); without it keep it on loopback or behind a tunnel. | ADR-0013, ADR-0033 |
 | Process | Panics return a 500 envelope, not a crash of the listener. Request timeouts. Body size limits. Graceful shutdown. | ADR-0001 §3 |
 | Container and host | Image runs as uid 10001, no shell login. Compose: read-only root, `no-new-privileges`, all capabilities dropped. systemd unit: `ProtectSystem=strict`, `NoNewPrivileges`, empty capability set, system-call filter, `MemoryDenyWriteExecute`. | [deployment.md](deployment.md) |
 | Supply chain | Dependencies are reviewed (ADR-0002). CI runs `cargo deny` (advisories, licences, bans, sources). Release binaries come with SHA-256 checksums. | ADR-0002; `deny.toml` |
@@ -186,7 +186,7 @@ type (for example `function.invoke`).
 | Unauthenticated RESP commands | Every connection must `AUTH` with an API key or PAT first; nothing else is accepted before | `forgebase-resp/tests/real_auth.rs`; server `resp` test |
 | A `kv:read` key writing | Namespace scopes checked per command | `real_auth.rs` |
 | Namespace hopping over HTTP | `kv:<access>:<ns>` scopes and policy per namespace | `forgebase-kv/tests/api.rs`; `security_bypass::scoped_keys_and_pats_cannot_escalate` |
-| Sniffing RESP traffic | No TLS: loopback or a tunnel only | documented (§8) |
+| Sniffing RESP traffic | `[resp] tls = true` encrypts it with the server's certificate (handshake within the pre-auth deadline); plain RESP stays loopback or tunnel only | `tls::resp_over_tls_uses_the_same_certificate` (forgebase-server); documented (§8) |
 
 ### 4.11 Vector and graph (`forgebase-vector`, `forgebase-graph`, ADR-0006, 0012)
 
@@ -211,12 +211,26 @@ their own, so §4.2 and §4.3 apply. Proof: `forgebase-vector/tests/service.rs`,
 |---|---|---|
 | Anonymous remote reads of metrics, data directory and database path | **FB-80:** `ops_access` gate (§5); `/metrics` needs scope `system:read` for scoped keys | `security_bypass::ops_endpoints_need_an_administrator_unless_called_directly_on_loopback`; `forgebase-api` `ops_endpoints_refuse_proxied_and_remote_anonymous_callers` |
 
+### 4.14 Native TLS (`forgebase-server` `tls`, ADR-0033)
+
+| Threat | Control | Proof |
+|---|---|---|
+| Serving with a wrong or mismatched key | Files are read and the key checked against the certificate (SubjectPublicKeyInfo) before anything starts; a bad pair stops the server, a bad reload keeps the old certificate | `tls::a_key_that_does_not_match_its_certificate_refuses_to_start`, `tls::hot_reload_swaps_the_certificate_without_a_restart_or_dropping_connections` |
+| Weak protocol versions | rustls only: TLS 1.2 and 1.3 (`min_version = "1.3"` refuses 1.2), no renegotiation, safe default suites | rustls configuration in `tls/certs.rs` |
+| Handshake floods and slow handshakes | Handshakes run off the accept loop, at most 1024 at a time, 10 s each; failures counted (`forgebase_tls_handshake_failures_total`) | `tls/serve.rs` |
+| ACME account key or certificate key read from disk | Sealed with the data directory's keyring (XChaCha20-Poly1305, bound to the directory URL), files 0600 in 0700 directories; `status.json` has no secrets | `tls_renewal::renews_at_two_thirds_backs_off_on_failure_and_keeps_the_old_certificate` |
+| The `tls-alpn-01` challenge certificate shown to ordinary clients | Served only to `acme-tls/1` handshakes for that exact name; the connection is closed after the handshake | `tls::tls_alpn_01_handshakes_get_the_challenge_certificate` |
+| Open redirect through the `Host` header on the plain listener | Redirects go to `public_url`, a configured ACME domain, or a well-formed host name; anything else is `400` | `serve::tests::redirect_targets_never_leave_the_named_hosts`, `tls::the_plain_listener_redirects_to_https_and_answers_http01` |
+| A certificate silently expiring | Renewal at two thirds of the lifetime with backoff; expiry gauge, `doctor` warning under 14 days, status `last_error` | `tls_renewal::*`, `tls::doctor_reports_expiry` |
+| Clients spoofing their address when exposed directly | `trust_forwarded_for` stays off with native TLS (warning when on) | documented (deployment.md §5) |
+
 ## 5. Admin and operational access
 
 The dashboard at `/admin/` and the admin sign-in at `POST /api/auth/admins/login`
 are part of the product (ADR-0014). The server still binds to loopback by
 default, and the shipped Docker and compose files publish the port on
-loopback only. Keep it that way unless a reverse proxy with TLS sits in front.
+loopback only. Keep it that way unless a reverse proxy with TLS sits in front,
+or the server serves native TLS itself (ADR-0033).
 
 `/metrics` and `/api/system/*` are operational endpoints. FB-80 decided:
 
@@ -288,7 +302,8 @@ the billing and store webhook tests, and `forgebase-resp` tests.
    An embedding application must install SMTP (ADR-0020). The auth dev mailer
    writes messages as JSON files under `<data_dir>/mail/` (ADR-0004 §12), so
    a deployment that uses it leaves one-time links on disk.
-5. **RESP listener has no TLS.** Keep it on loopback, or tunnel it.
+5. **RESP listener is plain TCP unless `[resp] tls = true`** (needs native
+   TLS, ADR-0033). Without it, keep it on loopback, or tunnel it.
 6. **SVG uploads.** An `image/*` allow-list admits `image/svg+xml`. Downloads
    are inert (attachment, `CSP: sandbox`, `nosniff`); list exact types such as
    `image/png` if you embed uploads elsewhere.

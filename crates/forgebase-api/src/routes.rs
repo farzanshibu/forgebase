@@ -199,6 +199,9 @@ pub struct SystemInfo {
     started_at: String,
     uptime_secs: u64,
     database: DatabaseSummary,
+    /// Entries added by the server (`tls`, ADR-0033).
+    #[serde(flatten)]
+    sections: serde_json::Map<String, serde_json::Value>,
 }
 
 /// `GET /api/system/info`: read-only instance information.
@@ -230,6 +233,21 @@ pub async fn system_info(State(state): State<AppState>) -> Result<Response, ApiE
             bundled_postgres: forgebase_core::config::BUNDLED_POSTGRES,
             engine: rt.engine.as_ref().map(|e| e()),
             features: feature_engines(&state).await,
+        },
+        sections: {
+            let mut m = state.status_sections();
+            for builtin in [
+                "name",
+                "version",
+                "mode",
+                "data_dir",
+                "started_at",
+                "uptime_secs",
+                "database",
+            ] {
+                m.remove(builtin);
+            }
+            m
         },
     };
     Ok(no_store(Json(info).into_response()))

@@ -1,5 +1,6 @@
 //! Listener settings.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 /// Settings of the RESP listener. [`RespConfig::default`] is the production
@@ -43,6 +44,9 @@ pub struct RespConfig {
     pub revalidate_interval: Duration,
     /// How long shutdown lets connections finish before it drops them.
     pub shutdown_grace: Duration,
+    /// Serve TLS with this configuration (ADR-0033: the server's certificate
+    /// resolver, so renewals apply to RESP too). `None`: plain TCP.
+    pub tls: Option<Arc<tokio_rustls::rustls::ServerConfig>>,
 }
 
 impl Default for RespConfig {
@@ -65,6 +69,7 @@ impl Default for RespConfig {
             auth_window: Duration::from_secs(60),
             revalidate_interval: Duration::from_secs(30),
             shutdown_grace: Duration::from_secs(5),
+            tls: None,
         }
     }
 }

@@ -27,6 +27,12 @@
 //! 7. when `[resp] enabled = true`, bind the Redis protocol listener
 //!    (`forgebase-resp`, ADR-0013) in front of the built-in KV engine.
 //!
+//! Native TLS (ADR-0033, [`tls`]): with `[tls] mode = "files"` or `"acme"`
+//! the HTTP listener serves HTTPS (and RESP too with `[resp] tls`). The
+//! certificate is prepared before the database opens, so a missing file or a
+//! key that does not match refuses to start; certificate files are reloaded
+//! and ACME certificates renewed in the background.
+//!
 //! Switchable modules (FB-91, ADR-0026): a module with `[<module>] enabled =
 //! false` (storage, functions, queue, realtime, vector, graph, identity,
 //! access, resp, billing) is not opened, its routes answer `404
@@ -48,6 +54,7 @@ mod lock;
 pub mod moves;
 pub mod replicas;
 pub mod shards;
+pub mod tls;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -112,6 +119,12 @@ pub struct RunningServer {
     recovery: Option<forgebase_db::twophase::RecoveryTask>,
     /// Managed replicas and the topology service (FB-175).
     replicas: Arc<replicas::Replicas>,
+    /// Native TLS (ADR-0033), when `[tls] mode` is not `off`.
+    tls: Option<Arc<tls::TlsSetup>>,
+    /// The certificate file watcher or the ACME renewer.
+    tls_tasks: Option<tls::TlsTasks>,
+    /// The plain HTTP listener (redirects, `http-01`): address, stop, task.
+    plain: Option<(SocketAddr, oneshot::Sender<()>, JoinHandle<std::io::Result<()>>)>,
 }
 
 /// Starts a server for `config` with no in-process job handlers (jobs are
@@ -174,6 +187,9 @@ async fn start_full(
         source,
     })?;
     let lock = DataDirLock::acquire(&layout)?;
+    // ADR-0033: certificate files are read and checked (key matches) before
+    // anything else opens; ACME loads its sealed state.
+    let tls = tls::TlsSetup::prepare(config, &layout)?;
 
     let primary = database::open_owned(config, explicit, &layout, database::Create::Yes).await?;
     let backend = primary.marker();
@@ -186,6 +202,7 @@ async fn start_full(
         (db.clone(), backend, engine.clone()),
         registry,
         pool,
+        tls,
     )
     .await;
     match started {
@@ -254,7 +271,7 @@ fn database_runtime(
 
 /// The startup sequence after the database is open (steps 3 to 7). The
 /// caller closes the database and stops the engine when this fails.
-#[allow(clippy::too_many_lines)]
+#[allow(clippy::too_many_lines, clippy::too_many_arguments)]
 async fn start_on(
     config: &Config,
     system_config: Arc<forgebase_api::features::SystemConfig>,
@@ -263,7 +280,9 @@ async fn start_on(
     (db, backend, engine): (Database, BackendMarker, Option<Arc<forgebase_pgengine::EngineHandle>>),
     registry: JobRegistry,
     pool: PoolConfig,
+    tls: Option<tls::TlsSetup>,
 ) -> Result<RunningServer, ServerError> {
+    let tls = tls.map(Arc::new);
     let migrations = match db.migrate(Some(&layout.backups_dir())).await {
         Ok(report) => report,
         Err(e) => {
@@ -725,6 +744,19 @@ async fn start_on(
         vector.clone(),
         queue.clone(),
     ));
+    // ADR-0033: the `tls` entry of /api/system/info and the expiry gauge.
+    let state = match &tls {
+        Some(t) => {
+            let (status, gauge) = (t.clone(), t.clone());
+            state
+                .with_status_section("tls", move || status.status_json())
+                .with_metrics_collector(move || {
+                    let t = gauge.clone();
+                    async move { t.refresh_gauge() }
+                })
+        }
+        None => state.with_status_section("tls", || serde_json::json!({ "mode": "off" })),
+    };
     let kv_routes = forgebase_kv::http::router(kv.clone(), usize::try_from(opts.max_body_bytes).unwrap_or(usize::MAX));
     let app = forgebase_api::router_with(state, opts, kv_routes, Some(forgebase_kv::http::openapi()));
     // Host-header routing of verified custom domains: outermost, before auth and tenancy.
@@ -732,6 +764,30 @@ async fn start_on(
         customize.clone(),
         forgebase_customize::host_router,
     ));
+
+    // ADR-0033: HSTS on every HTTPS response, when configured.
+    let app = match (
+        &tls,
+        tls::serve::hsts_value(config.tls.hsts_max_age_secs, config.tls.hsts_include_subdomains),
+    ) {
+        (Some(_), Some(v)) => tls::serve::with_hsts(app, v),
+        _ => app,
+    };
+    let tls_configs = match &tls {
+        Some(t) => match (t.http_server_config(), t.resp_server_config()) {
+            (Ok(h), Ok(r)) => Some((h, r)),
+            (Err(e), _) | (_, Err(e)) => {
+                db.close().await;
+                return Err(e.into());
+            }
+        },
+        None => None,
+    };
+    if tls.is_some() && config.auth.trust_forwarded_for {
+        tracing::warn!(
+            "[auth] trust_forwarded_for is on with native TLS: correct only when every request still comes through a proxy you run that appends X-Forwarded-For; clients that connect directly can choose their own address"
+        );
+    }
 
     let bind = (config.server.host.as_str(), config.server.port);
     let listener = match TcpListener::bind(bind).await {
@@ -758,6 +814,10 @@ async fn start_on(
             max_request_bytes: usize::try_from(r.max_bulk_bytes.saturating_mul(4)).unwrap_or(usize::MAX),
             idle_timeout: Duration::from_secs(r.idle_timeout_secs),
             shutdown_grace: Duration::from_secs(config.server.shutdown_timeout_secs),
+            tls: match (&tls_configs, r.tls) {
+                (Some((_, resp_tls)), true) => Some(resp_tls.clone()),
+                _ => None,
+            },
             ..forgebase_resp::RespConfig::default()
         };
         match forgebase_resp::start(cfg, Arc::new(forgebase_resp::LocalKv(kv.clone())), Arc::new(resp_auth)).await {
@@ -773,6 +833,45 @@ async fn start_on(
     } else {
         None
     };
+    // ADR-0033: the plain HTTP listener (redirects to HTTPS, http-01 answers).
+    let plain = match &tls {
+        Some(t) if t.config().plain_listener() => {
+            let port = t.config().http_port;
+            let pl = match TcpListener::bind((config.server.host.as_str(), port)).await {
+                Ok(l) => l,
+                Err(source) => {
+                    if let Some(r) = resp {
+                        r.shutdown().await;
+                    }
+                    db.close().await;
+                    return Err(ServerError::Bind {
+                        addr: format!("{}:{port} (http redirect)", config.server.host),
+                        source,
+                    });
+                }
+            };
+            let plain_addr = pl.local_addr().map_err(ServerError::Serve)?;
+            let target = tls::serve::RedirectTarget {
+                public_url: config.server.public_url.clone().filter(|u| u.starts_with("https://")),
+                https_port: addr.port(),
+                domains: if config.tls.mode == forgebase_core::config::tls_config::TlsMode::Acme {
+                    config.tls.acme.domains.clone()
+                } else {
+                    Vec::new()
+                },
+            };
+            let router = tls::serve::plain_router(t.store().clone(), target);
+            let (stop_tx, stop_rx) = oneshot::channel::<()>();
+            let task = tokio::spawn(tls::serve::serve_plain(pl, router, stop_rx));
+            t.status().set_http_listener(Some(plain_addr.to_string()));
+            tracing::info!(%plain_addr, "plain HTTP listener started (redirects to HTTPS)");
+            Some((plain_addr, stop_tx, task))
+        }
+        _ => None,
+    };
+    if let Some(t) = &tls {
+        t.status().set_resp(resp.is_some() && config.resp.tls);
+    }
     lock.record_owner(&LockOwner {
         pid: std::process::id(),
         addr: addr.to_string(),
@@ -780,13 +879,22 @@ async fn start_on(
     });
 
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
-    let task = tokio::spawn(async move {
-        axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
-            .with_graceful_shutdown(async {
-                let _ = shutdown_rx.await;
-            })
-            .await
-    });
+    let task = match &tls_configs {
+        Some((http_tls, _)) => tokio::spawn(tls::serve::serve_tls(
+            listener,
+            tokio_rustls::TlsAcceptor::from(http_tls.clone()),
+            app,
+            shutdown_rx,
+        )),
+        None => tokio::spawn(async move {
+            axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
+                .with_graceful_shutdown(async {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+        }),
+    };
+    let tls_tasks = tls.as_ref().map(|t| t.start_background());
     let upkeep = tokio::spawn(async {
         let handle = forgebase_observability::metrics_handle();
         let mut tick = tokio::time::interval(Duration::from_secs(5));
@@ -812,6 +920,7 @@ async fn start_on(
 
     tracing::info!(
         %addr,
+        tls = config.tls.mode.as_str(),
         data_dir = %layout.root().display(),
         backend = backend.as_str(),
         instance_id = %instance.instance_id,
@@ -848,6 +957,9 @@ async fn start_on(
         router,
         recovery,
         replicas,
+        tls,
+        tls_tasks,
+        plain,
     })
 }
 
@@ -1087,7 +1199,8 @@ async fn open_auth(
     ServerError,
 > {
     let mut cfg = forgebase_auth::AuthConfig::for_data_dir(layout.root());
-    cfg.public_url = format!("http://{}:{}", config.server.host, config.server.port);
+    let scheme = if config.tls.mode.is_on() { "https" } else { "http" };
+    cfg.public_url = format!("{scheme}://{}:{}", config.server.host, config.server.port);
     // FB-80: `[auth]` deployment settings.
     cfg.trust_forwarded_for = config.auth.trust_forwarded_for;
     cfg.allow_private_outbound = config.auth.allow_private_outbound;
@@ -1163,6 +1276,23 @@ impl RunningServer {
     /// (useful with port 0).
     pub fn resp_addr(&self) -> Option<SocketAddr> {
         self.resp.as_ref().map(forgebase_resp::RespHandle::local_addr)
+    }
+
+    /// Native TLS (ADR-0033), when `[tls] mode` is not `off`.
+    pub fn tls(&self) -> Option<&Arc<tls::TlsSetup>> {
+        self.tls.as_ref()
+    }
+
+    /// The plain HTTP listener's address (redirects to HTTPS and `http-01`
+    /// answers), when it runs.
+    pub fn http_redirect_addr(&self) -> Option<SocketAddr> {
+        self.plain.as_ref().map(|p| p.0)
+    }
+
+    /// `https://<addr>` with native TLS, `http://<addr>` otherwise.
+    pub fn url(&self) -> String {
+        let scheme = if self.tls.is_some() { "https" } else { "http" };
+        format!("{scheme}://{}", self.addr)
     }
 
     /// The primary database.
@@ -1313,6 +1443,15 @@ impl RunningServer {
 
     async fn finish(&mut self) {
         self.realtime.shutdown();
+        if let Some((_, stop, mut task)) = self.plain.take() {
+            let _ = stop.send(());
+            if tokio::time::timeout(self.shutdown_timeout, &mut task).await.is_err() {
+                task.abort();
+            }
+        }
+        if let Some(t) = self.tls_tasks.take() {
+            t.stop().await;
+        }
         if let Some(q) = &self.queue {
             q.close_streams();
             q.shutdown(self.shutdown_timeout).await;
@@ -1510,6 +1649,10 @@ pub enum ServerError {
     /// The data directory holds no database (`forgebase init` creates it).
     #[error("no database in {} (run `forgebase init`)", .0.display())]
     NotInitialized(PathBuf),
+    /// Native TLS cannot start: a certificate or key file, a mismatched key,
+    /// the ACME settings (ADR-0033).
+    #[error(transparent)]
+    Tls(#[from] tls::TlsError),
 }
 
 fn mismatch_message(configured: &str, found: BackendMarker, data_dir: &std::path::Path) -> String {
@@ -1562,6 +1705,7 @@ impl ErrorCode for ServerError {
             ServerError::Backend(_) => "backend_unavailable",
             ServerError::Extensions(e) => e.code(),
             ServerError::NotInitialized(_) => "not_initialized",
+            ServerError::Tls(e) => e.code(),
         }
     }
 
@@ -1587,6 +1731,7 @@ impl ErrorCode for ServerError {
             ServerError::Extensions(e) => e.kind(),
             ServerError::BackendMismatch { .. } => ErrorKind::Conflict,
             ServerError::NotInitialized(_) => ErrorKind::NotFound,
+            ServerError::Tls(e) => e.kind(),
         }
     }
 }

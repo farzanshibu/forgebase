@@ -24,6 +24,10 @@ use crate::error::{ErrorCode, ErrorKind};
 #[path = "topology_config.rs"]
 pub mod topology_config;
 
+/// `[tls]` and `[tls.acme]`: native TLS (ADR-0033).
+#[path = "tls_config.rs"]
+pub mod tls_config;
+
 /// Prefix of every environment variable ForgeBase reads.
 pub const ENV_PREFIX: &str = "FORGEBASE_";
 /// Environment variable naming the config file.
@@ -97,6 +101,18 @@ port = 6380                 # FORGEBASE_RESP_PORT, flag --resp-port
 max_connections = 1024      # FORGEBASE_RESP_MAX_CONNECTIONS
 max_bulk_bytes = 16777216   # FORGEBASE_RESP_MAX_BULK_BYTES
 idle_timeout_secs = 300     # FORGEBASE_RESP_IDLE_TIMEOUT_SECS (0 = never)
+# tls = false               # FORGEBASE_RESP_TLS: RESP over TLS with the [tls] certificate
+
+# Native HTTPS (ADR-0033). Off by default: a reverse proxy terminates TLS.
+# "files" serves a PEM certificate and key (reloaded when they change or on
+# SIGHUP); "acme" gets and renews one from Let's Encrypt or another ACME CA.
+# [tls]
+# mode = "off"              # FORGEBASE_TLS_MODE: off | files | acme
+# cert_file = "tls/fullchain.pem"
+# key_file = "tls/privkey.pem"
+# [tls.acme]
+# domains = ["forgebase.example.com"]
+# email = "ops@example.com"
 
 # MCP server for AI agents (ADR-0030): POST /api/mcp. Off by default; agents
 # sign in with an API key or personal access token (a scoped key needs "mcp:*").
@@ -548,6 +564,8 @@ pub struct Config {
     pub identity: ModuleSwitch,
     /// Policies, organisations and tenancy management (FB-21), `[access]`.
     pub access: ModuleSwitch,
+    /// Native TLS (ADR-0033), `[tls]`; off by default.
+    pub tls: tls_config::TlsConfig,
 }
 
 /// `[<module>] enabled` of a module that has no other settings (FB-91,
@@ -712,6 +730,9 @@ pub struct RespConfig {
     /// Seconds a connection may sit idle before it is closed; `0` = never.
     /// Subscribed connections are exempt.
     pub idle_timeout_secs: u64,
+    /// Serve RESP over TLS with the `[tls]` certificate (ADR-0033); needs
+    /// `[tls] mode` other than `off`.
+    pub tls: bool,
 }
 
 /// HTTP server settings.
@@ -793,6 +814,7 @@ impl Config {
                 max_connections: 1024,
                 max_bulk_bytes: 16 * 1024 * 1024,
                 idle_timeout_secs: 300,
+                tls: false,
             },
             storage: StorageConfig {
                 enabled: true,
@@ -840,6 +862,7 @@ impl Config {
             graph: ModuleSwitch::default(),
             identity: ModuleSwitch::default(),
             access: ModuleSwitch::default(),
+            tls: tls_config::TlsConfig::default(),
         }
     }
 
@@ -1088,6 +1111,13 @@ impl Config {
             );
         }
         self.database.topology.problems(&mut out);
+        self.tls.problems(self.server.port, &mut out);
+        if self.resp.tls && !self.tls.mode.is_on() {
+            out.push(ConfigError::Invalid {
+                field: "resp.tls",
+                message: "needs [tls] mode = \"files\" or \"acme\": RESP uses the same certificate as HTTPS".into(),
+            });
+        }
         out
     }
 
@@ -1292,6 +1322,10 @@ impl Config {
         if let Some(v) = o.resp_idle_timeout_secs {
             self.resp.idle_timeout_secs = v;
         }
+        if let Some(v) = o.resp_tls {
+            self.resp.tls = v;
+        }
+        self.tls.apply(&o.tls, base_dir);
         if let Some(v) = o.realtime_max_connections_per_principal {
             self.realtime.max_connections_per_principal = v;
         }
@@ -1406,6 +1440,10 @@ pub struct ConfigOverrides {
     pub identity_enabled: Option<bool>,
     /// `[access] enabled`.
     pub access_enabled: Option<bool>,
+    /// `[resp] tls` (ADR-0033).
+    pub resp_tls: Option<bool>,
+    /// `[tls]` and `[tls.acme]` (ADR-0033).
+    pub tls: tls_config::TlsOverrides,
     /// Secret environment variables that were set (names only, never values),
     /// such as `FORGEBASE_STORAGE_S3_SECRET_KEY`. The loader does not read
     /// them; the feature registry reports them as set by the environment.
@@ -1475,6 +1513,16 @@ impl ConfigOverrides {
                 "RESP_MAX_CONNECTIONS" => o.resp_max_connections = Some(parse_num(&value).map_err(bad)?),
                 "RESP_MAX_BULK_BYTES" => o.resp_max_bulk_bytes = Some(parse_num(&value).map_err(bad)?),
                 "RESP_IDLE_TIMEOUT_SECS" => o.resp_idle_timeout_secs = Some(parse_num(&value).map_err(bad)?),
+                "RESP_TLS" => o.resp_tls = Some(parse_bool(&value).map_err(bad)?),
+                // ADR-0033: `[tls]` and `[tls.acme]`.
+                k if k.starts_with("TLS_") => {
+                    if !o.tls.env(k, &value).map_err(bad)? {
+                        return Err(bad("unknown ForgeBase environment variable".into()));
+                    }
+                    if k == "TLS_ACME_EAB_HMAC_KEY" && !value.trim().is_empty() {
+                        o.secrets_set.push(name.clone());
+                    }
+                }
                 "KV_TENANT_MAX_BYTES" => o.kv_tenant_max_bytes = Some(parse_num(&value).map_err(bad)?),
                 "BACKUP_SOURCE" => o.backup_source = Some(value.parse().map_err(bad)?),
                 "REALTIME_MAX_CONNECTIONS_PER_PRINCIPAL" => {
@@ -1576,6 +1624,8 @@ impl ConfigOverrides {
         put(self.resp_max_connections.is_some(), "resp.max_connections");
         put(self.resp_max_bulk_bytes.is_some(), "resp.max_bulk_bytes");
         put(self.resp_idle_timeout_secs.is_some(), "resp.idle_timeout_secs");
+        put(self.resp_tls.is_some(), "resp.tls");
+        self.tls.keys(&mut put);
         if let Some(st) = &self.storage {
             put(st.enabled.is_some(), "storage.enabled");
             put(st.driver.is_some(), "storage.driver");
@@ -2045,6 +2095,7 @@ struct FileConfig {
     identity: FileSwitch,
     #[serde(default)]
     access: FileSwitch,
+    tls: Option<tls_config::TlsOverrides>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -2101,6 +2152,7 @@ struct FileResp {
     max_connections: Option<u32>,
     max_bulk_bytes: Option<u64>,
     idle_timeout_secs: Option<u64>,
+    tls: Option<bool>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -2136,7 +2188,8 @@ struct FileLog {
 
 impl From<FileConfig> for ConfigOverrides {
     fn from(f: FileConfig) -> Self {
-        ConfigOverrides {
+        let tls = f.tls.unwrap_or_default();
+        let mut o = ConfigOverrides {
             config_file: None,
             data_dir: f.data_dir,
             host: f.server.host,
@@ -2185,7 +2238,14 @@ impl From<FileConfig> for ConfigOverrides {
             graph_enabled: f.graph.enabled,
             identity_enabled: f.identity.enabled,
             access_enabled: f.access.enabled,
+            resp_tls: f.resp.tls,
+            tls,
+        };
+        if o.tls.sets_secret() {
+            // The secret's source is the file (the registry reports it by variable name).
+            o.secrets_set.push(tls_config::ENV_ACME_EAB_HMAC_KEY.to_owned());
         }
+        o
     }
 }
 
