@@ -111,9 +111,9 @@ pub fn from_der(
 /// A file cannot be read, or see [`from_pem`].
 pub fn from_files(cert: &Path, key: &Path) -> Result<Certificate, TlsError> {
     let read = |p: &Path| {
-        std::fs::read(p).map_err(|source| TlsError::Read {
+        std::fs::read(p).map_err(|cause| TlsError::Read {
             path: p.to_path_buf(),
-            source,
+            cause,
         })
     };
     let (c, k) = (read(cert)?, read(key)?);

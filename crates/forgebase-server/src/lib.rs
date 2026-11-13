@@ -1638,7 +1638,7 @@ pub enum ServerError {
     NotInitialized(PathBuf),
     /// Native TLS cannot start: a certificate or key file, a mismatched key,
     /// the ACME settings (ADR-0033).
-    #[error("tls: {0}")]
+    #[error(transparent)]
     Tls(#[from] tls::TlsError),
 }
 

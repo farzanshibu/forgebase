@@ -54,13 +54,12 @@ pub use certs::{CertStore, Certificate};
 #[derive(Debug, thiserror::Error)]
 pub enum TlsError {
     /// A certificate or key file cannot be read.
-    #[error("cannot read {path}: {source}")]
+    #[error("cannot read {path}: {cause}")]
     Read {
         /// The file.
         path: PathBuf,
-        /// Why.
-        #[source]
-        source: std::io::Error,
+        /// Why (in the message, not a separate source, so it prints once).
+        cause: std::io::Error,
     },
     /// Not a usable certificate chain.
     #[error("{what}: {message}")]

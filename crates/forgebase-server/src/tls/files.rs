@@ -85,9 +85,9 @@ impl FileSource {
     /// A file cannot be read, a mismatched key, a bad certificate.
     pub fn load_initial(&self, store: &CertStore) -> Result<(), TlsError> {
         let read = |p: &std::path::Path| {
-            std::fs::read(p).map_err(|source| TlsError::Read {
+            std::fs::read(p).map_err(|cause| TlsError::Read {
                 path: p.to_path_buf(),
-                source,
+                cause,
             })
         };
         let (c, k) = (read(&self.cert)?, read(&self.key)?);
