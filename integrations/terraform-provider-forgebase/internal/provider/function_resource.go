@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"sort"
 
+	"github.com/hashicorp/terraform-plugin-framework-validators/resourcevalidator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/setvalidator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
@@ -141,7 +142,6 @@ func (r *functionResource) Configure(_ context.Context, req resource.ConfigureRe
 func (r *functionResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
 	useStateInt := []planmodifier.Int64{int64planmodifier.UseStateForUnknown()}
 	useStateStr := []planmodifier.String{stringplanmodifier.UseStateForUnknown()}
-	oneOfCode := []validator.String{stringvalidator.ExactlyOneOf(path.MatchRoot("source"), path.MatchRoot("source_file"), path.MatchRoot("wasm_file"))}
 	resp.Schema = schema.Schema{
 		Description: "A serverless function: a JavaScript or TypeScript module, or a WebAssembly module. Every change to the code or configuration " +
 			"deploys a new version and activates it. The provider hashes the code (`content_sha256`) so a changed file shows in the plan, and a " +
@@ -159,9 +159,9 @@ func (r *functionResource) Schema(_ context.Context, _ resource.SchemaRequest, r
 				Description: "`typescript` (default for `source`), `javascript` or `wasm` (implied by `wasm_file`).",
 				Validators:  []validator.String{stringvalidator.OneOf("typescript", "javascript", "wasm")},
 			},
-			"source":      schema.StringAttribute{Optional: true, Description: "Inline JavaScript/TypeScript source of a single-file ES module that calls `serve()` from `\"forgebase\"` (at most 1 MiB). Exactly one of `source`, `source_file` and `wasm_file`.", Validators: oneOfCode},
-			"source_file": schema.StringAttribute{Optional: true, Description: "Path to the JavaScript/TypeScript source file, read when planning and applying. Changes to the file's content are detected by hash.", Validators: oneOfCode},
-			"wasm_file":   schema.StringAttribute{Optional: true, Description: "Path to a compiled WebAssembly module, read when planning and applying. Changes to the file's content are detected by hash.", Validators: oneOfCode},
+			"source":      schema.StringAttribute{Optional: true, Description: "Inline JavaScript/TypeScript source of a single-file ES module that calls `serve()` from `\"forgebase\"` (at most 1 MiB). Exactly one of `source`, `source_file` and `wasm_file`."},
+			"source_file": schema.StringAttribute{Optional: true, Description: "Path to the JavaScript/TypeScript source file, read when planning and applying. Changes to the file's content are detected by hash."},
+			"wasm_file":   schema.StringAttribute{Optional: true, Description: "Path to a compiled WebAssembly module, read when planning and applying. Changes to the file's content are detected by hash."},
 			"content_sha256": schema.StringAttribute{
 				Computed:    true,
 				Description: "SHA-256 (hex) of the source text or WebAssembly bytes. Compared with the active version on the server to detect drift.",
@@ -247,6 +247,13 @@ func joinCode(items []string) string {
 		s += "`" + it + "`"
 	}
 	return s
+}
+
+// ConfigValidators requires exactly one code source.
+func (r *functionResource) ConfigValidators(context.Context) []resource.ConfigValidator {
+	return []resource.ConfigValidator{
+		resourcevalidator.ExactlyOneOf(path.MatchRoot("source"), path.MatchRoot("source_file"), path.MatchRoot("wasm_file")),
+	}
 }
 
 func (r *functionResource) ValidateConfig(ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {

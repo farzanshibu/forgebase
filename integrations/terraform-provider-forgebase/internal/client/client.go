@@ -143,8 +143,13 @@ func (c *Client) Do(ctx context.Context, method, path string, q Query, body, out
 		}
 	}
 	u := *c.base
-	u.Path = c.base.Path + path
-	u.RawPath = ""
+	// path is already escaped per segment (see Seg): keep it as the raw path.
+	u.RawPath = c.base.Path + path
+	unescaped, err := url.PathUnescape(u.RawPath)
+	if err != nil {
+		return fmt.Errorf("invalid request path %q: %w", path, err)
+	}
+	u.Path = unescaped
 	if len(q) > 0 {
 		vals := url.Values{}
 		for k, v := range q {

@@ -16,6 +16,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/setdefault"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/setplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
@@ -214,7 +215,7 @@ func (r *apiKeyResource) Schema(_ context.Context, _ resource.SchemaRequest, res
 			"service_account_id": schema.StringAttribute{Required: true, PlanModifiers: replace, Description: "Id of the owning service account."},
 			"name":               schema.StringAttribute{Required: true, PlanModifiers: replace, Description: "Key name (1-100 printable characters).", Validators: []validator.String{stringvalidator.LengthBetween(1, 100)}},
 			"scopes": schema.SetAttribute{
-				Required: true, ElementType: types.StringType,
+				Required: true, ElementType: types.StringType, PlanModifiers: []planmodifier.Set{setplanmodifier.RequiresReplace()},
 				Description: "Scopes narrowing what the key may do: `*`, `<area>:*`, `<area>:read`, `<area>:write`, or `<area>:read|write:<name>`. `write` does not imply `read`.",
 				Validators: []validator.Set{
 					setvalidator.SizeAtLeast(1),
@@ -416,7 +417,7 @@ func (r *oauthClientResource) Schema(_ context.Context, _ resource.SchemaRequest
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{Computed: true, PlanModifiers: idState, Description: "The `client_id`."},
 			"realm": schema.StringAttribute{
-				Optional: true, Computed: true, PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace(), stringplanmodifier.UseStateForUnknown()},
+				Optional: true, Computed: true, PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown(), stringplanmodifier.RequiresReplace()},
 				Description: "Realm of the client. Defaults to the provider's realm, else `default`. Cannot change.",
 			},
 			"name":        schema.StringAttribute{Required: true, Description: "Display name shown on the consent screen."},
