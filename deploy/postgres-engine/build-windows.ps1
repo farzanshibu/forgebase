@@ -25,8 +25,40 @@ function Unpack([string]$Name) {
   $ver = Lock "sources.$Name.version"
   $file = Get-ChildItem "$Src\$Name-$ver.tar.*" | Select-Object -First 1
   $dir = if ($Name -eq "postgresql") { "postgresql-$ver" } else { try { Lock "sources.$Name.dir" } catch { "$Name-$ver" } }
-  if (-not (Test-Path "$Build\$dir")) { tar -C $Build -xf $file.FullName }
+  if (-not (Test-Path "$Build\$dir")) {
+    Log "unpack $($file.Name)"
+    # An extraction cut short must not leave a half-filled directory that the
+    # Test-Path above would take for a finished one on the next run.
+    try { Run "tar $Name" 10 "tar" @("-C", $Build, "-xf", $file.FullName) }
+    catch { Remove-Item -Recurse -Force -ErrorAction SilentlyContinue "$Build\$dir"; throw }
+  }
   return "$Build\$dir"
+}
+
+# Runs a program with stdin closed and a time limit. A step that hangs prints
+# the process tree it is stuck in and fails after $Minutes, instead of holding
+# the job until its 120-minute cap (engine-pg18.6-r1 hung silently for 111
+# minutes between "PostgreSQL (meson)" and the job cancel).
+$EmptyIn = Join-Path ([IO.Path]::GetTempPath()) "forgebase-empty-stdin.txt"
+Set-Content -Path $EmptyIn -Value "" -NoNewline
+function Run([string]$Label, [int]$Minutes, [string]$Exe, [string[]]$Arguments) {
+  $quoted = $Arguments | ForEach-Object { if ($_ -match '\s') { "`"$_`"" } else { $_ } }
+  Write-Host "  > $Label (limit $Minutes min): $Exe $($quoted -join ' ')"
+  $sw = [Diagnostics.Stopwatch]::StartNew()
+  $p = Start-Process -FilePath $Exe -ArgumentList $quoted -NoNewWindow -PassThru -RedirectStandardInput $EmptyIn
+  $null = $p.Handle   # keep the handle so ExitCode is readable after exit
+  if (-not $p.WaitForExit($Minutes * 60000)) {
+    Write-Host "::error::$Label did not finish in $Minutes minutes; process tree:"
+    $all = Get-CimInstance Win32_Process
+    $tree = @{ [int]$p.Id = $true }
+    do { $grew = $false; foreach ($q in $all) { if ($tree[[int]$q.ParentProcessId] -and -not $tree[[int]$q.ProcessId]) { $tree[[int]$q.ProcessId] = $true; $grew = $true } } } while ($grew)
+    $all | Where-Object { $tree[[int]$_.ProcessId] } |
+      Select-Object ProcessId, ParentProcessId, Name, @{ n = "Cmd"; e = { "$($_.CommandLine)".Substring(0, [Math]::Min(200, "$($_.CommandLine)".Length)) } } | Format-Table -AutoSize | Out-String -Width 300 | Write-Host
+    taskkill /T /F /PID $p.Id | Out-Null
+    throw "$Label timed out after $Minutes minutes"
+  }
+  Write-Host "  < $Label finished in $([int]$sw.Elapsed.TotalSeconds) s, exit $($p.ExitCode)"
+  if ($p.ExitCode -ne 0) { throw "$Label failed with exit code $($p.ExitCode)" }
 }
 
 $PgVer = Lock "engine.postgres"
@@ -84,12 +116,15 @@ $env:PKG_CONFIG_PATH = "$Deps\lib\pkgconfig"
 $env:CMAKE_PREFIX_PATH = $Deps
 $env:OPENSSL_ROOT_DIR = $Deps
 $env:PATH = "$Deps\bin;$env:PATH"
+Write-Host "  tools: $((Get-Command meson).Source), $((Get-Command ninja).Source), $((Get-Command tar).Source)"
+meson --version
 if (-not (Test-Path "$pg\_b\build.ninja")) {
-  meson setup "$pg\_b" $pg "--prefix=$Prefix" --buildtype=release --auto-features=disabled `
-    -Dssl=openssl -Dzlib=enabled -Dlz4=enabled -Dzstd=enabled `
-    "-Dextra_include_dirs=$Deps\include" "-Dextra_lib_dirs=$Deps\lib"
+  if (Test-Path "$pg\_b") { Remove-Item -Recurse -Force "$pg\_b" }   # a setup that was cut short
+  Run "meson setup" 15 "meson" @("setup", "$pg\_b", $pg, "--prefix=$Prefix", "--buildtype=release", "--auto-features=disabled",
+    "--wrap-mode=nodownload", "-Dssl=openssl", "-Dzlib=enabled", "-Dlz4=enabled", "-Dzstd=enabled",
+    "-Dextra_include_dirs=$Deps\include", "-Dextra_lib_dirs=$Deps\lib")
 }
-meson compile -C "$pg\_b"
+Run "meson compile" 60 "meson" @("compile", "-C", "$pg\_b")
 if (Test-Path "$Work\stage") { Remove-Item -Recurse -Force "$Work\stage" }
 meson install -C "$pg\_b" --quiet
 $Shipped = @{}

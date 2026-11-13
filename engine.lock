@@ -203,8 +203,10 @@ sha256 = "6dbb10b9a6fe87a15e1a35c96942cc8bb615b1969618e4486c540c3bc9c31504"
 file = "forgebase-pg18.6-r1-x86_64-unknown-linux-musl.tar.zst"
 sha256 = "a7ea7504da5c4e9f5b857ef8b07c6bef8abd66b795bbb0bd384957a36b059ea0"
 
-# The Windows engine did not finish on CI for engine-pg18.6-r1 (the build hit
-# the 120-minute job limit); it ships in a later engine release.
+# The Windows engine did not finish on CI for engine-pg18.6-r1: the zstd CLI
+# step failed once (fixed), then the PostgreSQL meson step printed nothing for
+# 111 minutes until the 120-minute job limit. build-windows.ps1 now limits and
+# diagnoses that step; the engine ships in a later engine release.
 [archives."x86_64-pc-windows-msvc"]
 file = "forgebase-pg18.6-r1-x86_64-pc-windows-msvc.tar.zst"
 status = "pending-ci"

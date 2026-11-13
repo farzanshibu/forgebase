@@ -162,6 +162,13 @@ jobs:
           path: ${{ runner.temp }}\engine\src
           key: engine-src-windows-${{ hashFiles('engine.lock') }}
 
+      # OpenSSL (nmake, serial) is ~8 of the ~10 minutes before PostgreSQL; the
+      # DLLs and import libraries it and zlib/lz4/zstd install are reusable.
+      - uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}\engine\deps
+          key: engine-deps-windows-${{ hashFiles('engine.lock', 'deploy/postgres-engine/build-windows.ps1') }}
+
       - name: Build tools
         shell: pwsh
         run: |
@@ -169,8 +176,11 @@ jobs:
           choco install winflexbison3 -y --no-progress
           Get-Command perl, pkg-config, win_bison, win_flex, cmake -ErrorAction Continue | Format-Table Name, Source
 
+      # build-windows.ps1 limits meson setup (15 min) and compile (60 min) itself
+      # and prints the stuck process tree; this is the outer bound.
       - name: Build
         shell: pwsh
+        timeout-minutes: 100
         run: deploy/postgres-engine/build-windows.ps1 -Work $env:WORK -Out "$env:WORK\out"
 
       - name: Smoke test from the archive
