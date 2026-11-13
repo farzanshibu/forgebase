@@ -280,9 +280,27 @@ def cmd_pack(args) -> None:
 
 # ---------------------------------------------------------------- extract
 
+def cmd_compress(args) -> None:
+    """zstd-compress a file with the `zstandard` module (pip). The Windows build
+    uses it when the zstd CLI cannot be started (engine-pg18.6-r3..r5)."""
+    import zstandard
+    src, out = Path(args.src), Path(args.out)
+    tmp = out.with_name(out.name + ".part")
+    params = zstandard.ZstdCompressionParameters.from_level(args.level, threads=0)
+    data = src.read_bytes()
+    tmp.write_bytes(zstandard.ZstdCompressor(compression_params=params).compress(data))
+    tmp.replace(out)
+    print(f"compressed {src} -> {out} ({len(data)} -> {out.stat().st_size} bytes, zstandard {zstandard.__version__})")
+
+
 def decompress(path: Path, zstd: str | None) -> bytes:
     if path.suffix == ".tar":  # already decompressed (the Windows smoke test)
         return path.read_bytes()
+    try:
+        import zstandard  # optional (pip): no subprocess
+        return zstandard.ZstdDecompressor().stream_reader(path.read_bytes()).read()
+    except ImportError:
+        pass
     try:
         from compression import zstd as zmod  # Python 3.14+
         return zmod.decompress(path.read_bytes())
@@ -451,6 +469,8 @@ def main() -> None:
     s.add_argument("--feature", action="append", help="key=value for the manifest's features map")
     s.add_argument("--zstd"); s.add_argument("--level", type=int, default=19)
     s.add_argument("paths", nargs="*"); s.set_defaults(fn=cmd_pack)
+    s = sub.add_parser("compress"); s.add_argument("src"); s.add_argument("out")
+    s.add_argument("--level", type=int, default=19); s.set_defaults(fn=cmd_compress)
     s = sub.add_parser("extract"); s.add_argument("archive"); s.add_argument("dest")
     s.add_argument("--loader-path", help="absolute loader path to write (default: <dest>/<loader>)")
     s.add_argument("--zstd"); s.set_defaults(fn=cmd_extract)

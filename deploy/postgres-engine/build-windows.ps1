@@ -218,8 +218,19 @@ $tar = "$Work\$($name -replace '\.zst$', '')"
 python "$Here\engine.py" pack $Engine $tar --postgres $PgVer --build $BuildNo --target $Target `
   --feature "pgvector=$(Lock sources.pgvector.version)" --feature "pg_cron=$(Lock sources.pg_cron.version)" `
   --feature "pgmq=$qv" --feature "pg_trgm=$PgVer" --feature "graph_cypher=false"
-& "$Deps\bin\zstd.exe" -q -f -19 --single-thread -o "$Out\$name.part" $tar
-Move-Item -Force "$Out\$name.part" "$Out\$name"
+try {
+  & "$Deps\bin\zstd.exe" -q -f -19 --single-thread -o "$Out\$name.part" $tar
+  Move-Item -Force "$Out\$name.part" "$Out\$name"
+} catch {
+  # r5: "The module 'kernel32.dll' could not be loaded" starting this zstd.exe,
+  # which ran at the start of the build. Record its state, then compress in Python.
+  Write-Host "::warning::zstd.exe could not run ($($_.Exception.Message)); using the zstandard module"
+  Write-Host "  cwd: $((Get-Location).Path) exists=$(Test-Path (Get-Location).Path)"
+  Get-Item "$Deps\bin\zstd.exe" -ErrorAction Continue | Format-List FullName, Length, LastWriteTimeUtc, Attributes | Out-String | Write-Host
+  Write-Host "  env block: $((Get-ChildItem env: | ForEach-Object { $_.Name.Length + $_.Value.Length + 2 } | Measure-Object -Sum).Sum) chars, PATH $($env:PATH.Length)"
+  Remove-Item -Force -ErrorAction SilentlyContinue "$Out\$name.part"
+  python "$Here\engine.py" compress $tar "$Out\$name" --level 19
+}
 Remove-Item -Force $tar
 $sha = (Get-FileHash -Algorithm SHA256 "$Out\$name").Hash.ToLower()
 [IO.File]::WriteAllText("$Out\$name.sha256", "$sha  $name`n")
