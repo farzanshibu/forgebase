@@ -1,0 +1,23 @@
+# Common core of every ForgeBase deployment: a one-replica StatefulSet, its
+# Services and a ServiceAccount. It has no forgebase.toml and no database
+# settings on purpose: deploy one of the overlays (overlays/bundled-postgres,
+# overlays/sqlite, overlays/external-postgres), each of which generates the
+# `forgebase-config` ConfigMap this base mounts.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+labels:
+  - pairs:
+      app.kubernetes.io/name: forgebase
+      app.kubernetes.io/part-of: forgebase
+    includeSelectors: true
+    includeTemplates: true
+
+resources:
+  - serviceaccount.yaml
+  - service.yaml
+  - statefulset.yaml
+
+images:
+  - name: ghcr.io/farzanshibu/forgebase
+    newTag: "0.3.4"
