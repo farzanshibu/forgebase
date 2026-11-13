@@ -125,9 +125,12 @@ impl QueueService {
                 } else if head > cursor {
                     created = i64::try_from(
                         tx.execute(&Statement::new(
-                            "INSERT INTO _forgebase_queue_deliveries (subscription, seq, ordering_key, state, available_at) \
-                             SELECT ?1, seq, ordering_key, 'ready', ?4 FROM _forgebase_queue_messages \
-                             WHERE topic = ?2 AND seq > ?3 AND seq <= ?5",
+                            format!(
+                                "INSERT INTO _forgebase_queue_deliveries (subscription, seq, ordering_key, state, \
+                                 available_at) SELECT ?1, seq, ordering_key, 'ready', ?4 FROM _forgebase_queue_messages \
+                                 WHERE topic = ?2 AND seq > ?3 AND seq <= ?5 AND {}",
+                                crate::service::for_sub("", 1)
+                            ),
                             vec![
                                 sub.name.as_str().into(),
                                 sub.topic.as_str().into(),
@@ -146,7 +149,7 @@ impl QueueService {
             Some(filter) => {
                 let rows = tx
                     .fetch_all(&Statement::new(
-                        "SELECT seq, attributes, ordering_key FROM _forgebase_queue_messages \
+                        "SELECT seq, attributes, ordering_key, only_subscription FROM _forgebase_queue_messages \
                          WHERE topic = ?1 AND seq > ?2 ORDER BY seq LIMIT ?3",
                         vec![sub.topic.as_str().into(), cursor.into(), MATERIALIZE_MAX.into()],
                     ))
@@ -154,6 +157,11 @@ impl QueueService {
                 let mut picked = Vec::new();
                 for r in Row::all(&rows) {
                     let seq = r.int("seq");
+                    // A redriven copy for another subscription (ADR-0031 §3).
+                    if r.opt_text("only_subscription").is_some_and(|o| o != sub.name) {
+                        cursor = seq;
+                        continue;
+                    }
                     let attrs: BTreeMap<String, String> = r.map("attributes")?;
                     if filter.matches(&attrs) && eng == DeliveryEngine::Pgmq {
                         picked.push((seq, r.opt_text("ordering_key")));
@@ -199,7 +207,8 @@ impl QueueService {
             let expired = self.pgmq_expired(tx, &sub.name, now).await?;
             for &(id, attempts) in &expired {
                 self.pgmq_outcome(tx, &sub.name, id, "expired", None).await?;
-                if sub.max_delivery_attempts.is_some_and(|m| attempts >= m) {
+                // A paused push subscription keeps its messages (ADR-0031 §5).
+                if sub.paused_at.is_none() && sub.max_delivery_attempts.is_some_and(|m| attempts >= m) {
                     self.dead_letter_tx(
                         tx,
                         sub,
@@ -236,7 +245,7 @@ impl QueueService {
                 vec![sub.name.as_str().into(), seq.into()],
             ))
             .await?;
-            if sub.max_delivery_attempts.is_some_and(|m| attempts >= m) {
+            if sub.paused_at.is_none() && sub.max_delivery_attempts.is_some_and(|m| attempts >= m) {
                 self.dead_letter_tx(
                     tx,
                     sub,
@@ -661,51 +670,65 @@ impl QueueService {
         let eng = self.store().await?;
         let now = self.now();
         let mut tx = self.begin().await?;
-        let r: Result<_> = async {
-            sub_row(&mut Db::Tx(&mut *tx), sub).await?;
-            let mut res = AckResult::default();
-            if *eng == DeliveryEngine::Pgmq {
-                let counted = self.pgmq_ack(&mut *tx, sub, ack_ids).await?;
-                for (id, ok) in ack_ids.iter().zip(counted) {
-                    if ok {
-                        res.count += 1;
-                    } else {
-                        res.unknown.push(id.clone());
-                    }
-                }
-            }
-            for id in ack_ids.iter().filter(|_| *eng == DeliveryEngine::Portable) {
-                let n = tx
-                    .execute(&Statement::new(
-                        "DELETE FROM _forgebase_queue_deliveries WHERE subscription = ?1 AND lease_id = ?2",
-                        vec![sub.into(), id.as_str().into()],
-                    ))
-                    .await?
-                    .rows_affected;
-                if n == 0 {
-                    res.unknown.push(id.clone());
-                } else {
-                    res.count += 1;
-                }
-            }
-            if res.count > 0 {
-                tx.execute(&Statement::new(
-                    "UPDATE _forgebase_queue_subscriptions SET acked_total = acked_total + ?2 WHERE name = ?1",
-                    vec![sub.into(), res.count.into()],
-                ))
-                .await?;
-                bump_rate(&mut *tx, "subscription", sub, "acked", now, res.count).await?;
-            }
-            Ok(res)
-        }
-        .await;
+        let r = self.ack_tx(&mut *tx, *eng, sub, ack_ids, now).await;
         let res = finish(tx, r).await?;
         drop(eng);
+        self.acked(sub, &res);
+        Ok(res)
+    }
+
+    /// Metrics and wake-up after an ack committed.
+    pub(crate) fn acked(&self, sub: &str, res: &AckResult) {
         if res.count > 0 {
             metrics::counter!("forgebase_queue_acked_total", "subscription" => sub.to_owned())
                 .increment(u64::try_from(res.count).unwrap_or(0));
             // An ack can unblock the next message of an ordering key.
             self.notify();
+        }
+    }
+
+    /// The ack of `ack_ids` on `sub` inside `tx`.
+    pub(crate) async fn ack_tx(
+        &self,
+        tx: &mut dyn WriteTx,
+        eng: DeliveryEngine,
+        sub: &str,
+        ack_ids: &[String],
+        now: i64,
+    ) -> Result<AckResult> {
+        sub_row(&mut Db::Tx(&mut *tx), sub).await?;
+        let mut res = AckResult::default();
+        if eng == DeliveryEngine::Pgmq {
+            let counted = self.pgmq_ack(&mut *tx, sub, ack_ids).await?;
+            for (id, ok) in ack_ids.iter().zip(counted) {
+                if ok {
+                    res.count += 1;
+                } else {
+                    res.unknown.push(id.clone());
+                }
+            }
+        }
+        for id in ack_ids.iter().filter(|_| eng == DeliveryEngine::Portable) {
+            let n = tx
+                .execute(&Statement::new(
+                    "DELETE FROM _forgebase_queue_deliveries WHERE subscription = ?1 AND lease_id = ?2",
+                    vec![sub.into(), id.as_str().into()],
+                ))
+                .await?
+                .rows_affected;
+            if n == 0 {
+                res.unknown.push(id.clone());
+            } else {
+                res.count += 1;
+            }
+        }
+        if res.count > 0 {
+            tx.execute(&Statement::new(
+                "UPDATE _forgebase_queue_subscriptions SET acked_total = acked_total + ?2 WHERE name = ?1",
+                vec![sub.into(), res.count.into()],
+            ))
+            .await?;
+            bump_rate(&mut *tx, "subscription", sub, "acked", now, res.count).await?;
         }
         Ok(res)
     }
@@ -747,87 +770,108 @@ impl QueueService {
         let mut tx = self.begin().await?;
         let r: Result<_> = async {
             let s = sub_row(&mut Db::Tx(&mut *tx), sub).await?;
-            let mut res = AckResult::default();
-            for id in ack_ids.iter().filter(|_| *eng == DeliveryEngine::Pgmq) {
-                let Some((entry, attempts)) = self.pgmq_leased(&mut *tx, sub, id).await? else {
-                    res.unknown.push(id.clone());
-                    continue;
-                };
-                self.pgmq_outcome(&mut *tx, sub, entry, outcome, error).await?;
-                if s.max_delivery_attempts.is_some_and(|m| attempts >= m) {
-                    self.dead_letter_tx(
-                        &mut *tx,
-                        &s,
-                        Delivery::Entry(entry),
-                        &format!("max delivery attempts reached ({outcome})"),
-                        now,
-                    )
-                    .await?;
-                } else {
-                    self.pgmq_ready(&mut *tx, sub, entry, now + self.backoff(&s, attempts), false)
-                        .await?;
-                }
-                res.count += 1;
-            }
-            for id in ack_ids.iter().filter(|_| *eng == DeliveryEngine::Portable) {
-                let rows = tx
-                    .fetch_all(&Statement::new(
-                        "SELECT seq, attempts FROM _forgebase_queue_deliveries \
-                         WHERE subscription = ?1 AND lease_id = ?2 AND state = 'leased'",
-                        vec![sub.into(), id.as_str().into()],
-                    ))
-                    .await?;
-                let Some(r) = Row::all(&rows).next() else {
-                    res.unknown.push(id.clone());
-                    continue;
-                };
-                let (seq, attempts) = (r.int("seq"), r.int("attempts"));
-                let err: Value = error.map(|e| e.chars().take(500).collect::<String>()).into();
-                let d = self.backend().dialect();
-                tx.execute(&Statement::new(
-                    format!(
-                        "UPDATE _forgebase_queue_deliveries SET history = CASE WHEN CAST(?4 AS TEXT) IS NULL \
-                         THEN {} ELSE {} END WHERE subscription = ?1 AND seq = ?2 AND {}",
-                        history::set_outcome(d, "CAST(?3 AS TEXT)"),
-                        history::set_outcome_and_error(d, "CAST(?3 AS TEXT)", "CAST(?4 AS TEXT)"),
-                        history::not_empty(d)
-                    ),
-                    vec![sub.into(), seq.into(), outcome.into(), err],
-                ))
-                .await?;
-                if s.max_delivery_attempts.is_some_and(|m| attempts >= m) {
-                    self.dead_letter_tx(
-                        &mut *tx,
-                        &s,
-                        Delivery::Seq(seq),
-                        &format!("max delivery attempts reached ({outcome})"),
-                        now,
-                    )
-                    .await?;
-                } else {
-                    tx.execute(&Statement::new(
-                        "UPDATE _forgebase_queue_deliveries SET state = 'ready', available_at = ?3, lease_id = NULL, \
-                         lease_until = NULL, consumer = NULL WHERE subscription = ?1 AND seq = ?2",
-                        vec![sub.into(), seq.into(), (now + self.backoff(&s, attempts)).into()],
-                    ))
-                    .await?;
-                }
-                res.count += 1;
-            }
-            if res.count > 0 {
-                tx.execute(&Statement::new(
-                    "UPDATE _forgebase_queue_subscriptions SET nacked_total = nacked_total + ?2 WHERE name = ?1",
-                    vec![sub.into(), res.count.into()],
-                ))
-                .await?;
-            }
-            Ok(res)
+            let dead_letter = s.paused_at.is_none();
+            self.nack_tx(&mut *tx, *eng, &s, ack_ids, outcome, error, now, dead_letter)
+                .await
         }
         .await;
         let res = finish(tx, r).await?;
         drop(eng);
         if res.count > 0 {
             self.notify();
+        }
+        Ok(res)
+    }
+
+    /// The nack of `ack_ids` on `s` inside `tx`. With `dead_letter` false a
+    /// message whose attempts are used up is retried instead (a paused push
+    /// subscription keeps its messages, ADR-0031 §5).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn nack_tx(
+        &self,
+        tx: &mut dyn WriteTx,
+        eng: DeliveryEngine,
+        s: &SubRow,
+        ack_ids: &[String],
+        outcome: &str,
+        error: Option<&str>,
+        now: i64,
+        dead_letter: bool,
+    ) -> Result<AckResult> {
+        let sub = s.name.as_str();
+        let mut res = AckResult::default();
+        for id in ack_ids.iter().filter(|_| eng == DeliveryEngine::Pgmq) {
+            let Some((entry, attempts)) = self.pgmq_leased(&mut *tx, sub, id).await? else {
+                res.unknown.push(id.clone());
+                continue;
+            };
+            self.pgmq_outcome(&mut *tx, sub, entry, outcome, error).await?;
+            if dead_letter && s.max_delivery_attempts.is_some_and(|m| attempts >= m) {
+                self.dead_letter_tx(
+                    &mut *tx,
+                    s,
+                    Delivery::Entry(entry),
+                    &format!("max delivery attempts reached ({outcome})"),
+                    now,
+                )
+                .await?;
+            } else {
+                self.pgmq_ready(&mut *tx, sub, entry, now + self.backoff(s, attempts), false)
+                    .await?;
+            }
+            res.count += 1;
+        }
+        for id in ack_ids.iter().filter(|_| eng == DeliveryEngine::Portable) {
+            let rows = tx
+                .fetch_all(&Statement::new(
+                    "SELECT seq, attempts FROM _forgebase_queue_deliveries \
+                     WHERE subscription = ?1 AND lease_id = ?2 AND state = 'leased'",
+                    vec![sub.into(), id.as_str().into()],
+                ))
+                .await?;
+            let Some(r) = Row::all(&rows).next() else {
+                res.unknown.push(id.clone());
+                continue;
+            };
+            let (seq, attempts) = (r.int("seq"), r.int("attempts"));
+            let err: Value = error.map(|e| e.chars().take(500).collect::<String>()).into();
+            let d = self.backend().dialect();
+            tx.execute(&Statement::new(
+                format!(
+                    "UPDATE _forgebase_queue_deliveries SET history = CASE WHEN CAST(?4 AS TEXT) IS NULL \
+                     THEN {} ELSE {} END WHERE subscription = ?1 AND seq = ?2 AND {}",
+                    history::set_outcome(d, "CAST(?3 AS TEXT)"),
+                    history::set_outcome_and_error(d, "CAST(?3 AS TEXT)", "CAST(?4 AS TEXT)"),
+                    history::not_empty(d)
+                ),
+                vec![sub.into(), seq.into(), outcome.into(), err],
+            ))
+            .await?;
+            if dead_letter && s.max_delivery_attempts.is_some_and(|m| attempts >= m) {
+                self.dead_letter_tx(
+                    &mut *tx,
+                    s,
+                    Delivery::Seq(seq),
+                    &format!("max delivery attempts reached ({outcome})"),
+                    now,
+                )
+                .await?;
+            } else {
+                tx.execute(&Statement::new(
+                    "UPDATE _forgebase_queue_deliveries SET state = 'ready', available_at = ?3, lease_id = NULL, \
+                     lease_until = NULL, consumer = NULL WHERE subscription = ?1 AND seq = ?2",
+                    vec![sub.into(), seq.into(), (now + self.backoff(s, attempts)).into()],
+                ))
+                .await?;
+            }
+            res.count += 1;
+        }
+        if res.count > 0 {
+            tx.execute(&Statement::new(
+                "UPDATE _forgebase_queue_subscriptions SET nacked_total = nacked_total + ?2 WHERE name = ?1",
+                vec![sub.into(), res.count.into()],
+            ))
+            .await?;
         }
         Ok(res)
     }

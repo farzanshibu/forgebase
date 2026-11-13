@@ -63,6 +63,20 @@ pub mod names {
     pub const QUEUE_DELIVERIES: &str = "forgebase_queue_deliveries";
     /// Gauge: messages retained across all topics.
     pub const QUEUE_MESSAGES: &str = "forgebase_queue_messages";
+    /// Counter: push delivery attempts (test sends excluded), labels `subscription`, `outcome` (`success`, `failure`).
+    pub const QUEUE_PUSH_ATTEMPTS_TOTAL: &str = "forgebase_queue_push_attempts_total";
+    /// Histogram: push delivery latency in seconds, label `subscription`.
+    pub const QUEUE_PUSH_LATENCY_SECONDS: &str = "forgebase_queue_push_latency_seconds";
+    /// Gauge: failed push attempts since the last success, label `subscription`.
+    pub const QUEUE_PUSH_CONSECUTIVE_FAILURES: &str = "forgebase_queue_push_consecutive_failures";
+    /// Gauge: 1 while push delivery of a subscription is paused, label `subscription`.
+    pub const QUEUE_PUSH_PAUSED: &str = "forgebase_queue_push_paused";
+    /// Counter: push subscriptions paused by the circuit breaker, label `subscription`.
+    pub const QUEUE_PUSH_AUTO_PAUSED_TOTAL: &str = "forgebase_queue_push_auto_paused_total";
+    /// Gauge: Unix time of the last successful push attempt, label `subscription`.
+    pub const QUEUE_PUSH_LAST_SUCCESS_SECONDS: &str = "forgebase_queue_push_last_success_timestamp_seconds";
+    /// Counter: dead letters redriven to their subscription, label `subscription`.
+    pub const QUEUE_REDRIVEN_TOTAL: &str = "forgebase_queue_redriven_total";
 }
 
 /// Resident memory and CPU time of this process, where the platform reports them.
@@ -187,6 +201,12 @@ pub fn metrics_handle() -> &'static PrometheusHandle {
                     LATENCY_BUCKETS,
                 )
             })
+            .and_then(|b| {
+                b.set_buckets_for_metric(
+                    Matcher::Full(names::QUEUE_PUSH_LATENCY_SECONDS.to_owned()),
+                    LATENCY_BUCKETS,
+                )
+            })
             .unwrap_or_else(|_| PrometheusBuilder::new());
         let recorder = builder.build_recorder();
         let handle = recorder.handle();
@@ -244,6 +264,30 @@ fn describe() {
     describe_gauge!(names::KV_MEMORY_BYTES, Unit::Bytes, "Key-value store memory.");
     describe_gauge!(names::QUEUE_DELIVERIES, "Queue deliveries by state.");
     describe_gauge!(names::QUEUE_MESSAGES, "Messages retained in topics.");
+    describe_counter!(names::QUEUE_PUSH_ATTEMPTS_TOTAL, "Push delivery attempts by outcome.");
+    describe_histogram!(
+        names::QUEUE_PUSH_LATENCY_SECONDS,
+        Unit::Seconds,
+        "Push delivery latency."
+    );
+    describe_gauge!(
+        names::QUEUE_PUSH_CONSECUTIVE_FAILURES,
+        "Failed push attempts since the last success."
+    );
+    describe_gauge!(names::QUEUE_PUSH_PAUSED, "1 while push delivery is paused.");
+    describe_counter!(
+        names::QUEUE_PUSH_AUTO_PAUSED_TOTAL,
+        "Push subscriptions paused by the circuit breaker."
+    );
+    describe_gauge!(
+        names::QUEUE_PUSH_LAST_SUCCESS_SECONDS,
+        Unit::Seconds,
+        "Unix time of the last successful push attempt."
+    );
+    describe_counter!(
+        names::QUEUE_REDRIVEN_TOTAL,
+        "Dead letters redriven to their subscription."
+    );
 }
 
 #[cfg(test)]
