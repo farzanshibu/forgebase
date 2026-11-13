@@ -257,6 +257,11 @@ jobs:
           if [ "$HAS_ENGINE" = true ]; then
             "$full" --version | tee full.version
             if grep -q 'lite' full.version; then echo "the standard build reports lite" >&2; exit 1; fi
+          fi
+          # Windows: PostgreSQL refuses an administrator token and the runner
+          # is a full administrator; the next step runs the standard build
+          # under a restricted token instead.
+          if [ "$HAS_ENGINE" = true ] && [ "${{ runner.os }}" != Windows ]; then
             "$full" init smoke --no-admin
             cd smoke
             "$full" status
@@ -267,6 +272,18 @@ jobs:
           fi
           "$lite" init smoke-lite --database sqlite --no-admin
           (cd smoke-lite && "$lite" status)
+
+      # The standard Windows build with its embedded PostgreSQL. postgres.exe
+      # will not run with administrator rights, and the runner account is a
+      # full administrator, so the checks run as a batch file under
+      # `runas /trustlevel:0x20000` (a basic-user token: Administrators is
+      # deny-only, as with pg_ctl's restricted token). runas does not wait or
+      # pass output, so the batch writes logs and a done marker.
+      - name: Smoke test the standard build (Windows, restricted token)
+        if: matrix.smoke && runner.os == 'Windows' && steps.eng.outputs.has == 'true'
+        shell: pwsh
+        timeout-minutes: 15
+        run: deploy/smoke-windows-restricted.ps1 -Exe "$PWD\stage\bundled\forgebase.exe" -Work "$env:RUNNER_TEMP\fbsmoke"
 
       - name: Package (unix)
         if: runner.os != 'Windows'
