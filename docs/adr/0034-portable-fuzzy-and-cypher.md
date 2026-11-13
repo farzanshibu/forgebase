@@ -11,6 +11,10 @@
   §1.5 and the FB-163 addendum: openCypher on AGE; §1.8 and the FB-166
   addendum: `pg_trgm`), [ADR-0003](0003-data-core.md) (index manager,
   list queries), [ADR-0006](0006-graph.md) (graph tables, rules).
+- Supersedes: ADR-0029 decision 7 and §1.8 "PostgreSQL only" for the
+  `trigram` index kind and `fuzzy` (and the FB-166 answers `400
+  index_kind_unsupported` / `fuzzy_unsupported`), and §1.5 / FB-163 "`400
+  cypher_unsupported` elsewhere" for `POST /graph/cypher`.
 - Migration: `0056_portable_trigram` (both backends). Version 0057 is
   reserved for this work and unused.
 
@@ -101,7 +105,10 @@ through the primary key; each candidate's score is
 `shared / (n + |q| - shared)` from two range scans of `(rid, k, tri)`. A
 threshold of `0` matches every row with a value, as `similarity >= 0`
 does. Plan test: the fuzzy list is `SEARCH s USING PRIMARY KEY (tri=? AND
-k=?)` plus rowid lookups, no table scan.
+k=?)` plus rowid lookups, no table scan. Measured (aarch64 macOS, SQLite
+3.50, 50 000 three-word names of about 20 characters, the same SQL from
+the CLI): building the index 1.5 s (1.0 M trigram rows; the file grew to 28 MB), a
+fuzzy search with scoring and ordering 17 ms.
 
 Life cycle: a table rebuild (dropping a field) re-creates the triggers and
 refills the table; a renamed field carries the index (SQLite rewrites the
