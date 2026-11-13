@@ -54,6 +54,16 @@ fn doc_metrics() {}
 #[allow(dead_code)]
 fn doc_system_info() {}
 
+/// The capability matrix (ADR-0034): per feature, the engine it runs on
+/// (a PostgreSQL extension or the portable engine), its state (`active`,
+/// `portable`, `off`, `native`, `unavailable`), mode and limits.
+#[utoipa::path(
+    get, path = "/api/system/capabilities", tag = "system",
+    responses((status = 200, description = "Every feature of this server", body = crate::capabilities::Capabilities))
+)]
+#[allow(dead_code)]
+fn doc_system_capabilities() {}
+
 /// The feature registry: every module, whether it is on, and its typed
 /// settings with value, default and source (administrators only; FB-91).
 #[utoipa::path(
@@ -125,7 +135,7 @@ fn doc_openapi() {}
         license(name = "MIT OR Apache-2.0"),
     ),
     paths(
-        doc_health, doc_ready, doc_metrics, doc_system_info, doc_system_features, doc_system_config, doc_openapi, doc_mcp,
+        doc_health, doc_ready, doc_metrics, doc_system_info, doc_system_capabilities, doc_system_features, doc_system_config, doc_openapi, doc_mcp,
         collections::list, collections::create, collections::get, collections::update, collections::delete,
         collections::schema, collections::history,
         records::list, records::query, records::count, records::aggregate, records::explain, records::create,
@@ -155,6 +165,7 @@ fn doc_openapi() {}
         ErrorEnvelope, ErrorDetail,
         crate::features::SystemFeatures, crate::features::SystemFeature, crate::features::SystemSetting,
         crate::features::SystemConfigPatch, crate::features::SystemConfigPatched,
+        crate::capabilities::Capabilities, crate::capabilities::Capability,
         schemas::FieldSchema, schemas::CollectionSchema, schemas::CollectionList, schemas::CollectionSchemaResponse,
         schemas::SchemaChangeSchema, schemas::SchemaHistory, schemas::ListResponse, schemas::ItemsResponse,
         schemas::CountResponse, schemas::ListQueryBody, schemas::AggregateSpecBody, schemas::AggregateBody,

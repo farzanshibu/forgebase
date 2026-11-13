@@ -125,8 +125,8 @@ pub struct ListQueryBody {
     pub expand: Option<Vec<String>>,
     /// Full-text query (needs a full-text index).
     pub search: Option<String>,
-    /// Fuzzy text: trigram similarity, best match first (PostgreSQL with
-    /// pg_trgm; `400 fuzzy_unsupported` otherwise).
+    /// Fuzzy text: trigram similarity, best match first (pg_trgm where it
+    /// is in use, else the portable engine; ADR-0034).
     pub fuzzy: Option<String>,
     /// Fields `fuzzy` compares; each needs a trigram index (default: all
     /// fields of the collection's trigram indexes).
@@ -187,8 +187,8 @@ pub struct IndexDefinitionSchema {
     pub keys: Vec<IndexKeySchema>,
     pub unique: Option<bool>,
     pub partial: Option<String>,
-    /// `btree` (default), `fulltext` or `trigram` (PostgreSQL with pg_trgm;
-    /// `400 index_kind_unsupported` elsewhere).
+    /// `btree` (default), `fulltext` or `trigram` (pg_trgm where it is in
+    /// use, else the portable engine; ADR-0034).
     pub kind: Option<String>,
 }
 
