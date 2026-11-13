@@ -49,7 +49,7 @@ jobs:
         run: |
           set -euo pipefail
           shellcheck -S warning deploy/postgres-engine/*.sh
-          python3 -m py_compile deploy/postgres-engine/engine.py
+          python3 -m py_compile deploy/postgres-engine/engine.py deploy/postgres-engine/untar.py
 
   unix:
     name: engine ${{ matrix.target }}
@@ -162,12 +162,16 @@ jobs:
           path: ${{ runner.temp }}\engine\src
           key: engine-src-windows-${{ hashFiles('engine.lock') }}
 
-      # OpenSSL (nmake, serial) is ~8 of the ~10 minutes before PostgreSQL; the
+      # OpenSSL (nmake, serial) is ~11 of the ~13 minutes before PostgreSQL; the
       # DLLs and import libraries it and zlib/lz4/zstd install are reusable.
-      - uses: actions/cache@v4
+      # Saved even when a later step fails, so fixing the PostgreSQL step does
+      # not rebuild them. Each dependency is skipped only when its final file
+      # exists (build-windows.ps1). Bump v1 to force a rebuild.
+      - id: deps
+        uses: actions/cache/restore@v4
         with:
           path: ${{ runner.temp }}\engine\deps
-          key: engine-deps-windows-${{ hashFiles('engine.lock', 'deploy/postgres-engine/build-windows.ps1') }}
+          key: engine-deps-windows-v1-${{ hashFiles('engine.lock') }}
 
       - name: Build tools
         shell: pwsh
@@ -182,6 +186,13 @@ jobs:
         shell: pwsh
         timeout-minutes: 100
         run: deploy/postgres-engine/build-windows.ps1 -Work $env:WORK -Out "$env:WORK\out"
+
+      - name: Save the dependency cache
+        if: ${{ always() && steps.deps.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}\engine\deps
+          key: engine-deps-windows-v1-${{ hashFiles('engine.lock') }}
 
       - name: Smoke test from the archive
         shell: pwsh

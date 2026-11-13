@@ -29,7 +29,11 @@ function Unpack([string]$Name) {
     Log "unpack $($file.Name)"
     # An extraction cut short must not leave a half-filled directory that the
     # Test-Path above would take for a finished one on the next run.
-    try { Run "tar $Name" 10 "tar" @("-C", $Build, "-xf", $file.FullName) }
+    # .bz2 goes through Python: tar.exe + an external bzip2 deadlocks on the runner.
+    try {
+      if ($file.Extension -eq ".bz2") { Run "untar $Name" 10 "python" @("$Here\untar.py", $file.FullName, $Build) }
+      else { Run "tar $Name" 10 "tar" @("-C", $Build, "-xf", $file.FullName) }
+    }
     catch { Remove-Item -Recurse -Force -ErrorAction SilentlyContinue "$Build\$dir"; throw }
   }
   return "$Build\$dir"
@@ -82,7 +86,8 @@ Enter-VsDevShell -VsInstallPath $vs -DevCmdArguments "-arch=x64 -host_arch=x64" 
 Log "fetch and verify sources"
 python "$Here\engine.py" fetch --dest $Src --os windows
 
-if (-not (Test-Path "$Deps\lib\libssl.lib")) {
+if (-not ((Test-Path "$Deps\lib\libssl.lib") -and (Test-Path "$Deps\lib\libcrypto.lib") -and
+          (Test-Path "$Deps\bin\libssl-3-x64.dll") -and (Test-Path "$Deps\bin\libcrypto-3-x64.dll"))) {
   Log "OpenSSL (DLLs; no-asm, so no NASM)"
   $d = Unpack "openssl"
   Push-Location $d
