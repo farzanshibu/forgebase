@@ -11,6 +11,7 @@
 //! | Invoices (lines, discounts, tax, balance, gapless numbers), collection, dunning, credit notes, refunds, fulfillment, entitlement sync | [`billing`] |
 //! | Metered billing from FB-24 usage events (cursor, idempotent by event id) | [`usage`] |
 //! | Signed, idempotent, replay-protected webhooks | [`webhook`] |
+//! | Inbound webhook inspector: every delivery recorded (budgeted when unverified), replay, re-verify (ADR-0032) | [`inspector`] |
 //! | Stripe, Razorpay, WeChat Pay and manual drivers behind [`PaymentProvider`] | [`provider`] |
 //! | App Store, Google Play and Creem (merchant-of-record stores, FB-72) behind [`provider::StoreProvider`]: server-side purchase verification, signed notifications, refunds and revocations mapped to subscriptions, orders and entitlements | [`store`] |
 //! | MRR, ARR, churn, revenue by currency | [`stats`] |
@@ -27,6 +28,7 @@ pub mod billing;
 pub mod catalog;
 mod error;
 pub mod http;
+pub mod inspector;
 pub mod jobs;
 pub mod model;
 pub mod money;
@@ -40,6 +42,10 @@ pub mod webhook;
 
 pub use error::{BillingError, Result};
 pub use http::{extension, openapi, router};
+pub use inspector::{
+    WebhookDelivery, WebhookDeliveryDetail, WebhookDeliveryFilter, WebhookDeliveryPage, WebhookDeliveryResult,
+    WebhookLogConfig, WebhookProcessing, WebhookVerification,
+};
 pub use jobs::register_jobs;
 pub use model::*;
 pub use provider::{PaymentProvider, ProviderEvent, StoreProvider};

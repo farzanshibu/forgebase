@@ -1,0 +1,44 @@
+# Most options at once: admin bootstrap, S3 credentials, RESP, native TLS (files).
+publicUrl: https://forgebase.example.com
+opsAccess: admin
+logLevel: forgebase=debug,info
+admin:
+  bootstrap:
+    enabled: true
+    email: admin@example.com
+    existingSecret: forgebase-admin
+resp:
+  enabled: true
+  exposeService: true
+tls:
+  mode: files
+  existingSecret: forgebase-cert
+  settings:
+    cert_file: /etc/forgebase-tls/tls.crt
+    key_file: /etc/forgebase-tls/tls.key
+s3:
+  existingSecret: forgebase-s3
+  sessionTokenKey: session-token
+config:
+  storage:
+    driver: s3
+    s3_endpoint: https://s3.eu-central-1.amazonaws.com
+    s3_region: eu-central-1
+    s3_bucket: forgebase-blobs
+    max_object_bytes: 1073741824
+  billing:
+    enabled: false
+  database:
+    postgres:
+      settings:
+        shared_buffers: 512MB
+persistence:
+  existingClaim: forgebase-data
+service:
+  type: NodePort
+  nodePort: 30090
+extraEnv:
+  - name: TZ
+    value: UTC
+networkPolicy:
+  enabled: true

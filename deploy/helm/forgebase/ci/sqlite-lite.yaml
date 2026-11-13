@@ -1,0 +1,6 @@
+# SQLite on the -lite image (you build and push it; see the README).
+image:
+  variant: lite
+  tag: "0.3.4"
+database:
+  backend: sqlite

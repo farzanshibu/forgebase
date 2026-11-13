@@ -1,0 +1,12 @@
+# Example: the bundled-postgres overlay with every optional component. Copy it
+# to your own repository and edit the components' files.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../overlays/bundled-postgres
+
+components:
+  - ../../components/ingress
+  - ../../components/networkpolicy
+  - ../../components/backup

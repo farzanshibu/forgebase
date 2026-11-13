@@ -122,6 +122,10 @@ impl PaymentProvider for RazorpayProvider {
         "razorpay"
     }
 
+    fn account(&self) -> Option<String> {
+        Some(self.key_id.clone()).filter(|a| !a.is_empty())
+    }
+
     fn create_customer<'a>(&'a self, c: &'a CustomerRef) -> BoxFuture<'a, Result<String>> {
         Box::pin(async move {
             let body = json!({

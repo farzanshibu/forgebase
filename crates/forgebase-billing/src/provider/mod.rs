@@ -257,6 +257,12 @@ pub trait PaymentProvider: Send + Sync + fmt::Debug {
         now_ms: i64,
         tolerance_secs: i64,
     ) -> Result<ProviderEvent>;
+    /// The provider account deliveries are for, when the driver knows an
+    /// identifier that is not a secret (Razorpay key id, WeChat Pay merchant
+    /// id). Recorded by the webhook inspector (ADR-0032).
+    fn account(&self) -> Option<String> {
+        None
+    }
 }
 
 /// HMAC-SHA256 of `msg` under `key`, lower-case hex.

@@ -171,6 +171,10 @@ type (for example `function.invoke`).
 | Forged webhook bodies | Constant-time HMAC (Stripe, Razorpay, Creem), platform-certificate signatures (WeChat Pay), JWS chain to Apple Root CA G3 (App Store), Google-signed OIDC token on the Pub/Sub push (Google Play) | `forgebase-billing/tests/webhooks.rs`, `stores.rs`, `wechat_pay.rs` |
 | Replays and reordering | Timestamp tolerance, event-id dedup, out-of-order events ignored; a store transaction id is unique, so a replay is a no-op | `webhooks.rs`, `stores.rs` |
 | Live keys in a test system | Only test-mode keys accepted; provider URLs must be `https://` | `forgebase-billing/tests/http.rs`, `payments.rs` |
+| Forged traffic filling the disk through the webhook inspector (ADR-0032) | Unverified deliveries are stored only within a per-provider budget (60 a minute, 1 MiB of body and headers a minute; unknown provider names share one budget) and under total caps (10 000 rows, 64 MiB; the oldest unverified rows are evicted first); verified deliveries are authenticated by the provider; every row is deleted after `billing.webhook_log_retention_days`. The answer to the caller is the same whether or not the delivery was stored, and an unverified payload is never processed | `forgebase-billing/tests/inspector.rs` |
+| Secrets in the webhook log | Headers are an allowlist (content type, user agent, forwarding headers, provider signature headers): never `authorization` (Google Play's push token), cookies or API keys. A refusal reason is the stable code and the driver's fixed message, never a secret or the expected signature; upstream error text is reduced to its code. Metric labels come from fixed lists | `inspector.rs`, `stores.rs` |
+| Personal data in stored webhook bodies | Provider payloads carry customer names, emails, addresses, card brand and last digits, and store receipts. They are readable by platform administrators only (`GET /billing/webhook-deliveries/{id}`; the list never returns bodies), kept for `billing.webhook_log_retention_days` (default 30), and are part of database backups like the rest of billing | `inspector.rs` |
+| Injecting a payload through a stored delivery (replay, re-verify) | Replay and re-verification verify the stored body again with the current secrets, as of the time it was received; only Google Play pushes, whose token is not stored, are re-read, and their purchase state always comes from the Play API. Re-verification processes a delivery at most once (one operator action at a time, a claim on the row, the event dedup inside the write transaction); Google Play deliveries cannot be re-verified. Both actions are platform-administrator only and audit-logged (`_forgebase_billing_audit`) | `inspector.rs`, `stores.rs`, `wechat_pay.rs` |
 
 ### 4.10 KV and the Redis protocol (`forgebase-kv`, `forgebase-resp`, ADR-0005, 0013)
 
@@ -296,6 +300,11 @@ the billing and store webhook tests, and `forgebase-resp` tests.
     non-admin with a malformed body gets `400` instead of `403`. Nothing is
     read or changed; it only tells the caller the expected shape, which the
     OpenAPI document publishes anyway.
+11. **Billing webhook bodies are personal data at rest** (ADR-0032). They
+    stay in the database (and its backups) for
+    `billing.webhook_log_retention_days`; lower it if your privacy policy
+    needs a shorter period. The unverified-delivery budget is per process
+    and resets on restart.
 
 Resolved by FB-80: the bypass suite (§6), path traversal and upload
 validation (§4.4), forwarded client addresses (`[auth] trust_forwarded_for`,

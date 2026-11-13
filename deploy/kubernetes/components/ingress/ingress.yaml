@@ -1,0 +1,26 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: forgebase
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    # Realtime (WebSocket and SSE) connections are long-lived. For ingress-nginx:
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - forgebase.example.com
+      secretName: forgebase-tls
+  rules:
+    - host: forgebase.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: forgebase
+                port:
+                  name: http

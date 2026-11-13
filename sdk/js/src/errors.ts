@@ -93,6 +93,16 @@ export class RealtimeError extends ForgeBaseError {
   }
 }
 
+/** A push request failed verification (`constructWebhookEvent`): bad signature, stale timestamp or unreadable payload. */
+export class WebhookVerificationError extends ForgeBaseError {
+  /** Why: `missing_header`, `malformed_header`, `timestamp_out_of_tolerance`, `signature_mismatch` or `invalid_payload`. */
+  readonly reason: "missing_header" | "malformed_header" | "timestamp_out_of_tolerance" | "signature_mismatch" | "invalid_payload";
+  constructor(reason: WebhookVerificationError["reason"], message: string) {
+    super({ status: 0, code: `webhook_${reason}`, message });
+    this.reason = reason;
+  }
+}
+
 const QUOTA_CODES = /quota|limit_exceeded|usage_limit/i;
 
 /** Builds the right error class from a failed response. */

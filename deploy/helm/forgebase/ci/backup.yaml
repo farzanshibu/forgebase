@@ -1,0 +1,7 @@
+# Backup CronJob writing snapshots on the data PVC.
+backup:
+  enabled: true
+  schedule: "0 2 * * *"
+  timeZone: Etc/UTC
+  keepLast: 7
+  maxAgeDays: 14

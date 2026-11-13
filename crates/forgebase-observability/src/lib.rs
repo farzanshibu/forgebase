@@ -63,6 +63,15 @@ pub mod names {
     pub const QUEUE_DELIVERIES: &str = "forgebase_queue_deliveries";
     /// Gauge: messages retained across all topics.
     pub const QUEUE_MESSAGES: &str = "forgebase_queue_messages";
+    /// Counter: inbound billing webhook deliveries, labels `provider` (a known
+    /// provider or `other`) and `outcome` (`applied`, `ignored`, `duplicate`,
+    /// `failed`, or the verification failure).
+    pub const BILLING_WEBHOOK_DELIVERIES_TOTAL: &str = "forgebase_billing_webhook_deliveries_total";
+    /// Histogram: verification and processing time of a billing webhook in seconds, label `provider`.
+    pub const BILLING_WEBHOOK_PROCESSING_SECONDS: &str = "forgebase_billing_webhook_processing_seconds";
+    /// Counter: unverified billing webhook deliveries the inspector budget did not store,
+    /// labels `provider` and `kind` (`body`: row without body; `delivery`: no row).
+    pub const BILLING_WEBHOOK_LOG_DROPPED_TOTAL: &str = "forgebase_billing_webhook_log_dropped_total";
 }
 
 /// Resident memory and CPU time of this process, where the platform reports them.
@@ -187,6 +196,12 @@ pub fn metrics_handle() -> &'static PrometheusHandle {
                     LATENCY_BUCKETS,
                 )
             })
+            .and_then(|b| {
+                b.set_buckets_for_metric(
+                    Matcher::Full(names::BILLING_WEBHOOK_PROCESSING_SECONDS.to_owned()),
+                    LATENCY_BUCKETS,
+                )
+            })
             .unwrap_or_else(|_| PrometheusBuilder::new());
         let recorder = builder.build_recorder();
         let handle = recorder.handle();
@@ -244,6 +259,19 @@ fn describe() {
     describe_gauge!(names::KV_MEMORY_BYTES, Unit::Bytes, "Key-value store memory.");
     describe_gauge!(names::QUEUE_DELIVERIES, "Queue deliveries by state.");
     describe_gauge!(names::QUEUE_MESSAGES, "Messages retained in topics.");
+    describe_counter!(
+        names::BILLING_WEBHOOK_DELIVERIES_TOTAL,
+        "Inbound billing webhook deliveries by outcome."
+    );
+    describe_histogram!(
+        names::BILLING_WEBHOOK_PROCESSING_SECONDS,
+        Unit::Seconds,
+        "Billing webhook verification and processing time."
+    );
+    describe_counter!(
+        names::BILLING_WEBHOOK_LOG_DROPPED_TOTAL,
+        "Unverified billing webhook deliveries not stored (over the inspector budget)."
+    );
 }
 
 #[cfg(test)]

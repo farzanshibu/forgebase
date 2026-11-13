@@ -1,0 +1,22 @@
+# ForgeBase on your own PostgreSQL server. Create the Secret first (see
+# secret.example.yaml); it is not part of this kustomization on purpose.
+#
+#   kubectl create secret generic forgebase-database -n forgebase \
+#     --from-literal=url='postgres://forgebase:…@db.example.com:5432/forgebase?sslmode=require'
+#   kubectl apply -k deploy/kubernetes/overlays/external-postgres -n forgebase
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+
+configMapGenerator:
+  - name: forgebase-config
+    files:
+      - forgebase.toml
+
+patches:
+  - path: database-url-patch.yaml
+    target:
+      kind: StatefulSet
+      name: forgebase

@@ -1,0 +1,1 @@
+terraform import forgebase_index.posts_status idx_posts_status_published

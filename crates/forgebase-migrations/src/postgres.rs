@@ -140,6 +140,11 @@ pub static POSTGRES_MIGRATIONS: &[Migration] = &[
         "db_node_agents",
         include_str!("../../../migrations/postgres/0043_db_node_agents.sql"),
     ),
+    Migration::new(
+        53,
+        "billing_webhook_deliveries",
+        include_str!("../../../migrations/postgres/0053_billing_webhook_deliveries.sql"),
+    ),
 ];
 
 /// The SQLite migrations the baseline stands for (versions up to

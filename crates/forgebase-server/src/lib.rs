@@ -461,7 +461,15 @@ async fn start_on(
     // Billing (FB-70): on by default, `[billing] enabled = false` turns it off.
     let billing = if config.billing.enabled {
         match open_billing(&db, &auth, &policy, &entitlements, &credits).await {
-            Ok(b) => Some(b),
+            Ok(b) => {
+                // The inbound webhook inspector (ADR-0032).
+                b.set_webhook_log(forgebase_billing::WebhookLogConfig {
+                    retention_days: config.billing.webhook_log_retention_days.max(1),
+                    trust_forwarded_for: config.auth.trust_forwarded_for,
+                    ..forgebase_billing::WebhookLogConfig::default()
+                });
+                Some(b)
+            }
             Err(e) => {
                 realtime.shutdown();
                 db.close().await;

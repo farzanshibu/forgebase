@@ -1,0 +1,19 @@
+# forgebase.toml for SQLite: one file in /data. Works with the standard image
+# and with a -lite image.
+data_dir = "/data"
+
+[server]
+host = "0.0.0.0"
+port = 8090
+ops_access = "loopback"
+# public_url = "https://forgebase.example.com"
+
+[database]
+backend = "sqlite"
+# "full" fsyncs the WAL on every commit; "normal" is faster but a power cut can
+# lose the newest commits.
+synchronous = "full"
+
+[log]
+format = "json"
+level = "info"

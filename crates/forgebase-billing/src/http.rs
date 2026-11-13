@@ -5,7 +5,10 @@
 //! deliveries are anonymous: the provider signature is their authentication.
 
 use axum::body::Bytes;
-use axum::extract::{Path, State};
+use std::net::SocketAddr;
+
+use axum::Extension;
+use axum::extract::{ConnectInfo, Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
@@ -122,6 +125,13 @@ pub fn router<S: Clone + Send + Sync + 'static>(svc: BillingService) -> Router<S
         .route("/billing/store-purchases", get(store_purchases))
         .route("/billing/webhooks/{provider}", post(webhook))
         .route("/billing/webhook-events", get(webhook_events))
+        .route("/billing/webhook-deliveries", get(webhook_deliveries))
+        .route("/billing/webhook-deliveries/{id}", get(webhook_delivery))
+        .route("/billing/webhook-deliveries/{id}/replay", post(replay_webhook_delivery))
+        .route(
+            "/billing/webhook-deliveries/{id}/reverify",
+            post(reverify_webhook_delivery),
+        )
         .route("/billing/stats", get(stats))
         .route("/billing/maintenance", post(maintenance))
         .route("/billing/subscriptions/{id}/change/preview", post(preview_plan_change))
@@ -159,6 +169,7 @@ pub fn openapi() -> utoipa::openapi::OpenApi {
         portal, payment_method, store_products, put_store_product, delete_store_product, store_verify,
         store_checkout, store_purchases, webhook, webhook_events, stats, maintenance, preview_plan_change,
         all_orders, usage_meters, dunning_queue, archive_product, archive_price, archive_coupon, archive_tax_rate,
+        webhook_deliveries, webhook_delivery, replay_webhook_delivery, reverify_webhook_delivery,
     ),
     components(schemas(
         Money, Tier, Scheme, ProductKind, PriceType, Interval, MeterBasis, TaxBehavior, SubscriptionStatus,
@@ -172,12 +183,15 @@ pub fn openapi() -> utoipa::openapi::OpenApi {
         crate::admin::UsageMeter, crate::admin::UsageMeterPage, crate::admin::DunningEntry,
         MarkPaidInput, PayInput, Items<Product>, Items<Price>, Items<Invoice>, StoreProduct, StoreProductInput,
         StoreVerifyInput, StoreCheckoutInput, StorePurchaseRecord, Items<StoreProduct>, Items<StorePurchaseRecord>,
+        crate::inspector::WebhookDelivery, crate::inspector::WebhookDeliveryDetail,
+        crate::inspector::WebhookDeliveryPage, crate::inspector::WebhookDeliveryResult,
+        crate::inspector::WebhookVerification, crate::inspector::WebhookProcessing, crate::inspector::Links,
     )),
     tags(
         (name = "billing", description = "Subscriptions, one-time orders, invoices, payments, credit notes and refunds, dunning, payment statistics"),
         (name = "billing-catalog", description = "Products, multi-currency prices (recurring, one-time, metered; per unit, graduated, volume), tax rates, coupons, provider accounts, settings"),
         (name = "billing-portal", description = "What a customer sees and does: invoices, plan changes, cancellation, the payment method on the provider's hosted page"),
-        (name = "billing-webhooks", description = "Signed, idempotent provider webhooks (Stripe, Razorpay, WeChat Pay) and store notifications (App Store Server Notifications V2, Google Play real-time developer notifications, Creem) with replay protection"),
+        (name = "billing-webhooks", description = "Signed, idempotent provider webhooks (Stripe, Razorpay, WeChat Pay) and store notifications (App Store Server Notifications V2, Google Play real-time developer notifications, Creem) with replay protection; the inbound webhook inspector (every delivery recorded, replay, re-verify)"),
         (name = "billing-stores", description = "Merchant-of-record stores (App Store, Google Play, Creem): product mapping, server-side purchase verification for mobile apps, checkout, purchases"),
     ),
 )]
@@ -627,6 +641,7 @@ async fn payment_method(
 async fn webhook(
     State(s): State<BillingService>,
     Path(provider): Path<String>,
+    connect: Option<Extension<ConnectInfo<SocketAddr>>>,
     headers: HeaderMap,
     raw: Bytes,
 ) -> ApiResult {
@@ -634,7 +649,12 @@ async fn webhook(
         .iter()
         .filter_map(|(k, v)| v.to_str().ok().map(|v| (k.as_str().to_ascii_lowercase(), v.to_owned())))
         .collect();
-    ok(s.handle_webhook(&provider, &hs, &raw).await.map_err(api)?)
+    let client = crate::inspector::client_addr(
+        s.webhook_log().trust_forwarded_for,
+        &hs,
+        connect.map(|Extension(c)| c.0),
+    );
+    ok(s.receive_webhook(&provider, &hs, &raw, client).await.map_err(api)?)
 }
 
 // ---------------------------------------------------------------------------
@@ -733,6 +753,85 @@ async fn store_purchases(State(s): State<BillingService>, Access(ctx): Access, q
     responses((status = 200, description = "Events", body = Items<WebhookEvent>)))]
 async fn webhook_events(State(s): State<BillingService>, Access(ctx): Access, q: Query) -> ApiResult {
     items(s.webhook_events(&ctx, q.u32("limit")?).await.map_err(api)?)
+}
+
+/// Inbound webhook deliveries, newest first, with filters and paging
+/// (platform administrators): every request to `webhooks/{provider}`,
+/// verified or not (unverified ones within a budget), with its verification
+/// and processing outcome (ADR-0032).
+#[utoipa::path(get, path = "/api/v1/billing/webhook-deliveries", operation_id = "billing_webhook_deliveries",
+    tag = "billing-webhooks",
+    params(
+        ("provider" = Option<String>, Query, description = "Only this provider"),
+        ("outcome" = Option<String>, Query, description = "applied, ignored, duplicate, failed, signature_invalid, timestamp_out_of_tolerance, unknown_provider, malformed, rejected or error"),
+        ("event_type" = Option<String>, Query, description = "Only this event type"),
+        ("event_id" = Option<String>, Query, description = "Only this provider event id"),
+        ("from" = Option<String>, Query, description = "Received at or after (RFC 3339)"),
+        ("to" = Option<String>, Query, description = "Received before (RFC 3339)"),
+        ("limit" = Option<u32>, Query, description = "Page size (1-500, default 50)"),
+        ("offset" = Option<u32>, Query, description = "Rows to skip"),
+    ),
+    responses((status = 200, description = "Deliveries", body = crate::inspector::WebhookDeliveryPage),
+        (status = 403, description = "Not a platform administrator")))]
+async fn webhook_deliveries(State(s): State<BillingService>, Access(ctx): Access, q: Query) -> ApiResult {
+    s.require_admin(&ctx).map_err(api)?;
+    let filter = crate::inspector::WebhookDeliveryFilter {
+        provider: q.get("provider").map(str::to_owned),
+        outcome: q.get("outcome").map(str::to_owned),
+        event_type: q.get("event_type").map(str::to_owned),
+        event_id: q.get("event_id").map(str::to_owned),
+        from: time_param(&q, "from")?,
+        to: time_param(&q, "to")?,
+        limit: q.u32("limit")?,
+        offset: q.u32("offset")?,
+    };
+    ok(s.webhook_deliveries(&ctx, filter).await.map_err(api)?)
+}
+
+/// One inbound webhook delivery with its allowlisted headers and stored body
+/// (platform administrators; bodies can contain personal data).
+#[utoipa::path(get, path = "/api/v1/billing/webhook-deliveries/{id}", operation_id = "billing_webhook_delivery",
+    tag = "billing-webhooks",
+    params(("id" = String, Path, description = "Delivery id")),
+    responses((status = 200, description = "Delivery", body = crate::inspector::WebhookDeliveryDetail),
+        (status = 403, description = "Not a platform administrator"), (status = 404, description = "No such delivery")))]
+async fn webhook_delivery(State(s): State<BillingService>, Access(ctx): Access, Path(id): Path<String>) -> ApiResult {
+    ok(s.webhook_delivery(&ctx, &id).await.map_err(api)?)
+}
+
+/// Replays a verified stored delivery through the normal processing path
+/// (platform administrators; audit-logged). The stored body is verified again
+/// with the current secrets; a processed event is a reported no-op
+/// (`already_applied`).
+#[utoipa::path(post, path = "/api/v1/billing/webhook-deliveries/{id}/replay", operation_id = "billing_replay_webhook_delivery",
+    tag = "billing-webhooks",
+    params(("id" = String, Path, description = "Delivery id")),
+    responses((status = 200, description = "Replayed", body = crate::inspector::WebhookDeliveryResult),
+        (status = 403, description = "Not a platform administrator"), (status = 404, description = "No such delivery"),
+        (status = 409, description = "delivery_not_verified or body_not_stored")))]
+async fn replay_webhook_delivery(
+    State(s): State<BillingService>,
+    Access(ctx): Access,
+    Path(id): Path<String>,
+) -> ApiResult {
+    ok(s.replay_webhook_delivery(&ctx, &id).await.map_err(api)?)
+}
+
+/// Verifies a stored rejected delivery again with the current secrets (after
+/// a misconfigured secret was fixed) and processes it, exactly once, if it
+/// now verifies (platform administrators; audit-logged).
+#[utoipa::path(post, path = "/api/v1/billing/webhook-deliveries/{id}/reverify", operation_id = "billing_reverify_webhook_delivery",
+    tag = "billing-webhooks",
+    params(("id" = String, Path, description = "Delivery id")),
+    responses((status = 200, description = "Verified again (see result)", body = crate::inspector::WebhookDeliveryResult),
+        (status = 403, description = "Not a platform administrator"), (status = 404, description = "No such delivery"),
+        (status = 409, description = "delivery_already_verified, reverify_in_progress, not_reverifiable or body_not_stored")))]
+async fn reverify_webhook_delivery(
+    State(s): State<BillingService>,
+    Access(ctx): Access,
+    Path(id): Path<String>,
+) -> ApiResult {
+    ok(s.reverify_webhook_delivery(&ctx, &id).await.map_err(api)?)
 }
 
 /// Payment statistics: MRR, ARR, churn, revenue by currency (default: the
