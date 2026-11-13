@@ -413,7 +413,13 @@ impl InsightsService {
                 match db.fetch_all(&Statement::new(sql, params)).await {
                     Ok(rows) => {
                         for r in rows.rows {
-                            let s = scope(opt_text(&r, 0));
+                            // The key-value engine stores `t:<environment>`; its other scopes are instance-wide.
+                            let tenant = if names[0] == "kv.keys" {
+                                opt_text(&r, 0).and_then(|t| t.strip_prefix("t:").map(str::to_owned))
+                            } else {
+                                opt_text(&r, 0)
+                            };
+                            let s = scope(tenant);
                             for (i, name) in names.iter().enumerate() {
                                 *values.entry((s.clone(), name)).or_insert(0) += int(&r, i + 1);
                             }

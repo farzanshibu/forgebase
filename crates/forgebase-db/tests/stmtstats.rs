@@ -6,7 +6,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use forgebase_db::stmtstats::{StatementStats, fingerprint_hash, normalize};
+use forgebase_db::stmtstats::{StatementStats, fingerprint_id};
 use forgebase_db::testing::test_backend;
 use forgebase_db::{Backend, Database, Statement, TxMode};
 
@@ -24,12 +24,10 @@ async fn run(db: &Database, sql: &str) {
 }
 
 /// What the process-wide statistics hold for statements shaped like `sql`.
-fn live(sql: &str) -> Option<forgebase_db::stmtstats::StatementAggregate> {
-    let key = format!("{:016x}", fingerprint_hash(sql));
-    StatementStats::global().peek().into_iter().find(|a| {
-        // The PostgreSQL key is salted with its backend.
-        a.text == normalize(sql) && (a.fingerprint == key || a.backend == "postgres")
-    })
+fn live(db: &Database, sql: &str) -> Option<forgebase_db::stmtstats::StatementAggregate> {
+    let backend = if db.kind() == forgebase_db::BackendKind::Postgres { "postgres" } else { "sqlite" };
+    let id = fingerprint_id(backend, sql);
+    StatementStats::global().peek().into_iter().find(|a| a.fingerprint == id)
 }
 
 #[tokio::test]
@@ -48,7 +46,7 @@ async fn queries_that_differ_in_literals_are_one_fingerprint() {
     ))
     .await
     .unwrap();
-    let a = live("SELECT name FROM fp_items WHERE id = 1 AND name = 'a'").expect("one fingerprint");
+    let a = live(db, "SELECT name FROM fp_items WHERE id = 1 AND name = 'a'").expect("one fingerprint");
     assert_eq!(a.calls, 7, "{a:?}");
     assert_eq!(a.text, "select name from fp_items where id = ? and name = ?");
     assert_eq!(a.errors, 0);
@@ -56,7 +54,7 @@ async fn queries_that_differ_in_literals_are_one_fingerprint() {
     assert!(a.total_us >= a.max_us && a.max_us >= a.min_us);
     // Another shape is another row.
     run(db, "SELECT id FROM fp_items WHERE id = 1").await;
-    assert_eq!(live("SELECT id FROM fp_items WHERE id = 9").unwrap().calls, 1);
+    assert_eq!(live(db, "SELECT id FROM fp_items WHERE id = 9").unwrap().calls, 1);
 }
 
 #[tokio::test]
@@ -68,7 +66,7 @@ async fn failed_statements_count_as_errors() {
         .fetch_all(&Statement::raw("SELECT * FROM fp_no_such_table WHERE id = 1"))
         .await;
     assert!(r.is_err());
-    let a = live("SELECT * FROM fp_no_such_table WHERE id = 2").expect("recorded");
+    let a = live(db, "SELECT * FROM fp_no_such_table WHERE id = 2").expect("recorded");
     assert_eq!((a.calls, a.errors), (1, 1), "{a:?}");
 }
 

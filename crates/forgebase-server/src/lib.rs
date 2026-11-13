@@ -1345,6 +1345,16 @@ impl RunningServer {
         self.functions.as_ref()
     }
 
+    /// The key-value engine of this instance.
+    pub fn kv(&self) -> &KvService {
+        &self.kv
+    }
+
+    /// The operations insights service (ADR-0036).
+    pub fn insights(&self) -> &forgebase_insights::InsightsService {
+        &self.insights
+    }
+
     /// The credit ledger of this instance.
     pub fn credits(&self) -> &CreditService {
         &self.credits

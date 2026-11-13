@@ -701,6 +701,12 @@ Keys in the TOML file, with defaults. Ranges are the accepted values.
 | `realtime.max_connections_per_principal` | `32` | `1`–`1000000`. Most simultaneous realtime (WebSocket) connections for one user or API key; the next one gets `429 too_many_connections`. Raise it for a shared service identity that fans out many subscribers. |
 | `billing.enabled` | `true` | Mounts `/api/v1/billing/*` and the provider webhooks. |
 | `billing.webhook_log_retention_days` | `30` | Days the billing webhook inspector keeps each incoming provider webhook (headers, body, outcome) before `billing.maintenance` deletes it (ADR-0032). Bodies hold customer personal data ([security.md §4.9](security.md#49-billing-webhooks-and-store-receipts-forgebase-billing-adr-0021)). |
+| `observability.slow_query_ms` | `200` | Milliseconds, `0`–. A statement at least this slow is listed in the slow statement log (`/api/v1/insights/slow-queries`) with its text, every value replaced by `?` (ADR-0036). `0` lists every statement, up to 200 per flush interval. |
+| `observability.query_stats` | `true` | Aggregate statements by shape (calls, p50/p95/p99, rows, errors). A few atomic additions per statement; [observability.md](observability.md#insights). |
+| `observability.flush_interval_secs` | `60` | `1`–. Seconds between flushes of the statement and function statistics to the database. |
+| `observability.query_stats_top_n` | `200` | `1`–`5000`. Statement shapes written per flush: the busiest by total time; the rest in one summary row. |
+| `observability.retention_days` | `14` | `1`–. Days statement statistics, slow statements and function profiles are kept. Daily tenant usage is kept 400 days. |
+| `observability.function_profiling` | `true` | Time every function host call; per-invocation timeline, fuel and memory. |
 | `storage.enabled`, `functions.enabled`, `queue.enabled`, `realtime.enabled`, `vector.enabled`, `graph.enabled`, `identity.enabled`, `access.enabled` | `true` | Switch a module off: its routes answer `404 feature_disabled` and its workers do not start ([architecture.md §6](architecture.md#6-feature-flags), ADR-0026). |
 | `auth.trust_forwarded_for` | `false` | Client address from the last `X-Forwarded-For` entry. Only behind your own proxy (§5). |
 | `auth.allow_private_outbound` | `false` | The auth service's outbound HTTPS (OAuth/OIDC providers, SMS gateways, Turnstile) refuses loopback, private, link-local and metadata addresses unless this is `true` (an identity provider on your own network). LDAP and S3 endpoints are not affected. |

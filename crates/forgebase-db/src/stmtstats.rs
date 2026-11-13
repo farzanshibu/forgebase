@@ -92,6 +92,19 @@ struct Emitter<'a, S: Sink> {
     last_param: bool,
     /// A `,` after a placeholder is held back: dropped when another placeholder follows.
     held_comma: bool,
+    /// The last token when it was a short word (lower case), for `in (` against `count(`.
+    word: [u8; 10],
+    word_len: usize,
+}
+
+/// Words after which `(` opens a group or a list, not a call or a column list.
+fn is_keyword(w: &[u8]) -> bool {
+    const KEYWORDS: &[&str] = &[
+        "as", "in", "on", "and", "or", "not", "exists", "from", "join", "where", "select", "union", "all", "any",
+        "values", "using", "over", "between", "then", "else", "when", "limit", "offset", "by", "set", "returning",
+        "except", "intersect", "case", "with", "having", "distinct", "conflict", "lateral",
+    ];
+    KEYWORDS.iter().any(|k| k.as_bytes() == w)
 }
 
 #[inline]
@@ -115,6 +128,10 @@ impl<S: Sink> Emitter<'_, S> {
         self.flush_comma();
         self.write(bytes);
         self.last_param = false;
+        if bytes.len() <= self.word.len() && bytes.iter().all(|b| b.is_ascii_alphabetic()) {
+            self.word[..bytes.len()].copy_from_slice(bytes);
+            self.word_len = bytes.len();
+        }
     }
 
     fn space_before(&self, first: u8) -> bool {
@@ -122,8 +139,14 @@ impl<S: Sink> Emitter<'_, S> {
         if !self.started || matches!(first, b')' | b',' | b';' | b'.' | b':') || matches!(p, b'(' | b'.' | b':') {
             return false;
         }
-        // `count(`, `in(`, `t(`: a call or a column list.
-        !(first == b'(' && (is_word(p) || matches!(p, b'"' | b'?' | b'`')))
+        if first == b'(' {
+            // `count(`, `t(`: a call or a column list; `in (`, `values (`: a group.
+            if is_word(p) {
+                return self.word_len > 0 && is_keyword(&self.word[..self.word_len]);
+            }
+            return !matches!(p, b'"' | b'?' | b'`');
+        }
+        true
     }
 
     fn write(&mut self, bytes: &[u8]) {
@@ -132,6 +155,7 @@ impl<S: Sink> Emitter<'_, S> {
             self.sink.put(b' ');
         }
         self.started = true;
+        self.word_len = 0;
         for &b in bytes {
             self.sink.put(b);
         }
@@ -182,6 +206,8 @@ fn scan<S: Sink>(sql: &[u8], sink: &mut S) {
         prev: 0,
         last_param: false,
         held_comma: false,
+        word: [0; 10],
+        word_len: 0,
     };
     let n = sql.len();
     let mut i = 0;
@@ -372,6 +398,17 @@ pub fn fingerprint_hash(sql: &str) -> u64 {
     let mut h = Hasher(0xcbf2_9ce4_8422_2325);
     scan(sql.as_bytes(), &mut h);
     h.0
+}
+
+/// The key a statement of `backend` has in the statistics: its fingerprint
+/// hash, salted per backend.
+pub fn fingerprint_key(backend: &str, sql: &str) -> u64 {
+    fingerprint_hash(sql) ^ if backend == "postgres" { 0x9e37_79b9_7f4a_7c15 } else { 0 }
+}
+
+/// The 16-hex-digit id of a statement in the statistics and the API.
+pub fn fingerprint_id(backend: &str, sql: &str) -> String {
+    format!("{:016x}", fingerprint_key(backend, sql))
 }
 
 /// The reduced text of `sql` (no literal values, whitespace collapsed,
@@ -698,7 +735,7 @@ impl StatementStats {
             return;
         }
         let us = u64::try_from(elapsed.as_micros()).unwrap_or(u64::MAX);
-        let key = fingerprint_hash(sql) ^ if backend == "postgres" { 0x9e37_79b9_7f4a_7c15 } else { 0 };
+        let key = fingerprint_key(backend, sql);
         let shard = &self.shards[(key as usize) % SHARDS];
         {
             let map = shard.read().unwrap_or_else(|p| p.into_inner());
@@ -843,7 +880,7 @@ mod tests {
         assert_eq!(fp("SELECT 1 FROM t WHERE a IN (1, 2, 3)"), fp("SELECT 1 FROM t WHERE a IN (?)"));
         assert_eq!(
             fp("SELECT 1 FROM t WHERE a IN (?, ?, ?, ?) AND b = 1"),
-            "select ? from t where a in(?) and b = ?"
+            "select ? from t where a in (?) and b = ?"
         );
         assert_eq!(fp("SELECT /* hint */ 1 -- x"), "select ?");
         assert_eq!(fp("select a,b from t"), "select a, b from t");
@@ -861,7 +898,7 @@ mod tests {
         ] {
             let n = fp(sql);
             assert!(!n.contains("hunter2") && !n.contains("6875"), "{sql} -> {n}");
-            assert_eq!(n, "insert into t(a) values(?)", "{sql}");
+            assert_eq!(n, "insert into t(a) values (?)", "{sql}");
         }
         assert_eq!(fp("SELECT a::int FROM t WHERE b = :name"), "select a::int from t where b = ?");
         assert_eq!(fp("SELECT col1, \"Mixed Case\" FROM t2"), "select col1, \"Mixed Case\" from t2");

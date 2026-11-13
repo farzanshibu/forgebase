@@ -1028,6 +1028,14 @@ impl FunctionService {
             .contains_key(&(e.row.id.clone(), t.version))
     }
 
+    /// Forgets every compiled module and loaded script: the next execution
+    /// of each function is a cold start (it loads its code again). Deploys
+    /// keep their code cached, so this is what a process restart looks like.
+    pub fn evict_caches(&self) {
+        self.inner.modules.lock().unwrap_or_else(|p| p.into_inner()).clear();
+        self.inner.scripts.lock().unwrap_or_else(|p| p.into_inner()).clear();
+    }
+
     /// The host-call profile aggregates (ADR-0036 §3): drained by
     /// `forgebase-insights`, switched by `[observability] function_profiling`.
     pub fn profiler(&self) -> &Arc<profile::FnProfiler> {
