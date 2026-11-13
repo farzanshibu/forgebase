@@ -21,7 +21,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use anyhow::bail;
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 
 use super::model::{self, Area, Code, Desired, Extra, FunctionExtra, Kind};
 use super::schema::{self, Seg};
@@ -877,6 +877,14 @@ fn load_policies(dir: &Path, errs: &mut Errors, out: &mut Vec<Desired>) {
             continue;
         }
         for (name, rules) in v["rules"].as_object().into_iter().flatten() {
+            if rules.as_object().is_some_and(Map::is_empty) {
+                src.report(
+                    errs,
+                    &[Seg::Key("rules".into()), Seg::Key(name.clone())],
+                    "needs at least one action; remove the entry to drop the resource's rules",
+                );
+                continue;
+            }
             out.push(Desired {
                 kind: Kind::Policy,
                 name: format!("{rkind}/{name}"),

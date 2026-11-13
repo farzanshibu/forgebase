@@ -99,7 +99,6 @@ pub async fn execute(
     let mut ctx = Ctx {
         remote,
         project,
-        opts,
         outcome: Outcome::default(),
         ids: remote
             .collection_names()
@@ -147,6 +146,30 @@ pub async fn execute(
             writeln!(out, "  added relation fields to collection {name}")?;
         }
     }
+    // --update-secrets: every secret of every function again (values cannot be compared).
+    if opts.update_secrets && project.config.manages(Kind::Function) {
+        for d in project.resources.iter().filter(|r| r.kind == Kind::Function) {
+            let id = format!("function:{}", d.name);
+            let Extra::Function(fx) = &d.extra else { continue };
+            if fx.secrets.is_empty() || failed.contains(&id) {
+                continue;
+            }
+            let mut result = Ok(());
+            for (key, var) in &fx.secrets {
+                result = ctx.put_secret(&d.name, key, var).await;
+                if result.is_err() {
+                    break;
+                }
+            }
+            match result {
+                Ok(()) => writeln!(out, "  sent {} secret(s) of function {}", fx.secrets.len(), d.name)?,
+                Err(e) => {
+                    writeln!(out, "  FAILED function {} (secrets): {e:#}", d.name)?;
+                    ctx.outcome.failed.push((id, format!("{e:#}")));
+                }
+            }
+        }
+    }
     let mut outcome = ctx.outcome;
     if !outcome.secrets.is_empty() {
         match &opts.secrets_out {
@@ -186,7 +209,6 @@ enum Done {
 struct Ctx<'a> {
     remote: &'a Remote,
     project: &'a Project,
-    opts: &'a Options,
     outcome: Outcome,
     /// Collection name -> id.
     ids: HashMap<String, String>,
@@ -238,6 +260,10 @@ impl Ctx<'_> {
         let current = self.remote.fetch_one(c.kind, c.server_name()).await?;
         let now = current.as_ref().map(Actual::fingerprint);
         if now == c.fingerprint {
+            return Ok(None);
+        }
+        // A replacement whose resource is already gone (a replaced topic takes its subscriptions along).
+        if c.action == Action::Replace && current.is_none() {
             return Ok(None);
         }
         // Already converged (a re-run of the same plan)?
@@ -686,6 +712,20 @@ impl Ctx<'_> {
 
     // ----- functions --------------------------------------------------------
 
+    /// Sets one function secret from its environment variable.
+    async fn put_secret(&self, function: &str, key: &str, var: &str) -> anyhow::Result<()> {
+        let value = std::env::var(var)
+            .map_err(|_| anyhow!("secret {key} of function {function}: environment variable {var} is not set"))?;
+        self.remote
+            .call(
+                "PUT",
+                &format!("/api/v1/functions/{}/secrets/{}", enc(function), enc(key)),
+                Some(&json!({"value": value})),
+            )
+            .await
+            .map(|_| ())
+    }
+
     async fn function(&self, c: &Change) -> anyhow::Result<()> {
         let d = self.desired(c)?;
         let Extra::Function(fx) = &d.extra else {
@@ -710,6 +750,14 @@ impl Ctx<'_> {
         };
         let view = before.as_ref().map(|a| model::managed_view(Kind::Function, s, &a.spec));
         if view.as_ref().is_none_or(|v| strip(v) != strip(s)) {
+            // Limits the file leaves out keep the server's value (the deploy API would reset them).
+            let mut limits = before
+                .as_ref()
+                .and_then(|a| a.spec["limits"].as_object().cloned())
+                .unwrap_or_default();
+            for (k, v) in s["limits"].as_object().into_iter().flatten() {
+                limits.insert(k.clone(), v.clone());
+            }
             let mut body = json!({
                 "name": d.name,
                 "description": s["description"],
@@ -718,7 +766,7 @@ impl Ctx<'_> {
                 "fetch_hosts": s["fetch_hosts"],
                 "env": s["env"],
                 "hooks": s["hooks"],
-                "limits": s["limits"],
+                "limits": limits,
                 "activate": true,
             });
             match code {
@@ -739,22 +787,9 @@ impl Ctx<'_> {
             .filter_map(|v| v.as_str().map(str::to_owned))
             .collect();
         for (key, var) in &fx.secrets {
-            if have.contains(key) && !self.opts.update_secrets {
-                continue;
+            if !have.contains(key) {
+                self.put_secret(&d.name, key, var).await?;
             }
-            let value = std::env::var(var).map_err(|_| {
-                anyhow!(
-                    "secret {key} of function {}: environment variable {var} is not set",
-                    d.name
-                )
-            })?;
-            self.remote
-                .call(
-                    "PUT",
-                    &format!("{path}/secrets/{}", enc(key)),
-                    Some(&json!({"value": value})),
-                )
-                .await?;
         }
         for key in have.iter().filter(|k| !fx.secrets.contains_key(*k)) {
             tolerate_404(

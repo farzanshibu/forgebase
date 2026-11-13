@@ -315,6 +315,12 @@ fn new_apply_pull_round_trip_drift_and_concurrency() {
     assert!(out.contains("No changes"), "{out}");
     let out = fb.ok(&["project", "apply", "--dir", dir, "--auto-approve"], &env);
     assert!(out.contains("No changes"), "{out}");
+    // Secret values cannot be compared: --update-secrets sends them again.
+    let out = fb.ok(
+        &["project", "apply", "--dir", dir, "--auto-approve", "--update-secrets"],
+        &[("SLACK_WEBHOOK_URL", "https://hooks.slack.com/services/rotated")],
+    );
+    assert!(out.contains("sent 1 secret(s) of function order-created"), "{out}");
 
     // pull → plan: no changes; pulling twice gives the same bytes; no secret on disk.
     fb.ok(&["project", "pull", "--dir", "pulled"], &[]);
@@ -415,6 +421,36 @@ fn new_apply_pull_round_trip_drift_and_concurrency() {
     edit(&sub_file, |v| v["ack_deadline_ms"] = json!(50000));
     let (_, err) = fb.code(1, &["project", "apply", "--dir", dir, "--plan", &plan_arg], &env);
     assert!(err.contains("not in the saved plan"), "{err}");
+
+    // A topic's record source cannot change: the topic is replaced, and its subscription with it.
+    let topic_file = root.join(dir).join("queues/topics/order-events.json");
+    edit(&topic_file, |v| v["source"]["ops"] = json!(["create"]));
+    let (out, _) = fb.code(2, &["project", "plan", "--dir", dir], &[]);
+    assert!(out.contains("-/+ topic order-events  [replace, destructive]"), "{out}");
+    assert!(
+        out.contains("-/+ subscription order-events-audit  [replace, destructive]"),
+        "{out}"
+    );
+    fb.ok(
+        &[
+            "project",
+            "apply",
+            "--dir",
+            dir,
+            "--auto-approve",
+            "--allow-destructive",
+        ],
+        &env,
+    );
+    assert_eq!(
+        fb.get("/api/v1/queues/topics/order-events")["source"]["ops"],
+        json!(["create"])
+    );
+    assert_eq!(
+        fb.get("/api/v1/queues/subscriptions/order-events-audit")["ack_deadline_ms"],
+        50000
+    );
+    fb.code(0, &["project", "plan", "--dir", dir], &[]);
 }
 
 /// Field type changes and collection removal are destructive: deletions only
@@ -806,4 +842,97 @@ fn webassembly_functions_and_environments() {
     assert!(err.contains("has no environment \"nope\""), "{err}");
     let (_, err) = fb.code(1, &["project", "plan", "--dir", &d, "--env", "unknown"], &[]);
     assert!(err.contains("no [environments.unknown] table"), "{err}");
+}
+
+/// A TLS-terminating proxy in front of the server (certificate of the
+/// forgebase-auth test CA, for `localhost`); returns its port.
+fn tls_proxy(upstream: String) -> u16 {
+    use rustls::pki_types::pem::PemObject;
+    use rustls::pki_types::{CertificateDer, PrivateKeyDer};
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("../forgebase-auth/tests/fixtures");
+    let certs: Vec<CertificateDer<'static>> = CertificateDer::pem_file_iter(fixtures.join("tls-server.pem"))
+        .unwrap()
+        .map(|c| c.unwrap())
+        .collect();
+    let key = PrivateKeyDer::from_pem_file(fixtures.join("tls-server.key")).unwrap();
+    let cfg =
+        rustls::ServerConfig::builder_with_provider(std::sync::Arc::new(rustls::crypto::ring::default_provider()))
+            .with_safe_default_protocol_versions()
+            .unwrap()
+            .with_no_client_auth()
+            .with_single_cert(certs, key)
+            .unwrap();
+    let acceptor = tokio_rustls::TlsAcceptor::from(std::sync::Arc::new(cfg));
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    listener.set_nonblocking(true).unwrap();
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async move {
+            let listener = tokio::net::TcpListener::from_std(listener).unwrap();
+            loop {
+                let Ok((tcp, _)) = listener.accept().await else { return };
+                let acceptor = acceptor.clone();
+                let upstream = upstream.clone();
+                tokio::spawn(async move {
+                    let Ok(mut tls) = acceptor.accept(tcp).await else {
+                        return;
+                    };
+                    let Ok(mut up) = tokio::net::TcpStream::connect(&upstream).await else {
+                        return;
+                    };
+                    let _ = tokio::io::copy_bidirectional(&mut tls, &mut up).await;
+                });
+            }
+        });
+    });
+    port
+}
+
+/// `--server https://...` with `--ca-file`: plan and apply through TLS; an
+/// untrusted certificate is refused.
+#[test]
+fn apply_over_https_with_a_private_ca() {
+    let fb = Fb::start();
+    let port = tls_proxy(fb.addr.clone());
+    fb.ok(&["new", "web", "--template", "basic"], &[]);
+    let ca = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../forgebase-auth/tests/fixtures/tls-ca.pem")
+        .display()
+        .to_string();
+    let url = format!("https://localhost:{port}");
+    let https = [("FORGEBASE_URL", url.as_str())];
+    let (out, _) = fb.code(
+        2,
+        &["project", "plan", "--dir", "web/forgebase", "--ca-file", &ca],
+        &https,
+    );
+    assert!(out.contains(&format!("against https://localhost:{port}")), "{out}");
+    fb.ok(
+        &[
+            "project",
+            "apply",
+            "--dir",
+            "web/forgebase",
+            "--ca-file",
+            &ca,
+            "--auto-approve",
+        ],
+        &https,
+    );
+    assert_eq!(fb.api("GET", "/api/v1/collections/todos", None).0, 200);
+    fb.code(
+        0,
+        &["project", "plan", "--dir", "web/forgebase"],
+        &[("FORGEBASE_URL", url.as_str()), ("FORGEBASE_CA_FILE", ca.as_str())],
+    );
+    // Without the CA the certificate is not trusted: no fallback to plain HTTP.
+    let (_, err) = fb.code(1, &["project", "plan", "--dir", "web/forgebase"], &https);
+    assert!(
+        err.contains("cannot reach the server") && err.to_lowercase().contains("certificate"),
+        "{err}"
+    );
 }

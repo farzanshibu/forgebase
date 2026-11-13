@@ -54,6 +54,9 @@ rustix = { version = "1.1.6", default-features = false, features = ["std", "proc
 [dev-dependencies]
 # node_e2e mounts the agent endpoints (FB-168) on a test router.
 axum.workspace = true
+# project_e2e puts a TLS-terminating proxy in front of the server (ADR-0037).
+rustls.workspace = true
+tokio-rustls.workspace = true
 futures-util = { workspace = true, features = ["sink"] }
 sha2.workspace = true
 tempfile.workspace = true
