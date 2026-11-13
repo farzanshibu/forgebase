@@ -1,0 +1,10 @@
+# Backup CronJob writing to a second PVC.
+backup:
+  enabled: true
+  noIndexes: true
+  keepLast: 10
+  destination:
+    type: volume
+    volume:
+      size: 50Gi
+      storageClass: standard

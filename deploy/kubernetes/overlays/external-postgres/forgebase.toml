@@ -1,0 +1,20 @@
+# forgebase.toml for an external PostgreSQL server. The URL holds a password,
+# so it is not here: the pod reads FORGEBASE_DATABASE_URL from a Secret.
+data_dir = "/data"
+
+[server]
+host = "0.0.0.0"
+port = 8090
+ops_access = "loopback"
+# public_url = "https://forgebase.example.com"
+
+[database]
+backend = "postgres"
+
+[database.postgres]
+mode = "external"
+# pool_size = 16
+
+[log]
+format = "json"
+level = "info"
