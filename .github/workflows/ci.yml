@@ -328,3 +328,20 @@ jobs:
         run: deploy/helm/validate.sh
       - name: kubectl kustomize and kubeconform
         run: deploy/kubernetes/validate.sh
+
+  # Kotlin SDK (Android and JVM): a pure Kotlin/JVM Gradle library. The tests
+  # run against MockWebServer (HTTP, WebSocket, SSE), so no server is needed.
+  kotlin-sdk:
+    name: kotlin sdk (gradle test)
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: sdk/kotlin
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@v4
+      - run: ./gradlew test build --no-daemon

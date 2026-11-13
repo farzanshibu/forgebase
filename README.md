@@ -23,6 +23,7 @@ functions and billing. SQLite is the optional one-file alternative.
 - Redis protocol listener (off by default), TOML config and `FORGEBASE_*`
   environment variables, `.env` for development.
 - JavaScript SDK in [`sdk/js`](sdk/js).
+- Kotlin SDK for Android and the JVM in [`sdk/kotlin`](sdk/kotlin).
 - Docker image, Docker Compose file, a hardened systemd unit, and a release
   workflow for five targets.
 
