@@ -328,3 +328,19 @@ jobs:
         run: deploy/helm/validate.sh
       - name: kubectl kustomize and kubeconform
         run: deploy/kubernetes/validate.sh
+
+  sdk-dart:
+    name: Dart SDK (analyze, format, test)
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: sdk/dart
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: stable
+      - run: dart pub get
+      - run: dart analyze --fatal-infos
+      - run: dart format --output=none --set-exit-if-changed .
+      - run: dart test
