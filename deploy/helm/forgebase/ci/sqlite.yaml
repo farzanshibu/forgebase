@@ -1,0 +1,11 @@
+# SQLite on the standard image.
+database:
+  backend: sqlite
+persistence:
+  size: 5Gi
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    memory: 1Gi

@@ -1,0 +1,111 @@
+{{- if .Values.backup.enabled }}
+{{- $b := .Values.backup -}}
+{{- $volume := eq $b.destination.type "volume" -}}
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "forgebase.fullname" . }}-backup
+  labels:
+    {{- include "forgebase.labels" . | nindent 4 }}
+spec:
+  schedule: {{ $b.schedule | quote }}
+  {{- with $b.timeZone }}
+  timeZone: {{ . | quote }}
+  {{- end }}
+  concurrencyPolicy: {{ $b.concurrencyPolicy }}
+  startingDeadlineSeconds: {{ int $b.startingDeadlineSeconds }}
+  successfulJobsHistoryLimit: {{ int $b.successfulJobsHistoryLimit }}
+  failedJobsHistoryLimit: {{ int $b.failedJobsHistoryLimit }}
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: {{ int $b.activeDeadlineSeconds }}
+      template:
+        metadata:
+          labels:
+            # Not the server's selector labels: the Service must never route to this pod.
+            app.kubernetes.io/name: {{ include "forgebase.name" . }}-backup
+            app.kubernetes.io/instance: {{ .Release.Name }}
+            app.kubernetes.io/component: backup
+          {{- with $b.podAnnotations }}
+          annotations:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+        spec:
+          serviceAccountName: {{ include "forgebase.fullname" . }}-backup
+          restartPolicy: Never
+          enableServiceLinks: false
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: backup
+              image: "{{ $b.image.repository }}:{{ $b.image.tag }}"
+              imagePullPolicy: {{ $b.image.pullPolicy }}
+              # Runs `forgebase backup` inside the server pod: the CLI finds the
+              # running bundled PostgreSQL through its postmaster pid, which a
+              # separate pod could not see.
+              command: ["kubectl"]
+              args:
+                - exec
+                - --namespace={{ .Release.Namespace }}
+                - {{ include "forgebase.podName" . }}
+                - --container=forgebase
+                - --
+                {{- if $volume }}
+                - sh
+                - -c
+                - |
+                  set -eu
+                  dest="/backups/$(date -u +%Y%m%dT%H%M%SZ)"
+                  forgebase backup "$dest" --label k8s-cronjob{{ if $b.noIndexes }} --no-indexes{{ end }}{{ if $b.includeMasterKey }} --include-master-key{{ end }}
+                  {{- if gt (int $b.keepLast) 0 }}
+                  # Keep the newest {{ int $b.keepLast }} dated directories.
+                  find /backups -mindepth 1 -maxdepth 1 -type d -name '20??????T??????Z' | sort | head -n -{{ int $b.keepLast }} | while read -r old; do rm -rf -- "$old"; done
+                  {{- end }}
+                {{- else }}
+                - forgebase
+                - backup
+                - --label=k8s-cronjob
+                {{- if gt (int $b.keepLast) 0 }}
+                - --keep-last={{ int $b.keepLast }}
+                {{- end }}
+                {{- if gt (int $b.maxAgeDays) 0 }}
+                - --max-age-days={{ int $b.maxAgeDays }}
+                {{- end }}
+                {{- if $b.noIndexes }}
+                - --no-indexes
+                {{- end }}
+                {{- if $b.includeMasterKey }}
+                - --include-master-key
+                {{- end }}
+                {{- end }}
+              env:
+                - name: HOME
+                  value: /tmp
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop:
+                    - ALL
+              resources:
+                {{- toYaml $b.resources | nindent 16 }}
+              volumeMounts:
+                - name: tmp
+                  mountPath: /tmp
+          volumes:
+            - name: tmp
+              emptyDir: {}
+          {{- with $b.nodeSelector }}
+          nodeSelector:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with $b.tolerations }}
+          tolerations:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+{{- end }}

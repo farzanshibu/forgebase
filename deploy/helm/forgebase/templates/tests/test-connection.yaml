@@ -1,0 +1,31 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ include "forgebase.fullname" . }}-test
+  labels:
+    {{- include "forgebase.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: test
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  restartPolicy: Never
+  automountServiceAccountToken: false
+  enableServiceLinks: false
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 10001
+    runAsGroup: 10001
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: readiness
+      image: {{ include "forgebase.image" . | quote }}
+      imagePullPolicy: {{ .Values.image.pullPolicy }}
+      # The image has curl (its HEALTHCHECK uses it).
+      command: ["curl", "-fsS", "--max-time", "10", "{{ .Values.probes.scheme | lower }}://{{ include "forgebase.fullname" . }}:{{ int .Values.service.port }}/health/ready"]
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop:
+            - ALL
