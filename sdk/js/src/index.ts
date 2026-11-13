@@ -24,13 +24,15 @@ export type {
   ChannelMessage, PresenceEvent, PresenceMember, RealtimeConfig, RealtimeEvent, RealtimeHandler, RealtimeState, RealtimeTransport,
   RecordEvent, ResetEvent, SubscribeOptions, Subscription, TokenSource, WebSocketCtor, WebSocketLike,
 } from "./realtime";
+export { DEFAULT_WEBHOOK_TOLERANCE_SECONDS, WEBHOOK_SIGNATURE_HEADER, constructWebhookEvent, signWebhook, verifyWebhookSignature } from "./webhooks";
+export type { SignWebhookOptions, VerifyWebhookOptions, WebhookBody, WebhookEvent, WebhookFailureReason } from "./webhooks";
 export { COMMIT_HEADER, CONSISTENCY_HEADER, CommitTokens, READ_AFTER_HEADER } from "./consistency";
 export type { Consistency } from "./consistency";
 export { Transport, DEFAULT_RETRY } from "./http";
 export type { FetchLike, RequestOptions, RetryOptions } from "./http";
 export {
   ApiError, AuthenticationError, ConflictError, ForgeBaseError, InvalidResponseError, NetworkError, NotFoundError, PermissionError,
-  QuotaExceededError, RateLimitError, RealtimeError, ServerError, ValidationError, parseRetryAfter,
+  QuotaExceededError, RateLimitError, RealtimeError, ServerError, ValidationError, WebhookVerificationError, parseRetryAfter,
 } from "./errors";
 export type { FieldError } from "./errors";
 export type { components, paths, Schemas } from "./types";
