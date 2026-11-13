@@ -317,12 +317,9 @@ jobs:
         working-directory: sdk/swift
         run: swift test
       # The library also has to compile for the other Apple platforms.
-      - name: xcodebuild (iOS, tvOS, visionOS)
+      - name: xcodebuild (iOS, tvOS, visionOS, watchOS)
         working-directory: sdk/swift
         run: |
-          for platform in iOS tvOS visionOS; do
+          for platform in iOS tvOS visionOS watchOS; do
             xcodebuild build -scheme ForgeBase -destination "generic/platform=$platform" CODE_SIGNING_ALLOWED=NO -quiet
           done
-      - name: xcodebuild (watchOS)
-        working-directory: sdk/swift
-        run: xcodebuild build -scheme ForgeBase -destination "generic/platform=watchOS" CODE_SIGNING_ALLOWED=NO -quiet
