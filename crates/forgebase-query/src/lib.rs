@@ -6,14 +6,21 @@
 //!   collection schema into parameterised SQL through a
 //!   [`forgebase_db::Dialect`].
 //! * [`sql`]: tokenizer, statement splitter and classifier for raw SQL.
+//! * [`cypher`]: the openCypher subset of the portable graph engine
+//!   (tokenizer, recursive-descent parser, syntax tree; ADR-0034).
+//! * [`trigram`]: `pg_trgm`'s trigram model for the portable fuzzy-search
+//!   engine (ADR-0034).
 //!
 //! No I/O happens here, so everything is unit-tested in isolation, including
 //! injection attempts.
 
 pub mod compile;
+pub mod cypher;
 pub mod filter;
 pub mod native;
 pub mod sql;
+pub mod trigram;
+mod trigram_fold;
 
 pub use compile::{Catalog, CompileOptions, Compiler, FieldGuard, ScalarType, SqlBuilder, filter_keys, query_label};
 pub use filter::{

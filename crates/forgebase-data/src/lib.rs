@@ -28,6 +28,7 @@ pub mod changes;
 pub mod collections;
 mod ddl;
 mod error;
+pub mod fuzzy;
 mod guard;
 pub mod indexes;
 pub mod list;

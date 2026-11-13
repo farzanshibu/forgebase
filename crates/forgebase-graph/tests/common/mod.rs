@@ -1,6 +1,8 @@
 //! Harness: the graph router over a real SQLite database, driven in-process.
 #![allow(dead_code, clippy::unwrap_used, clippy::expect_used)]
 
+pub mod fixture;
+
 use std::sync::Arc;
 
 use axum::Router;

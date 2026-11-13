@@ -1,10 +1,15 @@
-//! openCypher on the derived Apache AGE graph (ADR-0029 §1.5, FB-163):
-//! `POST /graph/cypher`, `POST /graph/cypher/drop` and the
-//! `graph.materialise` job.
+//! openCypher: `POST /graph/cypher` on two engines, and, on the derived
+//! Apache AGE graph (ADR-0029 §1.5, FB-163), `POST /graph/cypher/drop` and
+//! the `graph.materialise` job.
 //!
-//! * **PostgreSQL with AGE only**; elsewhere (SQLite, Windows, servers
-//!   without AGE, `graph = "off"`) `400 cypher_unsupported`. The REST graph
-//!   API is the same everywhere.
+//! * **Engines** (ADR-0034): where AGE is in use (PostgreSQL with the
+//!   extension, `graph = "auto"` or `"on"`) the query runs on AGE as below;
+//!   everywhere else (SQLite, Windows engines, servers without AGE, `graph =
+//!   "off"`) the portable engine ([`crate::portable`]) compiles a read-only
+//!   subset of openCypher to SQL over the canonical tables. The response's
+//!   `engine` (`age` or `portable`) says which one answered. `drop` and the
+//!   materialise job exist for AGE only (`400 cypher_unsupported`
+//!   elsewhere). The rest of this list is the AGE engine.
 //! * **Permission**: `engine:graph_cypher` ([`Action::GraphCypher`]), not
 //!   implied by `engine:graph_read`; the caller's graph label and edge-type
 //!   rules (asked with [`Action::GraphRead`], operation `list`) apply inside
@@ -97,6 +102,53 @@ pub struct CypherResult {
     pub rows: Vec<Vec<Json>>,
     /// More rows matched than `limit`.
     pub truncated: bool,
+    /// The engine that answered: `age` (Apache AGE on the derived graph) or
+    /// `portable` (SQL over the canonical tables, ADR-0034).
+    pub engine: String,
+}
+
+/// A request's checked limits.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Checked {
+    pub(crate) limit: u32,
+    pub(crate) timeout_ms: u32,
+}
+
+/// Checks the parts of a request both engines share: query size, `limit`,
+/// `timeout_ms`, `params`.
+pub(crate) fn check_request(q: &CypherQuery) -> Result<Checked> {
+    let query = q.query.trim();
+    if query.is_empty() || query.len() > MAX_QUERY_BYTES {
+        return Err(GraphError::invalid(
+            "cypher_invalid",
+            format!("query must be 1 to {MAX_QUERY_BYTES} bytes"),
+        ));
+    }
+    let limit = match q.limit {
+        None => DEFAULT_LIMIT,
+        Some(l) if (1..=MAX_LIMIT).contains(&l) => l,
+        Some(_) => {
+            return Err(GraphError::invalid(
+                "invalid_limit",
+                format!("limit must be 1 to {MAX_LIMIT}"),
+            ));
+        }
+    };
+    let timeout_ms = match q.timeout_ms {
+        None => DEFAULT_TIMEOUT_MS,
+        Some(t) if (1..=MAX_TIMEOUT_MS).contains(&t) => t,
+        Some(_) => {
+            return Err(GraphError::invalid(
+                "invalid_timeout",
+                format!("timeout_ms must be 1 to {MAX_TIMEOUT_MS}"),
+            ));
+        }
+    };
+    match &q.params {
+        None | Some(Json::Null | Json::Object(_)) => {}
+        Some(_) => return Err(GraphError::invalid("cypher_invalid", "params must be a JSON object")),
+    }
+    Ok(Checked { limit, timeout_ms })
 }
 
 /// The state of a tenant's derived openCypher graph (in `GET /graph/stats`).
@@ -158,10 +210,22 @@ impl GraphService {
         self
     }
 
-    /// Runs one read-only openCypher query on the caller's tenant's derived
-    /// graph (see the module documentation).
+    /// Runs one read-only openCypher query on the caller's tenant's graph:
+    /// on the derived Apache AGE graph where AGE is in use, else on the
+    /// portable engine (see the module documentation).
     pub async fn cypher(&self, ctx: &AccessContext, q: CypherQuery) -> Result<CypherResult> {
-        self.on(ctx).await?.cypher_here(ctx, q).await
+        let g = self.on(ctx).await?;
+        if g.age_on() {
+            g.cypher_here(ctx, q).await
+        } else {
+            g.cypher_portable_here(ctx, q).await
+        }
+    }
+
+    /// The openCypher engine this server answers with: `age` or
+    /// `portable` (ADR-0034).
+    pub fn cypher_engine(&self) -> &'static str {
+        if self.age_on() { "age" } else { crate::portable::ENGINE }
     }
 
     /// Drops the caller's tenant's derived graph (it is rebuilt on next use).
@@ -234,37 +298,14 @@ impl GraphService {
         }
         let tenant = self.tenant_of(ctx, Action::GraphCypher)?;
         self.data.authorize_action(ctx, Action::GraphCypher)?;
+        let Checked {
+            limit,
+            timeout_ms: timeout,
+        } = check_request(&q)?;
         let query = q.query.trim();
-        if query.is_empty() || query.len() > MAX_QUERY_BYTES {
-            return Err(GraphError::invalid(
-                "cypher_invalid",
-                format!("query must be 1 to {MAX_QUERY_BYTES} bytes"),
-            ));
-        }
-        let limit = match q.limit {
-            None => DEFAULT_LIMIT,
-            Some(l) if (1..=MAX_LIMIT).contains(&l) => l,
-            Some(_) => {
-                return Err(GraphError::invalid(
-                    "invalid_limit",
-                    format!("limit must be 1 to {MAX_LIMIT}"),
-                ));
-            }
-        };
-        let timeout = match q.timeout_ms {
-            None => DEFAULT_TIMEOUT_MS,
-            Some(t) if (1..=MAX_TIMEOUT_MS).contains(&t) => t,
-            Some(_) => {
-                return Err(GraphError::invalid(
-                    "invalid_timeout",
-                    format!("timeout_ms must be 1 to {MAX_TIMEOUT_MS}"),
-                ));
-            }
-        };
         let params = match q.params {
-            None | Some(Json::Null) => None,
             Some(p @ Json::Object(_)) => Some(p.to_string()),
-            Some(_) => return Err(GraphError::invalid("cypher_invalid", "params must be a JSON object")),
+            _ => None,
         };
         let tag = format!("fb{}", &uuid::Uuid::new_v4().simple().to_string()[..16]);
         let checked = tokenize::check(query, &tag).map_err(|r| GraphError::invalid(r.code, r.message))?;
@@ -314,11 +355,17 @@ impl GraphService {
             let Some(forgebase_db::Value::Text(t)) = r.first() else {
                 return Err(GraphError::Internal("openCypher row is not text".into()));
             };
-            let cells: Vec<String> = serde_json::from_str(t).map_err(|e| GraphError::Internal(e.to_string()))?;
+            // A cell is SQL NULL where AGE returns no agtype at all (a
+            // missing property): JSON null.
+            let cells: Vec<Option<String>> =
+                serde_json::from_str(t).map_err(|e| GraphError::Internal(e.to_string()))?;
             out.push(
                 cells
                     .iter()
-                    .map(|c| age::agtype::parse(c).map_err(GraphError::Internal))
+                    .map(|c| match c {
+                        Some(c) => age::agtype::parse(c).map_err(GraphError::Internal),
+                        None => Ok(Json::Null),
+                    })
                     .collect::<Result<Vec<_>>>()?,
             );
         }
@@ -328,6 +375,7 @@ impl GraphService {
             columns: checked.columns,
             rows: out,
             truncated,
+            engine: "age".to_owned(),
         })
     }
 
@@ -462,7 +510,7 @@ fn stuck(updated_at: &str) -> bool {
 }
 
 /// Engine errors of a query, as the caller's errors where they are.
-fn cypher_error(e: DbError) -> GraphError {
+pub(crate) fn cypher_error(e: DbError) -> GraphError {
     match &e {
         DbError::ReadOnly(m) => {
             GraphError::invalid("cypher_read_only", format!("openCypher queries are read-only: {m}"))

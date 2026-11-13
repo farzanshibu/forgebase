@@ -1,0 +1,6 @@
+# External PostgreSQL with an inline URL (the chart writes the Secret).
+database:
+  postgres:
+    mode: external
+    external:
+      url: postgres://forgebase:pw@db.example.com:5432/forgebase?sslmode=require

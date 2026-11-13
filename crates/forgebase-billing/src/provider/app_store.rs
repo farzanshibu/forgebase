@@ -306,6 +306,10 @@ impl StoreProvider for AppStoreProvider {
         "app_store"
     }
 
+    fn account(&self) -> Option<String> {
+        Some(self.cfg.bundle_id.clone()).filter(|a| !a.is_empty())
+    }
+
     fn verify_purchase<'a>(&'a self, claim: &'a PurchaseClaim) -> BoxFuture<'a, Result<StorePurchase>> {
         Box::pin(async move {
             let tx = match (&claim.signed_transaction, &claim.transaction_id) {

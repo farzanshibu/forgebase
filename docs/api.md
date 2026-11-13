@@ -29,6 +29,13 @@ Decisions behind these conventions: [ADR-0001 §6–7](adr/0001-architecture.md)
 Example: `GET /api/system/info` returns the instance information; `GET /health`
 is the probe a load balancer should use.
 
+`GET /api/system/info` also has a `tls` object (ADR-0033): `{"mode": "off"}`
+behind a proxy; with native TLS the mode, `min_version`, `alpn`, the served
+`certificate` (`subject`, `names`, `issuer`, `serial`, `not_before`,
+`not_after`, `expires_in_secs`), `last_error`, and per mode `cert_file`,
+`last_reload` (files) or `domains`, `directory_url`, `last_renewal`,
+`next_renewal`, `renewal_failures` (ACME).
+
 ## 2. Versioning
 
 Inside `/api/v1`, changes are additive only: new fields, new endpoints, new
@@ -202,6 +209,36 @@ Permissions are the policy keys `engine:queue_read`, `engine:queue_publish`,
 endpoint through the same outbound address guard as functions `fetch`
 ([security.md](security.md)).
 
+#### Webhook delivery tooling
+
+Debugging and operating push subscriptions ([ADR-0031](adr/0031-webhook-tooling.md)).
+Reads need `engine:queue_read`, everything else `engine:queue_admin`, on the
+subscription (its creator holds both). Bodies marked optional may be empty.
+
+| Route | Purpose |
+|---|---|
+| `GET .../attempts` | Push attempts, newest first: deliveries and test sends with `status`, `latency_ms`, `error_class` (`timeout`, `dns`, `connect`, `tls`, `ssrf_refused`, `http_status`, `redirect`, `protocol`, `invalid_request`, `config`, `function`), the request headers sent (signature masked), allowlisted response headers and the response body cut to `[queue] push_response_body_bytes` (`response_truncated`, `response_bytes`). Filters `outcome`, `message_id`, `since`, `until`, `test`; paging `before` / `next_before`, `limit`. |
+| `GET .../attempts/{id}` | One attempt (`404 attempt_not_found`). |
+| `POST .../test` | Optional `{"data": <json>}`. Sends a synthetic signed event now (`"type": "forgebase.test"` in the usual `{subscription, delivery_attempt, message}` envelope, header `X-Forgebase-Test: 1`) and returns the attempt. Not a message: cursors, totals, health and dead letters are untouched. `[queue] push_test_sends_per_minute` per subscription (`429 rate_limited`); pull subscriptions answer `409 not_push_subscription`. |
+| `POST .../redrive` | `{"ids": [..]}` or `{"all": true, "since": "<RFC 3339>", "filter": {...}, "limit": n}`. Delivers dead letters to the subscription again with a fresh attempt counter. Each record is redriven once (`redriven_at`, `redriven_by` on the dead letter), also under concurrent calls; the result lists `redriven`, `already_redriven`, `not_found` and `remaining`. Audited (`queue.dead_letters.redrive`). |
+| `POST .../retry` | Optional `{"message_ids": [..]}`. Deliveries waiting for a retry backoff become ready now. |
+| `POST .../secret/rotate` | Optional `{"grace_ms": n}` (default 24 h, at most 7 days). Returns the new `push_secret` once. During the grace window `X-Forgebase-Signature` carries both signatures, new first: `t=<ts>,v1=<new>,v1=<old>`; afterwards only the new one. Receivers must accept the request when **any** `v1` matches. `409 not_webhook_subscription` for functions. |
+| `POST .../secret/expire-previous` | Ends the grace window now. |
+| `POST .../pause`, `POST .../resume` | Optional `{"reason": ".."}` on pause. A paused push subscription keeps accumulating messages (none is dead-lettered while paused); resume makes every delayed delivery ready and delivers the backlog in order. `pause_after_failures` on a subscription (1-1000, `0` in a change turns it off) pauses it automatically after that many consecutive failed attempts (`paused_reason` starts with `auto:`). |
+| `GET /queues/catalog` | Every topic the caller may read with `description`, `data_schema`, `example` and `example_source` (`topic`, `schema`, `none`); record-source topics list their `event_types` (`record.created`, `record.updated`, `record.deleted`) with the subscription `filter` that selects each, the change message schema (the collection's fields, when the caller may read its schema) and an example. Topics take `description` and `example` (checked against the schema) on create and change. |
+
+`GET .../metrics` of a push subscription adds `push`: success rate and p50/p95/p99
+latency of the last hour (newest 1000 attempts, test sends excluded),
+`consecutive_failures`, `last_success_at`, `last_failure_at`, `last_error` and the
+pause state. Prometheus: `forgebase_queue_push_attempts_total{subscription,outcome}`,
+`forgebase_queue_push_latency_seconds`, `forgebase_queue_push_consecutive_failures`,
+`forgebase_queue_push_paused`, `forgebase_queue_push_auto_paused_total`,
+`forgebase_queue_push_last_success_timestamp_seconds` and
+`forgebase_queue_redriven_total`. A subscription created or changed with
+`ttl_ms` (60 s to 31 days) is deleted when it runs out; `forgebase queues listen
+<topic> --forward-to http://localhost:3000/hook` uses one to forward a topic to a
+local endpoint, signed with a session secret.
+
 ### 11.2 Backups (`/api/v1/system/backups`)
 
 Snapshots of the database and storage over HTTP (FB-83). Administrators only.
@@ -235,8 +272,49 @@ A refused anonymous request gets `401`, a signed-in non-administrator `403`.
 For `/metrics`, a scoped API key needs the scope `system:read`.
 `/health` and `/health/ready` are never gated.
 
+### 11.4 Billing webhook inspector (`/api/v1/billing/webhook-deliveries`)
 
-### 11.4 SQL editor (`/api/v1/sql`)
+Every request to `POST /api/v1/billing/webhooks/{provider}` is recorded, verified or not
+([ADR-0032](adr/0032-billing-webhook-inspector.md)): provider and account, received time, client address,
+allowlisted headers (never `authorization`, cookies or API keys), the raw body (up to 256 KiB), the
+verification outcome with a safe reason, the provider event id and type, the processing outcome, the billing
+objects it touched and the latency. Unverified deliveries are stored only within a per-provider budget, and the
+answer to the provider never changes. Rows are deleted after `[billing] webhook_log_retention_days` (default 30).
+Platform administrators only: a signed-in non-administrator gets `403`, an anonymous caller `401`.
+
+| Route | Purpose |
+|---|---|
+| `GET /billing/webhook-deliveries` | Newest first: `{"items": [...], "total", "limit", "offset"}`. Filters `provider`, `outcome`, `event_type`, `event_id`, `from`, `to` (RFC 3339, `to` exclusive); `limit` 1–500 (default 50), `offset`. No bodies. |
+| `GET /billing/webhook-deliveries/{id}` | One delivery with `headers` (object) and `body` (`body_encoding` `utf8`, or `base64` for binary bodies; `null` when the budget dropped it). |
+| `POST /billing/webhook-deliveries/{id}/replay` | Processes a verified delivery again through the normal path. The stored body is verified again with the current secrets as of the time it was received; the event dedup decides. |
+| `POST /billing/webhook-deliveries/{id}/reverify` | Verifies a refused delivery again with the current secrets (after fixing a webhook secret) and processes it if it now verifies, exactly once. |
+
+`outcome` is the processing outcome of a verified delivery (`applied`, `ignored`, `duplicate`, `failed`) or the
+verification outcome of a refused one (`signature_invalid`, `timestamp_out_of_tolerance`, `unknown_provider`,
+`malformed`, `rejected`, `error`). `links` holds `webhook_event_id`, `customer_id`, `subscription_id`,
+`order_id`, `invoice_id`, `payment_id`, `refund_id` and `store_purchase_id`.
+
+Replay and re-verify answer `{"result", "detail", "delivery"}`. `result` is `applied`, `ignored` or `failed`
+(processed now), `already_applied` or `already_ignored` (the event was handled before: nothing changed), or
+`unverified` (the stored body does not verify with the current secrets: nothing was processed). Both are written
+to the billing audit log. Errors: `409 delivery_not_verified` (replay of a refused delivery: re-verify it),
+`409 delivery_already_verified` (re-verify of a verified one: replay it), `409 reverify_in_progress`,
+`409 body_not_stored` (dropped by the budget or cut at the size limit) and `409 not_reverifiable` (Google Play:
+its push token is not stored; Pub/Sub redelivers unacknowledged pushes).
+
+### 11.5 Capabilities (`/api/system/capabilities`)
+
+`GET /api/system/capabilities` lists every feature of the server (`vector`,
+`graph`, `opencypher`, `fulltext`, `fuzzy`, `queue`, `cron`, `kv`,
+`realtime`, `read_replicas`, `sharding`) with the `engine` it runs on,
+whether that is a PostgreSQL extension (`accelerated`), its `state`
+(`active`, `portable`, `off`, `native`, `unavailable`), the configured
+`mode`, a `reason` and its `limits` (ADR-0034). `GET /api/system/info`
+carries the same list as `database.capabilities`. Access as in
+[§11.3](#113-operational-endpoints-ops_access). The cross-backend table is
+[feature-parity.md](feature-parity.md).
+
+### 11.6 SQL editor (`/api/v1/sql`)
 
 `POST /sql` runs one statement, `POST /sql/batch` 1 to 1000 in one
 all-or-nothing transaction, `POST /sql/explain` returns a plan. Values go in

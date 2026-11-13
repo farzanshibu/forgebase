@@ -719,6 +719,32 @@ const QUEUES: &[SettingDef] = &[
         "How many days messages that failed delivery too many times (dead letters) are kept for inspection and replay. 14 is a good value.",
     )
     .unit("days"),
+    SettingDef::new(
+        "queue.push_response_body_bytes",
+        "Logged response body",
+        Int,
+        "How much of a webhook's response body each delivery attempt keeps in the attempt log, from 0 to 65536 bytes. 4096 is a good value.",
+    )
+    .unit("bytes"),
+    SettingDef::new(
+        "queue.push_attempts_per_subscription",
+        "Attempts kept per subscription",
+        Int,
+        "How many recent delivery attempts the attempt log keeps for each push subscription, from 1 to 100000. 1000 is a good value.",
+    ),
+    SettingDef::new(
+        "queue.push_attempts_retention_secs",
+        "Attempt log retention",
+        Int,
+        "How long delivery attempts stay in the attempt log, from 60 seconds to 31 days. 604800 (7 days) is a good value.",
+    )
+    .unit("seconds"),
+    SettingDef::new(
+        "queue.push_test_sends_per_minute",
+        "Test sends per minute",
+        Int,
+        "How many test events one push subscription may send per minute, from 1 to 1000. 10 is a good value.",
+    ),
 ];
 
 const REALTIME: &[SettingDef] = &[
@@ -835,16 +861,175 @@ const RESP: &[SettingDef] = &[
     )
     .unit("seconds")
     .env("FORGEBASE_RESP_IDLE_TIMEOUT_SECS"),
+    SettingDef::new(
+        "resp.tls",
+        "Encrypt Redis connections",
+        Bool,
+        "Serves the Redis protocol over TLS (Transport Layer Security) with the same certificate as HTTPS, so passwords and data are encrypted on the network. Needs HTTPS mode files or acme. Clients connect with rediss:// instead of redis://. Turn it on whenever the Redis port is reachable from other machines.",
+    )
+    .env("FORGEBASE_RESP_TLS")
+    .read_only(),
 ];
 
-const BILLING: &[SettingDef] = &[SettingDef::new(
-    "billing.enabled",
-    "Billing",
-    Bool,
-    "Turns billing on or off: plans, subscriptions, invoices and payment provider webhooks under /api/v1/billing (test mode only in this version). Turn it off if you do not charge your users.",
-)
-.env("FORGEBASE_BILLING_ENABLED")
-.flag("--billing")];
+/// `[tls]` and `[tls.acme]`: native HTTPS (ADR-0033). Each changes how the
+/// server listens, so each is set where the server starts.
+const TLS: &[SettingDef] = &[
+    SettingDef::new(
+        "tls.mode",
+        "HTTPS mode",
+        Enum,
+        "How the server encrypts its web traffic. off (the default) serves plain HTTP for a reverse proxy such as nginx or Caddy that handles HTTPS in front. files serves HTTPS with a certificate and key you provide as files. acme gets a free certificate from Let's Encrypt (or another ACME certificate authority) and renews it on its own.",
+    )
+    .options(&["off", "files", "acme"])
+    .env("FORGEBASE_TLS_MODE")
+    .read_only(),
+    SettingDef::new(
+        "tls.cert_file",
+        "Certificate file",
+        Text,
+        "Mode files only: the PEM certificate file with its chain (the server's certificate first), such as /etc/forgebase/tls/fullchain.pem. When the file changes the server loads it again without a restart.",
+    )
+    .env("FORGEBASE_TLS_CERT_FILE")
+    .example("/etc/forgebase/tls/fullchain.pem")
+    .read_only(),
+    SettingDef::new(
+        "tls.key_file",
+        "Private key file",
+        Text,
+        "Mode files only: the PEM private key of the certificate, such as /etc/forgebase/tls/privkey.pem, readable by the server's user only. The server refuses to start when it does not match the certificate.",
+    )
+    .env("FORGEBASE_TLS_KEY_FILE")
+    .example("/etc/forgebase/tls/privkey.pem")
+    .read_only(),
+    SettingDef::new(
+        "tls.reload_interval_secs",
+        "Certificate check interval",
+        Int,
+        "Mode files only: how often the certificate files are checked for changes, up to 86400 seconds; 0 checks only when the server receives the SIGHUP signal. 30 suits most servers.",
+    )
+    .unit("seconds")
+    .env("FORGEBASE_TLS_RELOAD_INTERVAL_SECS")
+    .read_only(),
+    SettingDef::new(
+        "tls.min_version",
+        "Oldest protocol version",
+        Enum,
+        "The oldest version of TLS (Transport Layer Security, the protocol behind HTTPS) that clients may use: 1.2 (the default) works with every current browser and library; 1.3 refuses older clients.",
+    )
+    .options(&["1.2", "1.3"])
+    .env("FORGEBASE_TLS_MIN_VERSION")
+    .read_only(),
+    SettingDef::new(
+        "tls.hsts_max_age_secs",
+        "HSTS duration",
+        Int,
+        "Tells browsers to use only HTTPS for this site for this many seconds (the Strict-Transport-Security header), up to 63072000. 0 (the default) sends no header. Turn it on once HTTPS works: browsers then refuse plain HTTP for that long. 31536000 is one year.",
+    )
+    .unit("seconds")
+    .env("FORGEBASE_TLS_HSTS_MAX_AGE_SECS")
+    .read_only(),
+    SettingDef::new(
+        "tls.hsts_include_subdomains",
+        "HSTS for subdomains",
+        Bool,
+        "Adds includeSubDomains to the Strict-Transport-Security header, so browsers also use only HTTPS for every subdomain. Turn it on only when all of them serve HTTPS.",
+    )
+    .env("FORGEBASE_TLS_HSTS_INCLUDE_SUBDOMAINS")
+    .read_only(),
+    SettingDef::new(
+        "tls.redirect_http",
+        "Redirect plain HTTP",
+        Bool,
+        "Also listens for plain HTTP on the HTTP port and redirects every request to HTTPS. Turn it on when people may type the address without https://. It always listens when the http-01 challenge is used.",
+    )
+    .env("FORGEBASE_TLS_REDIRECT_HTTP")
+    .read_only(),
+    SettingDef::new(
+        "tls.http_port",
+        "HTTP port",
+        Int,
+        "Port of the plain HTTP listener that redirects to HTTPS and answers http-01 challenges, such as 80 (the default; ports below 1024 need extra permission on Linux). Certificate authorities always connect to port 80.",
+    )
+    .env("FORGEBASE_TLS_HTTP_PORT")
+    .read_only(),
+    SettingDef::new(
+        "tls.acme.domains",
+        "Domain names",
+        List,
+        "Mode acme only: the domain names on the certificate, such as forgebase.example.com. Each must point at this server in DNS. Wildcards are not supported.",
+    )
+    .env("FORGEBASE_TLS_ACME_DOMAINS")
+    .example("forgebase.example.com")
+    .read_only(),
+    SettingDef::new(
+        "tls.acme.email",
+        "Contact email",
+        Text,
+        "Mode acme only: an address the certificate authority writes to about expiring certificates and policy changes, such as ops@example.com. Optional but recommended.",
+    )
+    .env("FORGEBASE_TLS_ACME_EMAIL")
+    .example("ops@example.com")
+    .read_only(),
+    SettingDef::new(
+        "tls.acme.directory_url",
+        "Certificate authority",
+        Text,
+        "Mode acme only: the directory URL of the ACME certificate authority. The default https://acme-v02.api.letsencrypt.org/directory is Let's Encrypt; letsencrypt-staging uses Let's Encrypt's test service (certificates browsers do not trust, for trying things out). Any RFC 8555 authority works, such as ZeroSSL or your own step-ca.",
+    )
+    .env("FORGEBASE_TLS_ACME_DIRECTORY_URL")
+    .read_only(),
+    SettingDef::new(
+        "tls.acme.challenges",
+        "Domain checks",
+        List,
+        "Mode acme only: how the certificate authority checks that you control the domains, in order of preference, such as tls-alpn-01, http-01. tls-alpn-01 (the default) uses the HTTPS port, which must be reachable as port 443; http-01 uses the HTTP port, which must be reachable as port 80.",
+    )
+    .options(&["tls-alpn-01", "http-01"])
+    .env("FORGEBASE_TLS_ACME_CHALLENGES")
+    .read_only(),
+    SettingDef::new(
+        "tls.acme.eab_kid",
+        "External account key id",
+        Text,
+        "Mode acme only: the key id of an external account binding, for authorities that need one (such as ZeroSSL). Enter it as the authority shows it, such as kid_1a2b3c, and set the matching HMAC key (the next setting) in the environment. Empty for Let's Encrypt.",
+    )
+    .env("FORGEBASE_TLS_ACME_EAB_KID")
+    .read_only(),
+    SettingDef::secret(
+        "tls.acme.eab_hmac_key",
+        "External account secret",
+        Some("FORGEBASE_TLS_ACME_EAB_HMAC_KEY"),
+        "Mode acme only: the HMAC key of the external account binding, as the certificate authority shows it next to the key id; it lets ForgeBase get certificates for TLS (Transport Layer Security) from that authority. It is a secret, so set it with the environment variable FORGEBASE_TLS_ACME_EAB_HMAC_KEY (or in the .env file next to forgebase.toml), not here.",
+    ),
+    SettingDef::new(
+        "tls.acme.ca_file",
+        "Private authority root",
+        Text,
+        "Mode acme only: a PEM file with the root certificate that the certificate authority's own HTTPS uses, when that is a private authority such as step-ca. Empty (the default) trusts the usual public authorities only; set it to a file such as /etc/forgebase/tls/ca-root.pem.",
+    )
+    .env("FORGEBASE_TLS_ACME_CA_FILE")
+    .example("/etc/forgebase/tls/ca-root.pem")
+    .read_only(),
+];
+
+const BILLING: &[SettingDef] = &[
+    SettingDef::new(
+        "billing.enabled",
+        "Billing",
+        Bool,
+        "Turns billing on or off: plans, subscriptions, invoices and payment provider webhooks under /api/v1/billing (test mode only in this version). Turn it off if you do not charge your users.",
+    )
+    .env("FORGEBASE_BILLING_ENABLED")
+    .flag("--billing"),
+    SettingDef::new(
+        "billing.webhook_log_retention_days",
+        "Webhook log retention",
+        Int,
+        "How many days every incoming payment provider webhook (headers, body, whether its signature checked out and what it changed) is kept for inspection and replay. Bodies can hold customer names and emails. 30 is a good value.",
+    )
+    .unit("days")
+    .env("FORGEBASE_BILLING_WEBHOOK_LOG_RETENTION_DAYS"),
+];
 
 /// `[mcp]`: the MCP server for AI agents (ADR-0030).
 const MCP: &[SettingDef] = &[SettingDef::new(
@@ -868,6 +1053,17 @@ pub const FEATURES: &[FeatureDef] = &[
         docs: "docs/deployment.md#7-configuration-keys",
         routes: &[],
         settings: SERVER,
+    },
+    FeatureDef {
+        id: "tls",
+        name: "HTTPS",
+        summary: "Native HTTPS with your own certificate files or certificates from Let's Encrypt, instead of a reverse proxy.",
+        can_disable: false,
+        enable_key: None,
+        studio_path: Some("/system"),
+        docs: "docs/deployment.md#5-tls",
+        routes: &[],
+        settings: TLS,
     },
     FeatureDef {
         id: "database",

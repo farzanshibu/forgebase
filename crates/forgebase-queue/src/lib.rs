@@ -29,6 +29,7 @@
 //! [`forgebase_data::Action::QueueAdmin`]).
 
 mod access;
+mod catalog;
 mod consume;
 mod error;
 pub mod filter;
@@ -42,7 +43,9 @@ mod row;
 pub mod schema;
 mod service;
 mod sets;
+mod tooling;
 
+pub use catalog::example_of;
 pub use error::QueueError;
 pub use http::{StreamClientMessage, StreamServerMessage, api, extension, openapi, router};
 pub use model::*;

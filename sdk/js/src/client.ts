@@ -1,3 +1,17 @@
+import { AccessApi } from "./access";
+import { CreditsApi } from "./credits";
+import { CustomizeApi } from "./customize";
+import { DocumentsApi } from "./documents";
+import { FunctionsApi } from "./functions";
+import { GraphApi } from "./graph";
+import { IdentityApi } from "./identity";
+import { IndexesApi } from "./indexes";
+import { KvApi } from "./kv";
+import { OrgsApi } from "./orgs";
+import { SqlApi } from "./sql";
+import { StorageApi } from "./storage";
+import { SystemApi } from "./system";
+import { VectorApi } from "./vector";
 import { AuthApi, AuthManager, type AuthOptions } from "./auth";
 import { BillingApi } from "./billing";
 import type { CommitTokens, Consistency } from "./consistency";
@@ -41,6 +55,34 @@ export class ForgeBase {
   readonly queues: QueuesApi;
   /** Background jobs, long tasks and workflows (`/api/v1/jobs`). */
   readonly jobs: JobsApi;
+  /** Buckets, objects, multipart and resumable uploads, signed URLs (`/api/v1/storage`). */
+  readonly storage: StorageApi;
+  /** Key-value engine: `fb.kv.ns("cache")` (`/api/v1/kv`). */
+  readonly kv: KvApi;
+  /** Server functions: deploy, invoke, versions, secrets (`/api/v1/functions`). */
+  readonly functions: FunctionsApi;
+  /** Vector collections and similarity search (`/api/v1/vector`). */
+  readonly vector: VectorApi;
+  /** Property graph and openCypher (`/api/v1/graph`). */
+  readonly graph: GraphApi;
+  /** SQL editor (`/api/v1/sql`). */
+  readonly sql: SqlApi;
+  /** Collection indexes and the slow-query log (`/api/v1/indexes`). */
+  readonly indexes: IndexesApi;
+  /** Document-style access to collections (`/api/v1/documents`). */
+  readonly documents: DocumentsApi;
+  /** Prepaid credit balances and ledger (`/api/v1/credits`). */
+  readonly credits: CreditsApi;
+  /** Organizations, projects, teams, members, roles (`/api/v1/orgs`, ...). */
+  readonly orgs: OrgsApi;
+  /** Permission checks, ACLs, collection and resource rules. */
+  readonly access: AccessApi;
+  /** API keys, tokens, service accounts, OAuth clients, realms, user administration (`/api/auth`). */
+  readonly identity: IdentityApi;
+  /** Domains, branding, email and agreements (`/api/v1/customize`). */
+  readonly customize: CustomizeApi;
+  /** Server administration: features, config, topology, backups, DB logins, extensions. */
+  readonly system: SystemApi;
   readonly transport: Transport;
   private readonly mgr: AuthManager;
 
@@ -61,6 +103,20 @@ export class ForgeBase {
     this.collections = new CollectionsApi(this.transport);
     this.entitlements = new EntitlementsApi(this.transport);
     this.billing = new BillingApi(this.transport);
+    this.storage = new StorageApi(this.transport);
+    this.kv = new KvApi(this.transport, options.retry?.sleep);
+    this.functions = new FunctionsApi(this.transport);
+    this.vector = new VectorApi(this.transport);
+    this.graph = new GraphApi(this.transport);
+    this.sql = new SqlApi(this.transport);
+    this.indexes = new IndexesApi(this.transport);
+    this.documents = new DocumentsApi(this.transport);
+    this.credits = new CreditsApi(this.transport);
+    this.orgs = new OrgsApi(this.transport);
+    this.access = new AccessApi(this.transport);
+    this.identity = new IdentityApi(this.transport, this.mgr);
+    this.customize = new CustomizeApi(this.transport);
+    this.system = new SystemApi(this.transport);
     const mgr = this.mgr;
     this.realtime = new RealtimeClient({
       baseUrl: this.transport.baseUrl,

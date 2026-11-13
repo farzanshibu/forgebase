@@ -1,0 +1,397 @@
+# Default values for the ForgeBase chart.
+#
+# ForgeBase is a single-writer server: one process owns one data directory
+# (the database, object storage, the auth master key). The chart therefore
+# runs exactly one pod, as a StatefulSet with one PVC, and does not offer
+# `replicaCount`. See README.md ("Why one replica").
+
+nameOverride: ""
+fullnameOverride: ""
+# Labels added to every object, next to the standard app.kubernetes.io/* set.
+commonLabels: {}
+
+# Enforced to be 1 by values.schema.json. Listed so the error names the key.
+# replicaCount: 1
+
+image:
+  repository: ghcr.io/farzanshibu/forgebase
+  # Default: the chart's appVersion.
+  tag: ""
+  # "standard" embeds the bundled PostgreSQL engine; "lite" is the SQLite-only
+  # build and selects the "<tag>-lite" tag. The release workflow publishes the
+  # standard image only: build -lite from the Dockerfile (no ENGINE_ARCHIVE) and
+  # push it yourself, or keep "standard" and set database.backend=sqlite.
+  variant: standard
+  # sha256:... pins the image by digest (the tag is kept for readability).
+  digest: ""
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+# --- Database --------------------------------------------------------------
+database:
+  # postgres (default) or sqlite. The data directory records its engine in
+  # forgebase.backend, and a value that contradicts it stops startup.
+  backend: postgres
+  postgres:
+    # managed:  the bundled PostgreSQL runs inside the pod, on the PVC, behind a
+    #           Unix socket. Needs the standard image and a writable /dev/shm.
+    # external: your PostgreSQL server; its URL comes from a Secret.
+    mode: managed
+    external:
+      # Name of a Secret you created that holds the URL, for example
+      #   kubectl create secret generic forgebase-db \
+      #     --from-literal=url='postgres://forgebase:...@db.example:5432/forgebase?sslmode=require'
+      existingSecret: ""
+      existingSecretKey: url
+      # Inline URL: the chart writes a Secret from it. The URL lands in your
+      # values file and in Helm's release record; prefer existingSecret.
+      url: ""
+    # Pool size and the other [database.postgres] keys go in `config` below.
+
+# Shared memory for the bundled PostgreSQL (managed mode only). Docker's 64 MB
+# default is too small, and so is Kubernetes' (also 64 MB), so the chart mounts
+# a memory-backed emptyDir at /dev/shm. It counts against the container's
+# memory limit.
+shm:
+  sizeLimit: 256Mi
+
+# --- Server settings (first-class; everything else goes in `config`) ---------
+# Address people and apps reach the server at (no path). Links the server hands
+# out, such as the setup link, start with it.
+publicUrl: ""
+# Who may read /metrics and /api/system/*: loopback | admin | public.
+# loopback (default) admits administrators from anywhere, and callers on the
+# same host. Prometheus on another pod needs an API key (serviceMonitor.authorization).
+opsAccess: loopback
+# Take the client address from the last X-Forwarded-For entry. Set it to true
+# only when every request arrives through your own proxy or ingress controller
+# (restrict the pod with networkPolicy) and that proxy appends the client address.
+trustForwardedFor: false
+logLevel: info
+# The port the container listens on.
+containerPort: 8090
+
+# Redis protocol listener (resp.*). No TLS, and every connection must AUTH.
+resp:
+  enabled: false
+  port: 6380
+  # Publish the RESP port on the Service. Off: reach it with kubectl port-forward.
+  exposeService: false
+
+# Native TLS in the ForgeBase binary (a [tls] section, being added to the
+# binary). Default off: terminate TLS at the Ingress or the Gateway. The
+# section is rendered only when mode is not "off", and the binary rejects an
+# unknown section, so use this with a ForgeBase release that has [tls].
+tls:
+  mode: "off"        # "off" | files | acme (quote "off": YAML reads a bare off as false)
+  # Keys of the [tls] table besides `mode`, as that release documents them.
+  settings: {}
+  # A kubernetes.io/tls Secret (tls.crt, tls.key) mounted at /etc/forgebase-tls
+  # for mode=files. Reference it from settings, e.g. cert_file: /etc/forgebase-tls/tls.crt.
+  existingSecret: ""
+
+# forgebase.toml. Anything here is rendered into the ConfigMap and overrides
+# the generated settings above (deep merge). Keys are those of
+# forgebase.example.toml; unknown keys stop ForgeBase at startup. Never put
+# secrets here: a ConfigMap is not encrypted, and any reader of the namespace
+# can read it. Use the Secret-backed values (database, admin, s3) instead.
+#
+# config:
+#   database:
+#     postgres:
+#       pool_size: 32
+#       settings:
+#         shared_buffers: 512MB
+#   storage:
+#     driver: s3
+#     s3_endpoint: https://s3.eu-central-1.amazonaws.com
+#     s3_region: eu-central-1
+#     s3_bucket: forgebase-blobs
+#   billing:
+#     enabled: false
+config: {}
+
+# S3 object storage credentials (storage.driver = "s3"), from a Secret you
+# created. The binary reads them from the environment only.
+s3:
+  existingSecret: ""
+  accessKeyKey: access-key
+  secretKeyKey: secret-key
+  # Optional; leave empty when there is no session token.
+  sessionTokenKey: ""
+
+# --- First-run administrator ------------------------------------------------
+# A server with no administrator is in setup mode and prints a one-time setup
+# link to its standard output (kubectl logs). With bootstrap on, an init
+# container runs `forgebase init --admin-email … --admin-password-stdin` before
+# the server starts. It is idempotent: an existing administrator is kept.
+admin:
+  bootstrap:
+    enabled: false
+    email: ""
+    # A Secret you created, holding the password (10+ characters):
+    #   kubectl create secret generic forgebase-admin --from-literal=password='…'
+    existingSecret: ""
+    existingSecretKey: password
+    # Inline password: the chart writes a Secret from it. Prefer existingSecret.
+    password: ""
+
+# --- Storage ------------------------------------------------------------------
+persistence:
+  # The data directory: database or bundled PostgreSQL cluster, storage/,
+  # auth/master.key, backups/. Off gives an emptyDir that is lost with the pod;
+  # use it for throw-away tests with an external database only.
+  enabled: true
+  # Use a PVC you created. Then the chart's StatefulSet does not create one.
+  existingClaim: ""
+  storageClass: ""
+  # One writer: ReadWriteOnce, or ReadWriteOncePod to forbid a second pod on the node.
+  accessModes:
+    - ReadWriteOnce
+  size: 10Gi
+  annotations: {}
+  # What happens to the PVC when the release is deleted or scaled down. Retain
+  # keeps your data after `helm uninstall`.
+  retentionPolicy:
+    whenDeleted: Retain
+    whenScaled: Retain
+
+# --- Pod ---------------------------------------------------------------------
+resources:
+  requests:
+    cpu: 500m
+    memory: 1Gi
+  limits:
+    memory: 2Gi
+
+# Seconds Kubernetes waits after SIGTERM. The server drains requests for
+# server.shutdown_timeout_secs (30), then checkpoints and stops PostgreSQL.
+terminationGracePeriodSeconds: 90
+
+# PostgreSQL refuses to run as root, and the image runs as uid 10001.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 10001
+  fsGroup: 10001
+  # Only fix ownership when the volume's root is wrong. A recursive change
+  # would loosen the 0700/0600 modes ForgeBase and PostgreSQL insist on.
+  fsGroupChangePolicy: OnRootMismatch
+  seccompProfile:
+    type: RuntimeDefault
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  privileged: false
+  capabilities:
+    drop:
+      - ALL
+
+# Probes use the real endpoints: /health (the process answers) and
+# /health/ready (the database and storage answer, migrations are applied).
+# The startup probe allows 15 minutes: the first start unpacks the engine,
+# runs initdb and applies every migration, and an upgrade may migrate a big database.
+probes:
+  scheme: HTTP
+  startup:
+    path: /health/ready
+    periodSeconds: 5
+    timeoutSeconds: 3
+    failureThreshold: 180
+  liveness:
+    path: /health
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 6
+  readiness:
+    path: /health/ready
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+podAnnotations: {}
+podLabels: {}
+priorityClassName: ""
+nodeSelector: {}
+tolerations: []
+affinity: {}
+topologySpreadConstraints: []
+# StatefulSet update strategy. RollingUpdate stops the old pod before it
+# starts the new one, which the single writer needs.
+updateStrategy:
+  type: RollingUpdate
+
+# Extra environment. Names starting with FORGEBASE_ are read by the binary and
+# unknown ones stop startup (docs/deployment.md §3.3).
+extraEnv: []
+extraEnvFrom: []
+extraVolumes: []
+extraVolumeMounts: []
+initContainers: []
+sidecars: []
+
+# --- Service and routing --------------------------------------------------------
+service:
+  type: ClusterIP
+  port: 8090
+  annotations: {}
+  # For LoadBalancer / NodePort.
+  loadBalancerClass: ""
+  loadBalancerSourceRanges: []
+  externalTrafficPolicy: ""
+  nodePort: null
+
+# TLS at the Ingress. With cert-manager, set one issuer: the chart adds the
+# annotation and, when `tls` is empty, a tls block for every host.
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  # Realtime (WebSocket and SSE) connections are long-lived: raise your
+  # controller's read timeout, for ingress-nginx
+  #   nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+  #   nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+  hosts:
+    - host: forgebase.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+  #  - secretName: forgebase-tls
+  #    hosts: [forgebase.example.com]
+  certManager:
+    clusterIssuer: ""
+    issuer: ""
+
+# Gateway API. TLS is a property of the Gateway's listener, which this chart
+# does not manage; point parentRefs at a Gateway that terminates TLS.
+httpRoute:
+  enabled: false
+  annotations: {}
+  labels: {}
+  parentRefs: []
+  #  - name: shared-gateway
+  #    namespace: gateway-system
+  #    sectionName: https
+  hostnames: []
+  #  - forgebase.example.com
+  pathPrefix: /
+  # Passed through to the rule, e.g. {request: 0s} for long-lived streams
+  # where the gateway supports it.
+  timeouts: {}
+
+# --- Availability ------------------------------------------------------------
+# With one pod, minAvailable: 1 blocks every voluntary eviction (node drains
+# hang until you delete the pod yourself). The default allows one eviction,
+# which makes the budget a statement of intent, not a lock. Set minAvailable: 1
+# if you want drains to stop and wait for you.
+podDisruptionBudget:
+  enabled: false
+  maxUnavailable: 1
+  minAvailable: null
+
+# --- Monitoring ------------------------------------------------------------------
+# Needs the Prometheus Operator CRDs. /metrics is closed to anonymous callers
+# from other pods (see opsAccess), so give Prometheus an API key: create an
+# admin service-account key with the system:read scope, store it in a Secret,
+# and name it here.
+serviceMonitor:
+  enabled: false
+  namespace: ""
+  labels: {}
+  interval: 15s
+  scrapeTimeout: 10s
+  path: /metrics
+  authorization:
+    secretName: ""
+    secretKey: token
+  # Scrape without credentials. Needs opsAccess=public: do not, unless a
+  # NetworkPolicy keeps everyone but Prometheus away from the pod.
+  unauthenticated: false
+  relabelings: []
+  metricRelabelings: []
+
+# --- Network policy ------------------------------------------------------------------
+networkPolicy:
+  enabled: false
+  ingress:
+    # Peers allowed to reach the HTTP port (NetworkPolicyPeer list). Empty
+    # allows every source, so name your ingress controller's namespace:
+    #  - namespaceSelector:
+    #      matchLabels:
+    #        kubernetes.io/metadata.name: ingress-nginx
+    from: []
+    # Peers allowed to reach the RESP port, when resp.exposeService is on.
+    respFrom: []
+  egress:
+    # Off: egress is not restricted. On: DNS, and the rules below, only.
+    enabled: false
+    # Outbound HTTPS to anywhere: OAuth/OIDC providers, SMS gateways, S3,
+    # webhooks, payment providers.
+    allowHttps: true
+    # Further NetworkPolicyEgressRule entries, for example the external database:
+    #  - to:
+    #      - ipBlock: {cidr: 10.20.0.0/16}
+    #    ports:
+    #      - {port: 5432, protocol: TCP}
+    extra: []
+    dnsNamespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: kube-system
+    dnsPodSelector:
+      matchLabels:
+        k8s-app: kube-dns
+
+# --- Backups ----------------------------------------------------------------------
+# A CronJob that runs `forgebase backup` inside the server pod (kubectl exec).
+# It has to: the CLI attaches to the running bundled PostgreSQL through its
+# postmaster pid, which another pod cannot see. The job's ServiceAccount may
+# exec into this release's pod and nothing else.
+backup:
+  enabled: false
+  schedule: "17 3 * * *"
+  timeZone: ""
+  # Retention (forgebase backup --keep-last / --max-age-days).
+  keepLast: 14
+  maxAgeDays: 30
+  noIndexes: false
+  # Copy auth/master.key into the backup. Leave off: a key stored next to the
+  # data it protects is no protection. Back it up once, apart (README).
+  includeMasterKey: false
+  destination:
+    # snapshots: <data dir>/backups/snapshots/<time>, on the data PVC.
+    # volume:    a second PVC mounted at /backups; each run writes
+    #            /backups/<time> and keeps the newest keepLast.
+    # Either way, a snapshot on the same storage is not a disaster backup:
+    # copy it off the cluster, or use CSI VolumeSnapshots.
+    type: snapshots
+    volume:
+      existingClaim: ""
+      storageClass: ""
+      size: 20Gi
+      accessModes:
+        - ReadWriteOnce
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 600
+  activeDeadlineSeconds: 7200
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  image:
+    # The kubectl that runs the exec. Match your cluster's minor version.
+    repository: registry.k8s.io/kubectl
+    tag: v1.33.9
+    pullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
+      memory: 128Mi
+  podAnnotations: {}
+  nodeSelector: {}
+  tolerations: []

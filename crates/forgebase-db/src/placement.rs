@@ -308,6 +308,7 @@ pub static TABLES: &[TablePlacement] = &[
     control("_forgebase_billing_sync_events"),
     control("_forgebase_billing_tax_rates"),
     control("_forgebase_billing_usage_records"),
+    control("_forgebase_billing_webhook_deliveries"),
     control("_forgebase_billing_webhook_events"),
     control("_forgebase_credit_accounts"),
     control("_forgebase_credit_allocations"),
@@ -352,6 +353,10 @@ pub static TABLES: &[TablePlacement] = &[
     // --- Node bookkeeping (per set) ---
     per_set("_forgebase_meta", MoveStrategy::Stay),
     per_set("_forgebase_migrations", MoveStrategy::Stay),
+    // Reference tables of the portable trigram engine (ADR-0034, migration
+    // 0056): the same seed rows on every node.
+    per_set("_forgebase_trgm_fold", MoveStrategy::Stay),
+    per_set("_forgebase_trgm_positions", MoveStrategy::Stay),
     // Each set's change log; `tenant` says whose change it was. A move
     // resets the tenant's live subscriptions (`tenant_moved`).
     per_set("_forgebase_realtime_outbox", MoveStrategy::Stay),
@@ -428,6 +433,14 @@ pub static TABLES: &[TablePlacement] = &[
     ),
     child(
         "_forgebase_queue_dead_letters",
+        "subscription",
+        "_forgebase_queue_subscriptions",
+        "name",
+        COPY,
+    ),
+    // Push attempt log (ADR-0031, 0050_queue_push_attempts).
+    child(
+        "_forgebase_queue_push_attempts",
         "subscription",
         "_forgebase_queue_subscriptions",
         "name",

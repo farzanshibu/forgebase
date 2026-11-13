@@ -16,9 +16,6 @@ use crate::indexes::{IndexDefinition, IndexKind};
 use crate::records::{Record, project, row_to_record, sql_to_json};
 use crate::{AccessContext, Action, DEFAULT_PER_PAGE, DataError, DataService, MAX_PER_PAGE, Predicate};
 
-/// `pg_trgm.similarity_threshold` unless the server changed it (ADR-0029 §1.8).
-const DEFAULT_FUZZY_THRESHOLD: f64 = 0.3;
-
 /// A record listing request.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -35,15 +32,16 @@ pub struct ListQuery {
     pub expand: Vec<String>,
     /// Full-text query (needs a full-text index on the collection).
     pub search: Option<String>,
-    /// Fuzzy text (PostgreSQL with `pg_trgm`): records whose `fuzzy_fields`
-    /// are trigram-similar to it, best match first unless `sort` says
-    /// otherwise (ADR-0029 §1.8).
+    /// Fuzzy text: records whose `fuzzy_fields` are trigram-similar to it,
+    /// best match first unless `sort` says otherwise (ADR-0029 §1.8; on
+    /// every backend, with `pg_trgm` or the portable engine, ADR-0034).
     pub fuzzy: Option<String>,
     /// Fields `fuzzy` compares (each needs a trigram index); every field of
     /// the collection's trigram indexes when empty.
     pub fuzzy_fields: Vec<String>,
     /// Minimum similarity, 0 to 1 (default: `pg_trgm.similarity_threshold`,
-    /// 0.3). Below that default the match is no longer index-assisted.
+    /// 0.3). With `pg_trgm`, below that default the match is no longer
+    /// index-assisted; with the portable engine, only 0 is not.
     pub fuzzy_threshold: Option<f64>,
     /// 1-based page (offset pagination). Ignored with `cursor`.
     pub page: Option<u32>,
@@ -232,44 +230,24 @@ impl DataService {
             wheres.push(crate::indexes::fulltext_match(d, &cat, coll, fts, "t", &p)?);
         }
 
-        // `fuzzy` (FB-166): trigram match on the chosen fields; ordered by the
-        // best similarity unless the request sorts.
+        // `fuzzy` (FB-166, ADR-0034): trigram match on the chosen fields;
+        // ordered by the best similarity unless the request sorts.
         let mut fuzzy_order: Option<String> = None;
         if let Some(text) = q.fuzzy.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
             let fields = self.fuzzy_columns(&compiler, &opts, coll, q, trigram)?;
-            let p = b.bind(text.to_owned());
-            let mut cols = Vec::with_capacity(fields.len());
-            for path in &fields {
-                cols.push(compiler.scalar(&mut b, coll, "t", &FieldPath::parse(path)?)?);
-            }
-            let sims: Vec<String> = cols.iter().map(|c| format!("similarity({c}, {p})")).collect();
-            let best = if sims.len() == 1 {
-                sims[0].clone()
-            } else {
-                format!("GREATEST({})", sims.join(", "))
-            };
-            let matches: Vec<String> = match q.fuzzy_threshold {
-                // `%` uses `pg_trgm.similarity_threshold` and the GIN index.
-                None => cols.iter().map(|c| format!("{c} % {p}")).collect(),
-                // An explicit threshold above the default stays index
-                // assisted (`%` narrows, the comparison refines); below it
-                // `%` would cut too much, so only the comparison runs.
-                Some(t) => {
-                    let t = b.bind(Value::Real(t));
-                    cols.iter()
-                        .zip(&sims)
-                        .map(|(c, sim)| {
-                            if q.fuzzy_threshold.is_some_and(|t| t >= DEFAULT_FUZZY_THRESHOLD) {
-                                format!("({c} % {p} AND {sim} >= {t})")
-                            } else {
-                                format!("{sim} >= {t}")
-                            }
-                        })
-                        .collect()
-                }
-            };
-            wheres.push(matches.join(" OR "));
-            fuzzy_order = Some(format!("({best})::float8"));
+            let f = crate::fuzzy::render(
+                self.trigram_engine(),
+                &compiler,
+                &mut b,
+                coll,
+                "t",
+                &fields,
+                trigram,
+                text,
+                q.fuzzy_threshold,
+            )?;
+            wheres.push(f.matches);
+            fuzzy_order = Some(f.score);
         }
 
         let mut sort: Vec<SortKey> = parse_sort(q.sort.as_deref().unwrap_or(""))?;
@@ -756,8 +734,8 @@ impl DataService {
         Ok(out)
     }
 
-    /// The trigram indexes of a collection, when the query is fuzzy; refuses
-    /// the query (`400 fuzzy_unsupported`) where `pg_trgm` is not in use.
+    /// The trigram indexes of a collection, when the query is fuzzy (every
+    /// backend since ADR-0034: `pg_trgm` or the portable engine).
     pub(crate) async fn trigram_indexes(
         &self,
         coll: &Collection,
@@ -765,12 +743,6 @@ impl DataService {
     ) -> Result<Vec<IndexDefinition>, DataError> {
         if q.fuzzy.as_deref().is_none_or(|s| s.trim().is_empty()) {
             return Ok(Vec::new());
-        }
-        if !self.inner.backend.feature_active(forgebase_db::Feature::Trigram) {
-            return Err(DataError::invalid(
-                "fuzzy_unsupported",
-                "fuzzy search needs PostgreSQL with the pg_trgm extension",
-            ));
         }
         let rows = self
             .inner

@@ -1,10 +1,16 @@
-//! `forgebase queues publish|pull|tail` and `forgebase jobs watch <ID>`: talk to a running server's
-//! durable topics (`/api/v1/queues`, ADR-0022) and long-running tasks (`/api/v1/jobs`, ADR-0023).
+//! `forgebase queues publish|pull|tail|listen|…` and `forgebase jobs watch <ID>`: talk to a running
+//! server's durable topics (`/api/v1/queues`, ADR-0022) and long-running tasks (`/api/v1/jobs`,
+//! ADR-0023).
 //!
 //! Connection and credentials work as for `forgebase functions` (`--server` / `FB_URL`, `--token` /
 //! `FB_TOKEN`, plain `http://` only). Streaming is done by polling: `tail` reads the topic's retained
 //! messages after the last sequence number it printed (it never takes deliveries from a subscription),
 //! and `jobs watch` polls the job. No server route is added for either.
+//!
+//! Webhook tooling (ADR-0031): `listen` forwards a topic to a local URL like `stripe listen` (a
+//! temporary pull subscription with a time to live, consumed over the WebSocket streaming pull, each
+//! delivery signed with a session secret and acked on `2xx`); `test`, `redrive`, `retry`,
+//! `rotate-secret`, `pause`, `resume`, `attempts` and `catalog` are thin calls of the matching routes.
 
 use std::collections::VecDeque;
 use std::future::Future;
@@ -42,6 +48,161 @@ pub enum QueuesCommand {
     Pull(PullArgs),
     /// Print a topic's newest messages, and with --follow every new one (does not consume anything).
     Tail(TailArgs),
+    /// Forward a topic's messages to a local URL, signed like webhooks (Ctrl-C to stop).
+    Listen(ListenArgs),
+    /// Send a signed test event to a push subscription's endpoint and show the attempt.
+    Test(TestArgs),
+    /// Deliver dead letters of a subscription again (by id, or --all).
+    Redrive(RedriveArgs),
+    /// Retry now the deliveries of a subscription that wait for a retry backoff.
+    Retry(RetryArgs),
+    /// Rotate a webhook's signing secret (both secrets sign during the grace window).
+    RotateSecret(RotateSecretArgs),
+    /// Pause push delivery of a subscription (messages accumulate).
+    Pause(PauseArgs),
+    /// Resume push delivery of a paused subscription (the backlog is delivered in order).
+    Resume(SubArgs),
+    /// Show a push subscription's delivery attempts, newest first.
+    Attempts(AttemptsArgs),
+    /// List the subscribable event types: topics, schemas, examples.
+    Catalog(CatalogArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct ListenArgs {
+    /// Topic to listen to.
+    pub topic: String,
+    /// Local URL each message is POSTed to, e.g. http://localhost:3000/webhooks (http:// only).
+    #[arg(long, value_name = "URL")]
+    pub forward_to: String,
+    /// Attribute filter of the temporary subscription, as JSON (e.g. '{"forgebase.op":"create"}').
+    #[arg(long, value_name = "JSON")]
+    pub filter: Option<String>,
+    /// Lifetime of the temporary subscription while this command runs; it is renewed every third of it,
+    /// so a crashed session leaves nothing behind for longer (60-86400 seconds).
+    #[arg(long, default_value_t = 600, value_name = "SECONDS", value_parser = clap::value_parser!(u64).range(60..=86_400))]
+    pub ttl: u64,
+    /// Most deliveries in flight at once.
+    #[arg(long, default_value_t = 10, value_parser = clap::value_parser!(u32).range(1..=1000))]
+    pub max_in_flight: u32,
+    /// One JSON object per delivery (NDJSON).
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct SubArgs {
+    /// Subscription name.
+    pub subscription: String,
+    /// Print the server's answer as JSON.
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct TestArgs {
+    /// Push subscription name.
+    pub subscription: String,
+    /// `data` of the test message as JSON (default: a short forgebase.test object).
+    #[arg(long, value_name = "JSON")]
+    pub data: Option<String>,
+    /// Print the attempt as JSON.
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct RedriveArgs {
+    /// Subscription name.
+    pub subscription: String,
+    /// Dead-letter record id. Repeatable.
+    #[arg(long = "id", value_name = "ID", conflicts_with = "all")]
+    pub ids: Vec<i64>,
+    /// Every dead letter not redriven yet.
+    #[arg(long)]
+    pub all: bool,
+    /// With --all: only those dead-lettered at or after this RFC 3339 time.
+    #[arg(long, requires = "all", value_name = "TIME")]
+    pub since: Option<String>,
+    /// With --all: only those whose attributes match this filter (JSON).
+    #[arg(long, requires = "all", value_name = "JSON")]
+    pub filter: Option<String>,
+    /// With --all: most records this call redrives (1-1000).
+    #[arg(long, requires = "all", value_parser = clap::value_parser!(u32).range(1..=1000))]
+    pub limit: Option<u32>,
+    /// Print the server's answer as JSON.
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct RetryArgs {
+    /// Subscription name.
+    pub subscription: String,
+    /// Only this message. Repeatable.
+    #[arg(long = "message-id", value_name = "ID")]
+    pub message_ids: Vec<String>,
+    /// Print the server's answer as JSON.
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct RotateSecretArgs {
+    /// Webhook subscription name.
+    pub subscription: String,
+    /// Seconds the old secret keeps signing too (0-604800).
+    #[arg(long, default_value_t = 86_400, value_name = "SECONDS", value_parser = clap::value_parser!(u64).range(0..=604_800))]
+    pub grace: u64,
+    /// Do not rotate: end the grace window of the last rotation now.
+    #[arg(long)]
+    pub expire_previous: bool,
+    /// Print the server's answer as JSON.
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct PauseArgs {
+    /// Push subscription name.
+    pub subscription: String,
+    /// Why (shown as paused_reason).
+    #[arg(long)]
+    pub reason: Option<String>,
+    /// Print the server's answer as JSON.
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct AttemptsArgs {
+    /// Push subscription name.
+    pub subscription: String,
+    /// Only `success` or `failure`.
+    #[arg(long, value_parser = ["success", "failure"])]
+    pub outcome: Option<String>,
+    /// Only attempts of this message.
+    #[arg(long, value_name = "ID")]
+    pub message_id: Option<String>,
+    /// Only attempts at or after this RFC 3339 time.
+    #[arg(long, value_name = "TIME")]
+    pub since: Option<String>,
+    /// Only test sends.
+    #[arg(long)]
+    pub tests: bool,
+    /// How many (1-500).
+    #[arg(short = 'n', long, default_value_t = 20, value_parser = clap::value_parser!(u32).range(1..=500))]
+    pub limit: u32,
+    /// One JSON object per attempt (NDJSON).
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct CatalogArgs {
+    /// Print the catalog as JSON.
+    #[arg(long)]
+    pub json: bool,
 }
 
 #[derive(Debug, Args)]
@@ -172,6 +333,15 @@ pub async fn run_queues(g: &GlobalArgs, server: ServerArgs, cmd: QueuesCommand) 
         }
         QueuesCommand::Pull(a) => pull(&c, &a, out).await?,
         QueuesCommand::Tail(a) => tail(&c, a, out, ctrl_c()).await?,
+        QueuesCommand::Listen(a) => listen(&c, &a, out, ctrl_c()).await?,
+        QueuesCommand::Test(a) => test_send(&c, &a, out).await?,
+        QueuesCommand::Redrive(a) => redrive(&c, &a, out).await?,
+        QueuesCommand::Retry(a) => retry(&c, &a, out).await?,
+        QueuesCommand::RotateSecret(a) => rotate_secret(&c, &a, out).await?,
+        QueuesCommand::Pause(a) => pause_sub(&c, &a, out).await?,
+        QueuesCommand::Resume(a) => resume_sub(&c, &a, out).await?,
+        QueuesCommand::Attempts(a) => attempts(&c, &a, out).await?,
+        QueuesCommand::Catalog(a) => catalog(&c, &a, out).await?,
     }
     Ok(ExitCode::SUCCESS)
 }
@@ -433,6 +603,513 @@ async fn tail(c: &Client, a: TailArgs, out: &mut impl Write, stop: impl Future<O
         }
         out.flush()?;
     }
+}
+
+// ------------------------------------------------------------ webhook tooling
+
+fn json_arg(what: &str, text: &str) -> anyhow::Result<Value> {
+    serde_json::from_str(text).with_context(|| format!("{what} is not valid JSON"))
+}
+
+fn sub_path(sub: &str, rest: &str) -> String {
+    format!("/api/v1/queues/subscriptions/{}{rest}", enc(sub))
+}
+
+fn print_attempt(out: &mut impl Write, a: &Value, json: bool) -> anyhow::Result<()> {
+    if json {
+        writeln!(out, "{a}")?;
+        return Ok(());
+    }
+    let status = a["status"].as_i64().map_or_else(|| "-".to_owned(), |s| s.to_string());
+    write!(
+        out,
+        "#{}  {}  {}  attempt {}  {}  HTTP {}  {} ms",
+        a["id"],
+        a["at"].as_str().unwrap_or("?"),
+        a["message_id"].as_str().unwrap_or("?"),
+        a["attempt"],
+        a["outcome"].as_str().unwrap_or("?"),
+        status,
+        a["latency_ms"],
+    )?;
+    if a["test"].as_bool() == Some(true) {
+        write!(out, "  (test)")?;
+    }
+    writeln!(out)?;
+    if let Some(e) = a["error"].as_str() {
+        writeln!(out, "    {}: {e}", a["error_class"].as_str().unwrap_or("error"))?;
+    }
+    if let Some(b) = a["response_body"].as_str().filter(|b| !b.is_empty()) {
+        let cut = if a["response_truncated"].as_bool() == Some(true) {
+            " …"
+        } else {
+            ""
+        };
+        writeln!(out, "    response: {b}{cut}")?;
+    }
+    Ok(())
+}
+
+async fn test_send(c: &Client, a: &TestArgs, out: &mut impl Write) -> anyhow::Result<()> {
+    let body = match &a.data {
+        Some(d) => json!({ "data": json_arg("--data", d)? }),
+        None => json!({}),
+    };
+    let r = c.call("POST", &sub_path(&a.subscription, "/test"), Some(&body)).await?;
+    print_attempt(out, &r, a.json)?;
+    Ok(())
+}
+
+async fn redrive(c: &Client, a: &RedriveArgs, out: &mut impl Write) -> anyhow::Result<()> {
+    if !a.all && a.ids.is_empty() {
+        bail!("name dead letters with --id (repeatable), or pass --all");
+    }
+    let mut body = if a.all {
+        json!({ "all": true })
+    } else {
+        json!({ "ids": a.ids })
+    };
+    if let Some(s) = &a.since {
+        body["since"] = json!(s);
+    }
+    if let Some(f) = &a.filter {
+        body["filter"] = json_arg("--filter", f)?;
+    }
+    if let Some(l) = a.limit {
+        body["limit"] = json!(l);
+    }
+    let r = c
+        .call("POST", &sub_path(&a.subscription, "/redrive"), Some(&body))
+        .await?;
+    if a.json {
+        writeln!(out, "{r}")?;
+        return Ok(());
+    }
+    let n = |k: &str| r[k].as_array().map_or(0, Vec::len);
+    writeln!(out, "redrove {} dead letter(s) of {}", n("redriven"), a.subscription)?;
+    if n("already_redriven") > 0 {
+        writeln!(
+            out,
+            "{} were redriven before (each is redriven once)",
+            n("already_redriven")
+        )?;
+    }
+    if n("not_found") > 0 {
+        writeln!(out, "not dead letters of {}: {}", a.subscription, r["not_found"])?;
+    }
+    if let Some(m) = r["remaining"].as_i64().filter(|m| *m > 0) {
+        writeln!(out, "{m} more match; run it again")?;
+    }
+    Ok(())
+}
+
+async fn retry(c: &Client, a: &RetryArgs, out: &mut impl Write) -> anyhow::Result<()> {
+    let body = json!({ "message_ids": a.message_ids });
+    let r = c
+        .call("POST", &sub_path(&a.subscription, "/retry"), Some(&body))
+        .await?;
+    if a.json {
+        writeln!(out, "{r}")?;
+    } else {
+        writeln!(out, "{} delivery(ies) of {} retry now", r["count"], a.subscription)?;
+    }
+    Ok(())
+}
+
+async fn rotate_secret(c: &Client, a: &RotateSecretArgs, out: &mut impl Write) -> anyhow::Result<()> {
+    if a.expire_previous {
+        let r = c
+            .call(
+                "POST",
+                &sub_path(&a.subscription, "/secret/expire-previous"),
+                Some(&json!({})),
+            )
+            .await?;
+        if a.json {
+            writeln!(out, "{r}")?;
+        } else {
+            writeln!(
+                out,
+                "the previous secret of {} no longer signs deliveries",
+                a.subscription
+            )?;
+        }
+        return Ok(());
+    }
+    let body = json!({ "grace_ms": a.grace.saturating_mul(1000) });
+    let r = c
+        .call("POST", &sub_path(&a.subscription, "/secret/rotate"), Some(&body))
+        .await?;
+    if a.json {
+        writeln!(out, "{r}")?;
+        return Ok(());
+    }
+    writeln!(out, "new signing secret of {} (shown once):", a.subscription)?;
+    writeln!(out, "{}", r["push_secret"].as_str().unwrap_or("?"))?;
+    match r["previous_expires_at"].as_str() {
+        Some(t) => writeln!(
+            out,
+            "until {t} deliveries carry both signatures (t=…,v1=<new>,v1=<old>); switch your receiver before then"
+        )?,
+        None => writeln!(out, "the old secret no longer signs deliveries")?,
+    }
+    Ok(())
+}
+
+async fn pause_sub(c: &Client, a: &PauseArgs, out: &mut impl Write) -> anyhow::Result<()> {
+    let body = match &a.reason {
+        Some(r) => json!({ "reason": r }),
+        None => json!({}),
+    };
+    let r = c
+        .call("POST", &sub_path(&a.subscription, "/pause"), Some(&body))
+        .await?;
+    if a.json {
+        writeln!(out, "{r}")?;
+    } else {
+        writeln!(
+            out,
+            "paused {} ({}); messages accumulate until `forgebase queues resume {}`",
+            a.subscription,
+            r["paused_reason"].as_str().unwrap_or("paused"),
+            a.subscription
+        )?;
+    }
+    Ok(())
+}
+
+async fn resume_sub(c: &Client, a: &SubArgs, out: &mut impl Write) -> anyhow::Result<()> {
+    let r = c
+        .call("POST", &sub_path(&a.subscription, "/resume"), Some(&json!({})))
+        .await?;
+    if a.json {
+        writeln!(out, "{r}")?;
+    } else {
+        writeln!(out, "resumed {}; its backlog is delivered in order", a.subscription)?;
+    }
+    Ok(())
+}
+
+async fn attempts(c: &Client, a: &AttemptsArgs, out: &mut impl Write) -> anyhow::Result<()> {
+    let mut q = format!("?limit={}", a.limit);
+    if let Some(o) = &a.outcome {
+        q.push_str(&format!("&outcome={}", enc(o)));
+    }
+    if let Some(m) = &a.message_id {
+        q.push_str(&format!("&message_id={}", enc(m)));
+    }
+    if let Some(s) = &a.since {
+        q.push_str(&format!("&since={}", enc(s)));
+    }
+    if a.tests {
+        q.push_str("&test=true");
+    }
+    let r = c
+        .call("GET", &sub_path(&a.subscription, &format!("/attempts{q}")), None)
+        .await?;
+    let items = r["items"].as_array().cloned().unwrap_or_default();
+    for item in &items {
+        print_attempt(out, item, a.json)?;
+    }
+    if items.is_empty() && !a.json {
+        writeln!(out, "no attempts recorded for {}", a.subscription)?;
+    }
+    Ok(())
+}
+
+async fn catalog(c: &Client, a: &CatalogArgs, out: &mut impl Write) -> anyhow::Result<()> {
+    let r = c.call("GET", "/api/v1/queues/catalog", None).await?;
+    if a.json {
+        writeln!(out, "{r}")?;
+        return Ok(());
+    }
+    for t in r["topics"].as_array().cloned().unwrap_or_default() {
+        write!(out, "{}", t["topic"].as_str().unwrap_or("?"))?;
+        if let Some(d) = t["description"].as_str() {
+            write!(out, "  {d}")?;
+        }
+        writeln!(out)?;
+        for e in t["event_types"].as_array().cloned().unwrap_or_default() {
+            writeln!(out, "    {}  filter {}", e["type"].as_str().unwrap_or("?"), e["filter"])?;
+        }
+        if !t["example"].is_null() {
+            writeln!(out, "    example: {}", t["example"])?;
+        }
+    }
+    Ok(())
+}
+
+// ------------------------------------------------------------------- listen
+
+/// Where `listen` forwards to: a plain `http://` URL.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Target {
+    /// `host:port` to dial.
+    addr: String,
+    /// `Host` header.
+    host: String,
+    /// Path and query.
+    path: String,
+}
+
+fn parse_target(url: &str) -> anyhow::Result<Target> {
+    let rest = match url.strip_prefix("http://") {
+        Some(r) => r,
+        None if url.starts_with("https://") => {
+            bail!("--forward-to must be http:// (the CLI has no TLS stack; local receivers rarely need it)")
+        }
+        None => bail!("--forward-to must look like http://localhost:3000/webhooks, got {url:?}"),
+    };
+    let (host, path) = match rest.find('/') {
+        Some(i) => (&rest[..i], &rest[i..]),
+        None => (rest, "/"),
+    };
+    if host.is_empty() || host.contains('@') {
+        bail!("--forward-to must name a host (no credentials), got {url:?}");
+    }
+    let addr = if host.starts_with('[') {
+        if host.contains("]:") {
+            host.to_owned()
+        } else {
+            format!("{host}:80")
+        }
+    } else if host.contains(':') {
+        host.to_owned()
+    } else {
+        format!("{host}:80")
+    };
+    Ok(Target {
+        addr,
+        host: host.to_owned(),
+        path: path.to_owned(),
+    })
+}
+
+/// POSTs `body` to `t` (HTTP/1.1, `Connection: close`) and returns the status.
+async fn forward(t: &Target, headers: &[(String, String)], body: &[u8]) -> std::io::Result<u16> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    tokio::time::timeout(Duration::from_secs(30), async {
+        let mut stream = tokio::net::TcpStream::connect(&t.addr).await?;
+        let mut head = format!(
+            "POST {} HTTP/1.1\r\nHost: {}\r\nUser-Agent: forgebase-cli (queues listen)\r\nConnection: close\r\nContent-Length: {}\r\n",
+            t.path,
+            t.host,
+            body.len()
+        );
+        for (k, v) in headers {
+            head.push_str(&format!("{k}: {v}\r\n"));
+        }
+        head.push_str("\r\n");
+        stream.write_all(head.as_bytes()).await?;
+        stream.write_all(body).await?;
+        let mut buf = Vec::new();
+        let mut chunk = [0_u8; 4096];
+        // The status line is all that matters; stop once it is in.
+        loop {
+            let n = stream.read(&mut chunk).await?;
+            buf.extend_from_slice(&chunk[..n]);
+            if n == 0 || buf.windows(2).any(|w| w == b"\r\n") || buf.len() > 64 * 1024 {
+                break;
+            }
+        }
+        let line = String::from_utf8_lossy(&buf);
+        line.lines()
+            .next()
+            .and_then(|l| l.split_whitespace().nth(1))
+            .and_then(|s| s.parse::<u16>().ok())
+            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "not an HTTP response"))
+    })
+    .await
+    .map_err(|_| std::io::Error::new(std::io::ErrorKind::TimedOut, "the local endpoint did not answer in 30 s"))?
+}
+
+fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
+}
+
+/// One delivery forwarded: signed like a webhook push, then acked on `2xx`, nacked otherwise.
+async fn forward_one(
+    t: &Target,
+    secret: &str,
+    sub: &str,
+    m: &Value,
+    out: &mut impl Write,
+    json: bool,
+) -> anyhow::Result<bool> {
+    let envelope = json!({
+        "subscription": sub,
+        "delivery_attempt": m["delivery_attempt"],
+        "message": m["message"],
+    });
+    let body = serde_json::to_vec(&envelope)?;
+    let id = m["message"]["id"].as_str().unwrap_or("?").to_owned();
+    let attempt = m["delivery_attempt"].as_i64().unwrap_or(1);
+    let headers = vec![
+        ("Content-Type".to_owned(), "application/json".to_owned()),
+        (
+            forgebase_queue::push::SIGNATURE_HEADER.to_owned(),
+            forgebase_queue::push::sign(secret, unix_now(), &body),
+        ),
+        ("X-Forgebase-Subscription".to_owned(), sub.to_owned()),
+        ("X-Forgebase-Message-Id".to_owned(), id.clone()),
+        ("X-Forgebase-Delivery-Attempt".to_owned(), attempt.to_string()),
+    ];
+    let started = std::time::Instant::now();
+    let res = forward(t, &headers, &body).await;
+    let ms = started.elapsed().as_millis();
+    let ok = matches!(res, Ok(s) if (200..300).contains(&s));
+    if json {
+        let (status, error) = match &res {
+            Ok(s) => (json!(s), Value::Null),
+            Err(e) => (Value::Null, json!(e.to_string())),
+        };
+        writeln!(
+            out,
+            "{}",
+            json!({"message_id": id, "delivery_attempt": attempt, "status": status, "error": error,
+                   "latency_ms": ms, "acked": ok})
+        )?;
+    } else {
+        let at = m["message"]["published_at"].as_str().unwrap_or("?");
+        match &res {
+            Ok(s) => writeln!(
+                out,
+                "{at}  {id}  attempt {attempt}  -> {s} ({ms} ms)  {}",
+                if ok { "acked" } else { "nacked" }
+            )?,
+            Err(e) => writeln!(out, "{at}  {id}  attempt {attempt}  -> error: {e}  nacked")?,
+        }
+    }
+    out.flush()?;
+    Ok(ok)
+}
+
+/// `queues listen`: a temporary pull subscription (with a time to live, renewed while running),
+/// consumed over the WebSocket streaming pull; each delivery is signed with a session secret,
+/// POSTed to the local URL, acked on `2xx` and nacked otherwise. The subscription is deleted on
+/// exit (Ctrl-C), and expires on its own if this process dies.
+async fn listen(
+    c: &Client,
+    a: &ListenArgs,
+    out: &mut impl Write,
+    stop: impl Future<Output = ()>,
+) -> anyhow::Result<()> {
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::Message as WsMessage;
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+
+    let target = parse_target(&a.forward_to)?;
+    let filter = a.filter.as_deref().map(|f| json_arg("--filter", f)).transpose()?;
+    let secret = format!(
+        "whsec_{}",
+        forgebase_auth::crypto::random_token(32).map_err(|e| anyhow::anyhow!("no random secret: {e}"))?
+    );
+    let tag = forgebase_auth::crypto::random_token(6)
+        .map_err(|e| anyhow::anyhow!("no random name: {e}"))?
+        .to_ascii_lowercase()
+        .replace(['-', '_'], "x");
+    let sub = format!("listen-{tag}");
+    let ttl_ms = a.ttl.saturating_mul(1000);
+    let mut body = json!({
+        "name": sub,
+        "topic": a.topic,
+        "ack_deadline_ms": 60_000,
+        "backoff_base_ms": 1_000,
+        "backoff_max_ms": 30_000,
+        "ttl_ms": ttl_ms,
+        "labels": {"forgebase.listen": "true"},
+    });
+    if let Some(f) = filter {
+        body["filter"] = f;
+    }
+    c.call("POST", "/api/v1/queues/subscriptions", Some(&body)).await?;
+    if !a.json {
+        writeln!(
+            out,
+            "Ready! Forwarding topic {} to {} through temporary subscription {sub} (Ctrl-C to stop).",
+            a.topic, a.forward_to
+        )?;
+        writeln!(out, "Session signing secret: {secret}")?;
+        writeln!(
+            out,
+            "Deliveries carry {}: t=<unix seconds>,v1=<hex HMAC-SHA256(secret, \"<t>.<body>\")>",
+            forgebase_queue::push::SIGNATURE_HEADER
+        )?;
+    } else {
+        writeln!(
+            out,
+            "{}",
+            json!({"subscription": sub, "secret": secret, "topic": a.topic})
+        )?;
+    }
+    out.flush()?;
+    let result = async {
+        let url = format!(
+            "ws://{}{}?max_messages={}",
+            c.addr,
+            sub_path(&sub, "/stream"),
+            a.max_in_flight
+        );
+        let mut req = url.into_client_request().context("bad stream URL")?;
+        if let Some(t) = &c.token {
+            req.headers_mut()
+                .insert("authorization", format!("Bearer {t}").parse().context("bad token")?);
+        }
+        let (mut ws, _) = tokio_tungstenite::connect_async(req)
+            .await
+            .with_context(|| format!("cannot open the stream of {sub}"))?;
+        let renew_every = Duration::from_millis(ttl_ms / 3);
+        let mut renew = tokio::time::interval_at(tokio::time::Instant::now() + renew_every, renew_every);
+        tokio::pin!(stop);
+        loop {
+            tokio::select! {
+                () = &mut stop => {
+                    let _ = ws.send(WsMessage::Close(None)).await;
+                    return Ok(());
+                }
+                _ = renew.tick() => {
+                    c.call("PATCH", &sub_path(&sub, ""), Some(&json!({"ttl_ms": ttl_ms}))).await?;
+                }
+                frame = ws.next() => {
+                    let text = match frame {
+                        None => bail!("the server closed the stream"),
+                        Some(Err(e)) => bail!("stream failed: {e}"),
+                        Some(Ok(WsMessage::Text(t))) => t.to_string(),
+                        Some(Ok(WsMessage::Close(_))) => bail!("the server closed the stream"),
+                        Some(Ok(_)) => continue,
+                    };
+                    let v: Value = serde_json::from_str(&text).context("bad stream frame")?;
+                    match v["type"].as_str() {
+                        Some("messages") => {
+                            for m in v["messages"].as_array().cloned().unwrap_or_default() {
+                                let ok = forward_one(&target, &secret, &sub, &m, out, a.json).await?;
+                                let ack_id = m["ack_id"].as_str().unwrap_or_default();
+                                let reply = json!({"type": if ok { "ack" } else { "nack" }, "ack_ids": [ack_id]});
+                                ws.send(WsMessage::Text(reply.to_string().into())).await?;
+                            }
+                        }
+                        Some("error") => bail!(
+                            "{}: {}",
+                            v["code"].as_str().unwrap_or("error"),
+                            v["message"].as_str().unwrap_or("the stream failed")
+                        ),
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+    .await;
+    let cleanup = c.call("DELETE", &sub_path(&sub, ""), None).await;
+    match (&cleanup, a.json) {
+        (Ok(_), false) => writeln!(out, "Deleted temporary subscription {sub}.")?,
+        (Err(e), false) => writeln!(out, "Could not delete {sub} ({e}); it expires on its own.")?,
+        _ => {}
+    }
+    out.flush()?;
+    result
 }
 
 // -------------------------------------------------------------------- watch
@@ -817,5 +1494,446 @@ mod tests {
             .await
             .unwrap_err();
         assert!(e.to_string().contains("job_not_found"));
+    }
+
+    // ------------------------------------------------------- webhook tooling
+
+    #[test]
+    fn forward_targets_are_plain_http() {
+        assert_eq!(
+            parse_target("http://localhost:3000/webhooks?x=1").unwrap(),
+            Target {
+                addr: "localhost:3000".into(),
+                host: "localhost:3000".into(),
+                path: "/webhooks?x=1".into(),
+            }
+        );
+        assert_eq!(parse_target("http://127.0.0.1").unwrap().addr, "127.0.0.1:80");
+        assert_eq!(parse_target("http://[::1]:8080/h").unwrap().addr, "[::1]:8080");
+        assert!(
+            parse_target("https://example.com/h")
+                .unwrap_err()
+                .to_string()
+                .contains("http://")
+        );
+        assert!(parse_target("localhost:3000").is_err());
+        assert!(parse_target("http://user@host/").is_err());
+    }
+
+    #[tokio::test]
+    async fn thin_commands_call_their_routes() {
+        let rotated =
+            r#"{"subscription":"hook","push_secret":"whsec_new","previous_expires_at":"2026-11-15T00:00:00Z"}"#;
+        let redriven = r#"{"redriven":[1,2],"already_redriven":[3],"not_found":[],"remaining":4}"#;
+        let attempt = r#"{"items":[{"id":7,"at":"t","message_id":"m1","attempt":2,"outcome":"failure","status":500,
+            "latency_ms":12,"test":false,"error_class":"http_status","error":"the endpoint answered HTTP 500",
+            "response_body":"oops","response_truncated":true}]}"#;
+        let (addr, seen) = fake_server(vec![
+            (200, rotated.into()),
+            (200, redriven.into()),
+            (200, attempt.into()),
+            (200, r#"{"count":3}"#.into()),
+            (200, r#"{"paused_reason":"deploy"}"#.into()),
+            (200, "{}".into()),
+        ])
+        .await;
+        let c = cl(&addr);
+        let mut out = Vec::new();
+        rotate_secret(
+            &c,
+            &RotateSecretArgs {
+                subscription: "hook".into(),
+                grace: 60,
+                expire_previous: false,
+                json: false,
+            },
+            &mut out,
+        )
+        .await
+        .unwrap();
+        redrive(
+            &c,
+            &RedriveArgs {
+                subscription: "hook".into(),
+                ids: vec![],
+                all: true,
+                since: Some("2026-11-01T00:00:00Z".into()),
+                filter: Some(r#"{"kind":"a"}"#.into()),
+                limit: Some(2),
+                json: false,
+            },
+            &mut out,
+        )
+        .await
+        .unwrap();
+        attempts(
+            &c,
+            &AttemptsArgs {
+                subscription: "hook".into(),
+                outcome: Some("failure".into()),
+                message_id: None,
+                since: None,
+                tests: false,
+                limit: 5,
+                json: false,
+            },
+            &mut out,
+        )
+        .await
+        .unwrap();
+        retry(
+            &c,
+            &RetryArgs {
+                subscription: "hook".into(),
+                message_ids: vec!["m1".into()],
+                json: false,
+            },
+            &mut out,
+        )
+        .await
+        .unwrap();
+        pause_sub(
+            &c,
+            &PauseArgs {
+                subscription: "hook".into(),
+                reason: Some("deploy".into()),
+                json: false,
+            },
+            &mut out,
+        )
+        .await
+        .unwrap();
+        resume_sub(
+            &c,
+            &SubArgs {
+                subscription: "hook".into(),
+                json: false,
+            },
+            &mut out,
+        )
+        .await
+        .unwrap();
+        let o = text(out);
+        assert!(o.contains("whsec_new") && o.contains("both signatures"), "{o}");
+        assert!(
+            o.contains("redrove 2 dead letter(s)") && o.contains("4 more match"),
+            "{o}"
+        );
+        assert!(o.contains("#7  t  m1  attempt 2  failure  HTTP 500  12 ms"), "{o}");
+        assert!(
+            o.contains("http_status: the endpoint answered HTTP 500") && o.contains("response: oops …"),
+            "{o}"
+        );
+        assert!(o.contains("3 delivery(ies) of hook retry now"), "{o}");
+        assert!(o.contains("paused hook (deploy)") && o.contains("resumed hook"), "{o}");
+        let s = seen.lock().unwrap();
+        let lines: Vec<&str> = s.iter().map(|r| r.request_line.as_str()).collect();
+        assert_eq!(
+            lines,
+            vec![
+                "POST /api/v1/queues/subscriptions/hook/secret/rotate HTTP/1.1",
+                "POST /api/v1/queues/subscriptions/hook/redrive HTTP/1.1",
+                "GET /api/v1/queues/subscriptions/hook/attempts?limit=5&outcome=failure HTTP/1.1",
+                "POST /api/v1/queues/subscriptions/hook/retry HTTP/1.1",
+                "POST /api/v1/queues/subscriptions/hook/pause HTTP/1.1",
+                "POST /api/v1/queues/subscriptions/hook/resume HTTP/1.1",
+            ]
+        );
+        assert_eq!(
+            serde_json::from_str::<Value>(&s[0].body).unwrap(),
+            json!({"grace_ms": 60000})
+        );
+        assert_eq!(
+            serde_json::from_str::<Value>(&s[1].body).unwrap(),
+            json!({"all": true, "since": "2026-11-01T00:00:00Z", "filter": {"kind": "a"}, "limit": 2})
+        );
+        assert_eq!(
+            serde_json::from_str::<Value>(&s[3].body).unwrap(),
+            json!({"message_ids": ["m1"]})
+        );
+    }
+
+    #[tokio::test]
+    async fn redrive_needs_ids_or_all_and_test_send_takes_json_data() {
+        let (addr, seen) = fake_server(vec![(
+            200,
+            r#"{"id":1,"at":"t","message_id":"test-1","attempt":1,"outcome":"success","status":204,"latency_ms":3,"test":true}"#
+                .into(),
+        )])
+        .await;
+        let c = cl(&addr);
+        let e = redrive(
+            &c,
+            &RedriveArgs {
+                subscription: "hook".into(),
+                ids: vec![],
+                all: false,
+                since: None,
+                filter: None,
+                limit: None,
+                json: false,
+            },
+            &mut Vec::new(),
+        )
+        .await
+        .unwrap_err();
+        assert!(e.to_string().contains("--id"));
+        let mut out = Vec::new();
+        test_send(
+            &c,
+            &TestArgs {
+                subscription: "hook".into(),
+                data: Some(r#"{"hello":1}"#.into()),
+                json: false,
+            },
+            &mut out,
+        )
+        .await
+        .unwrap();
+        assert!(text(out).contains("test-1  attempt 1  success  HTTP 204  3 ms  (test)"));
+        {
+            let s = seen.lock().unwrap();
+            assert_eq!(
+                s[0].request_line,
+                "POST /api/v1/queues/subscriptions/hook/test HTTP/1.1"
+            );
+            assert_eq!(
+                serde_json::from_str::<Value>(&s[0].body).unwrap(),
+                json!({"data": {"hello": 1}})
+            );
+        }
+        assert!(
+            test_send(
+                &c,
+                &TestArgs {
+                    subscription: "hook".into(),
+                    data: Some("{nope".into()),
+                    json: false
+                },
+                &mut Vec::new()
+            )
+            .await
+            .is_err()
+        );
+    }
+
+    /// `listen` against a real queue service (SQLite, the HTTP API with the
+    /// WebSocket stream) and a local receiver that fails once.
+    mod listen_e2e {
+        use std::sync::Arc;
+
+        use axum::extract::Request;
+        use axum::http::HeaderMap;
+        use axum::middleware::Next;
+        use forgebase_data::{AccessContext, DataService};
+        use forgebase_db::{Backend, Database, DbOptions, Statement, TxMode};
+        use forgebase_queue::{NewMessage, NewTopic, QueueService, QueueSettings};
+
+        use super::*;
+
+        struct Server {
+            svc: QueueService,
+            addr: String,
+            _dir: tempfile::TempDir,
+        }
+
+        fn root() -> AccessContext {
+            AccessContext::admin("root")
+        }
+
+        async fn server() -> Server {
+            let dir = tempfile::tempdir().unwrap();
+            let layout = forgebase_core::DataLayout::new(dir.path().join("data"));
+            layout.ensure().unwrap();
+            let cfg = forgebase_core::Config::defaults(dir.path());
+            let db = Database::open(DbOptions::from_config(&cfg.database, layout.database_path()))
+                .await
+                .unwrap();
+            db.migrate(Some(&layout.backups_dir())).await.unwrap();
+            let mut tx = db.begin(TxMode::Normal).await.unwrap();
+            tx.execute(&Statement::raw(
+                "INSERT INTO _forgebase_admins (id, email, password_hash, created_at, updated_at) \
+                 VALUES ('root', 'root@example.com', '$argon2id$test', 0, 0)",
+            ))
+            .await
+            .unwrap();
+            tx.commit().await.unwrap();
+            let backend: Arc<dyn Backend> = Arc::new(db.clone());
+            let policy = forgebase_policy::PolicyService::open(backend.clone()).await.unwrap();
+            let data = DataService::new(backend.clone(), policy.authorizer()).await.unwrap();
+            policy.attach_data(data.clone());
+            let svc = QueueService::new(
+                data.clone(),
+                forgebase_auth::crypto::Keyring::from_master(b"cli-listen-test-master-key-0123456"),
+                QueueSettings {
+                    poll_interval: Duration::from_millis(50),
+                    ..QueueSettings::default()
+                },
+            );
+            let state = forgebase_api::AppState::from_data(db.clone(), layout, data);
+            let app = forgebase_api::router(
+                state,
+                forgebase_api::RouterOptions {
+                    extensions: vec![forgebase_queue::extension(svc.clone())],
+                    ..forgebase_api::RouterOptions::default()
+                },
+            )
+            .layer(axum::middleware::from_fn(|mut req: Request, next: Next| async move {
+                req.extensions_mut().insert(root());
+                next.run(req).await
+            }));
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap().to_string();
+            tokio::spawn(async move {
+                axum::serve(
+                    listener,
+                    app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+                )
+                .await
+                .unwrap();
+            });
+            Server { svc, addr, _dir: dir }
+        }
+
+        type Calls = Arc<std::sync::Mutex<Vec<(HeaderMap, Vec<u8>)>>>;
+
+        /// Answers 500 to the first request, 204 to the rest.
+        async fn receiver() -> (String, Calls) {
+            let calls: Calls = Arc::default();
+            let log = calls.clone();
+            let app = axum::Router::new().route(
+                "/hook",
+                axum::routing::post(move |headers: HeaderMap, body: axum::body::Bytes| {
+                    let log = log.clone();
+                    async move {
+                        let mut l = log.lock().unwrap();
+                        l.push((headers, body.to_vec()));
+                        if l.len() == 1 {
+                            axum::http::StatusCode::INTERNAL_SERVER_ERROR
+                        } else {
+                            axum::http::StatusCode::NO_CONTENT
+                        }
+                    }
+                }),
+            );
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap().to_string();
+            tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+            (addr, calls)
+        }
+
+        async fn eventually<T, F, Fut>(mut check: F) -> T
+        where
+            F: FnMut() -> Fut,
+            Fut: Future<Output = Option<T>>,
+        {
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+            loop {
+                if let Some(v) = check().await {
+                    return v;
+                }
+                assert!(tokio::time::Instant::now() < deadline, "timed out");
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        }
+
+        #[tokio::test]
+        async fn listen_forwards_signed_deliveries_acks_2xx_and_cleans_up() {
+            let srv = server().await;
+            srv.svc
+                .create_topic(
+                    &root(),
+                    NewTopic {
+                        name: "orders".into(),
+                        ..NewTopic::default()
+                    },
+                )
+                .await
+                .unwrap();
+            let (hook, calls) = receiver().await;
+            let c = Client {
+                addr: srv.addr.clone(),
+                token: None,
+                forbidden: FORBIDDEN,
+            };
+            let args = ListenArgs {
+                topic: "orders".into(),
+                forward_to: format!("http://{hook}/hook"),
+                filter: Some(r#"{"kind":"rush"}"#.into()),
+                ttl: 600,
+                max_in_flight: 10,
+                json: false,
+            };
+            let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
+            let svc = srv.svc.clone();
+            let driver = async {
+                let sub = eventually(|| async {
+                    svc.subscriptions(&root(), Some("orders"))
+                        .await
+                        .unwrap()
+                        .into_iter()
+                        .next()
+                })
+                .await;
+                assert!(sub.name.starts_with("listen-"), "{}", sub.name);
+                assert!(sub.expires_at.is_some(), "a crash cannot leak it");
+                assert_eq!(sub.filter, Some(json!({"kind": "rush"})));
+                svc.publish(
+                    &root(),
+                    "orders",
+                    vec![
+                        NewMessage::new(json!({"n": 1})).attr("kind", "rush"),
+                        NewMessage::new(json!({"n": 2})).attr("kind", "slow"),
+                    ],
+                )
+                .await
+                .unwrap();
+                // 500 (nacked), redelivered after the 1 s backoff, 204 (acked).
+                let m = eventually(|| async {
+                    let m = svc.subscription_metrics(&root(), &sub.name).await.unwrap();
+                    (m.acked_total == 1).then_some(m)
+                })
+                .await;
+                assert_eq!((m.nacked_total, m.backlog_messages), (1, 0));
+                stop_tx.send(()).unwrap();
+                sub.name
+            };
+            let mut out = Vec::new();
+            let (res, name) = tokio::join!(
+                listen(&c, &args, &mut out, async {
+                    let _ = stop_rx.await;
+                }),
+                driver
+            );
+            res.unwrap();
+            let o = text(out);
+            let secret = o
+                .lines()
+                .find_map(|l| l.strip_prefix("Session signing secret: "))
+                .expect("the session secret is printed")
+                .to_owned();
+            assert!(secret.starts_with("whsec_"));
+            let calls = calls.lock().unwrap().clone();
+            assert_eq!(calls.len(), 2, "the filtered-out message is not forwarded");
+            for (i, (headers, body)) in calls.iter().enumerate() {
+                let sig = headers[forgebase_queue::push::SIGNATURE_HEADER].to_str().unwrap();
+                assert!(
+                    forgebase_queue::push::verify(&secret, sig, body, unix_now(), 300),
+                    "signature of delivery {i}"
+                );
+                let b: Value = serde_json::from_slice(body).unwrap();
+                assert_eq!(b["subscription"], name);
+                assert_eq!(b["delivery_attempt"], i + 1);
+                assert_eq!(b["message"]["data"], json!({"n": 1}));
+                assert_eq!(headers["x-forgebase-message-id"], b["message"]["id"].as_str().unwrap());
+            }
+            assert!(o.contains("attempt 1  -> 500") && o.contains("nacked"), "{o}");
+            assert!(o.contains("attempt 2  -> 204") && o.contains("acked"), "{o}");
+            assert!(o.contains(&format!("Deleted temporary subscription {name}.")), "{o}");
+            assert!(
+                srv.svc.subscriptions(&root(), Some("orders")).await.unwrap().is_empty(),
+                "deleted on exit"
+            );
+        }
     }
 }

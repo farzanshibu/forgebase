@@ -18,6 +18,7 @@ forgebase-db.workspace = true
 forgebase-entitlements.workspace = true
 forgebase-functions.workspace = true
 forgebase-jobs.workspace = true
+forgebase-observability.workspace = true
 forgebase-realtime.workspace = true
 futures-util = { workspace = true, features = ["sink"] }
 hmac.workspace = true

@@ -1,0 +1,1 @@
+terraform import forgebase_feature.ai_generation ai_generation

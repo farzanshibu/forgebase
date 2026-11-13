@@ -338,6 +338,10 @@ impl PaymentProvider for WechatPayProvider {
         "wechat_pay"
     }
 
+    fn account(&self) -> Option<String> {
+        Some(self.cfg.mchid.clone()).filter(|a| !a.is_empty())
+    }
+
     fn create_customer<'a>(&'a self, c: &'a CustomerRef) -> BoxFuture<'a, Result<String>> {
         // WeChat Pay has no customer object; the payer is an openid per payment.
         Box::pin(async move { Ok(c.customer_id.clone()) })

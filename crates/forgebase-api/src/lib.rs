@@ -8,6 +8,7 @@
 //! | `GET /health/ready` | readiness (database + storage) |
 //! | `GET /metrics` | Prometheus metrics |
 //! | `GET /api/system/info` | instance information |
+//! | `GET /api/system/capabilities` | per feature: engine (accelerator or portable), state, limits (ADR-0034) |
 //! | `GET /api/system/features` | feature registry and settings (administrators; FB-91) |
 //! | `PATCH /api/system/config` | write settings to the config file (administrators; FB-91) |
 //! | `/api/system/database/*` | database topology: replicas, shards, operations (administrators; FB-175) |
@@ -28,6 +29,7 @@
 //! request gates (plan-based rate limits; FB-24) → handler.
 
 pub mod admin;
+pub mod capabilities;
 pub mod consistency;
 pub mod context;
 pub mod error;
@@ -88,6 +90,18 @@ struct StateInner {
     realtime: Option<forgebase_realtime::RealtimeService>,
     collectors: Vec<MetricsCollector>,
     database: DatabaseRuntime,
+    sections: Vec<StatusSection>,
+}
+
+/// An extra top-level entry of `GET /api/system/info`, computed per request
+/// (ADR-0033: `tls`).
+#[derive(Clone)]
+pub struct StatusSection(&'static str, Arc<dyn Fn() -> serde_json::Value + Send + Sync>);
+
+impl std::fmt::Debug for StatusSection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("StatusSection").field(&self.0).finish()
+    }
 }
 
 /// What `/api/system/info` and `/health/ready` report about the database
@@ -193,6 +207,7 @@ impl AppState {
                 realtime: None,
                 collectors: Vec::new(),
                 database: DatabaseRuntime::default(),
+                sections: Vec::new(),
             }),
         })
     }
@@ -233,6 +248,7 @@ impl AppState {
                 realtime: None,
                 collectors: Vec::new(),
                 database: DatabaseRuntime::default(),
+                sections: Vec::new(),
             }),
         }
     }
@@ -301,6 +317,24 @@ impl AppState {
     /// What the server knows about its database engine.
     pub fn database_runtime(&self) -> &DatabaseRuntime {
         &self.inner.database
+    }
+
+    /// Same state with an extra top-level entry `name` in
+    /// `GET /api/system/info`, computed by `f` on every request (ADR-0033:
+    /// `tls`). Names of the built-in entries are not replaced.
+    pub fn with_status_section<F>(mut self, name: &'static str, f: F) -> Self
+    where
+        F: Fn() -> serde_json::Value + Send + Sync + 'static,
+    {
+        Arc::make_mut(&mut self.inner)
+            .sections
+            .push(StatusSection(name, Arc::new(f)));
+        self
+    }
+
+    /// The extra `/api/system/info` entries, computed now.
+    pub(crate) fn status_sections(&self) -> serde_json::Map<String, serde_json::Value> {
+        self.inner.sections.iter().map(|s| (s.0.to_owned(), (s.1)())).collect()
     }
 
     /// The realtime service, when configured.
@@ -524,6 +558,7 @@ pub fn router_with(
             Router::new()
                 .route("/metrics", get(routes::metrics))
                 .route("/api/system/info", get(routes::system_info))
+                .route("/api/system/capabilities", get(capabilities::get_capabilities))
                 .route_layer(middleware::from_fn_with_state(opts.ops_access, routes::ops_gate)),
         )
         .merge(
@@ -738,6 +773,40 @@ mod tests {
         );
         assert!(j["database"]["size_bytes"].as_u64().unwrap() > 0);
         assert!(j["database"]["path"].as_str().unwrap().ends_with("forgebase.db"));
+    }
+
+    /// ADR-0033: server-provided entries of `/api/system/info`, computed per
+    /// request; they cannot replace a built-in entry.
+    #[tokio::test]
+    async fn status_sections_extend_system_info() {
+        let tmp = tempfile::tempdir().unwrap();
+        let layout = DataLayout::new(tmp.path().join("data"));
+        layout.ensure().unwrap();
+        let cfg = forgebase_core::Config::defaults(tmp.path());
+        let db = Database::open(forgebase_db::DbOptions::from_config(
+            &cfg.database,
+            layout.database_path(),
+        ))
+        .await
+        .unwrap();
+        db.migrate(Some(&layout.backups_dir())).await.unwrap();
+        let calls = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let seen = calls.clone();
+        let state = AppState::new(db, layout)
+            .await
+            .unwrap()
+            .with_status_section("tls", move || {
+                let n = seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+                serde_json::json!({ "mode": "files", "calls": n })
+            })
+            .with_status_section("version", || serde_json::json!("forged"));
+        let app = router(state, RouterOptions::default());
+        let (s, _, j, _) = call(&app, Method::GET, "/api/system/info", &[]).await;
+        assert_eq!(s, StatusCode::OK);
+        assert_eq!(j["tls"], serde_json::json!({ "mode": "files", "calls": 1 }));
+        assert_eq!(j["version"], env!("CARGO_PKG_VERSION"), "built-in entries win");
+        let (_, _, j, _) = call(&app, Method::GET, "/api/system/info", &[]).await;
+        assert_eq!(j["tls"]["calls"], 2, "computed per request");
     }
 
     /// FB-148: the backend, the engine and the feature engines, on the test

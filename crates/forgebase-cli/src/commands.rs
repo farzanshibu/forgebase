@@ -509,12 +509,16 @@ pub async fn serve(g: &GlobalArgs) -> anyhow::Result<ExitCode> {
     // queued and handled as a graceful shutdown once startup finished.
     let signals = forgebase_server::ShutdownSignals::install();
     let server = forgebase_server::start_loaded(&loaded).await?;
-    let addr = server.local_addr();
-    println!("ForgeBase {} listening on http://{addr}", build::VERSION);
-    println!("  admin:     http://{addr}/admin/");
-    println!("  health:    http://{addr}/health");
+    let url = server.url();
+    println!("ForgeBase {} listening on {url}", build::VERSION);
+    println!("  admin:     {url}/admin/");
+    println!("  health:    {url}/health");
+    if let Some(plain) = server.http_redirect_addr() {
+        println!("  http:      http://{plain} (redirects to HTTPS)");
+    }
     if let Some(resp) = server.resp_addr() {
-        println!("  redis:     redis://{resp} (RESP2/RESP3; AUTH with an API key or personal access token)");
+        let scheme = if config.resp.tls { "rediss" } else { "redis" };
+        println!("  redis:     {scheme}://{resp} (RESP2/RESP3; AUTH with an API key or personal access token)");
     }
     println!("  data dir:  {}", config.data_dir.display());
     match (server.backend(), server.engine()) {
@@ -536,11 +540,7 @@ pub async fn serve(g: &GlobalArgs) -> anyhow::Result<ExitCode> {
         // FB-90: standard output only, never the log.
         println!();
         // The configured public URL when set (FB-91 server.public_url), otherwise the bound address.
-        let base = config
-            .server
-            .public_url
-            .clone()
-            .unwrap_or_else(|| format!("http://{addr}"));
+        let base = config.server.public_url.clone().unwrap_or_else(|| url.clone());
         println!("First run: create the administrator at {}", setup_link(&base, token));
     }
     server.run_until_signals(signals).await?;

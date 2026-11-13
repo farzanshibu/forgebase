@@ -131,6 +131,9 @@ struct DatabaseSummary {
     /// Per accelerated feature: the engine it runs on and its extension
     /// (ADR-0029 §1.1); empty on SQLite.
     features: Map<String, Value>,
+    /// Every feature's engine, state and limits (ADR-0034; also
+    /// `GET /api/system/capabilities`).
+    capabilities: Vec<crate::capabilities::Capability>,
 }
 
 /// `database.features` of the system info (ADR-0029 §1.1): per accelerated
@@ -138,39 +141,12 @@ struct DatabaseSummary {
 /// state (`active`, `portable`, `off`), mode, extension and versions, and
 /// why it is portable. From the server's extension setup; a process that
 /// did not run it (tests, tools) detects without changing anything.
-async fn feature_engines(state: &AppState) -> Map<String, Value> {
+fn feature_engines(report: Option<&forgebase_db::ExtensionReport>) -> Map<String, Value> {
     let mut out = Map::new();
-    let db = state.db();
-    if db.kind() != forgebase_db::BackendKind::Postgres {
+    let Some(report) = report else {
         return out;
-    }
-    let report = match db.extensions() {
-        Some(r) => (*r).clone(),
-        None => {
-            let mut modes = forgebase_core::config::PostgresExtensions::default();
-            for (feature, _, mode) in &state.database_runtime().extensions {
-                let Ok(mode) = mode.parse::<forgebase_core::config::ExtensionMode>() else {
-                    continue;
-                };
-                match forgebase_db::Feature::from_name(feature) {
-                    Some(forgebase_db::Feature::Vector) => modes.vector = mode,
-                    Some(forgebase_db::Feature::Graph) => modes.graph = mode,
-                    Some(forgebase_db::Feature::Queue) => modes.queue = mode,
-                    Some(forgebase_db::Feature::Cron) => modes.cron = mode,
-                    Some(forgebase_db::Feature::Trigram) => modes.trigram = mode,
-                    None => {}
-                }
-            }
-            match db.detect_extensions(&modes).await {
-                Ok(r) => r,
-                Err(e) => {
-                    tracing::debug!(error = %e, "cannot detect PostgreSQL extensions");
-                    return out;
-                }
-            }
-        }
     };
-    for f in report.features {
+    for f in &report.features {
         out.insert(
             f.feature.name().to_owned(),
             json!({
@@ -182,7 +158,7 @@ async fn feature_engines(state: &AppState) -> Map<String, Value> {
                 "installed": f.installed,
                 "schema": f.schema,
                 "schema_version": f.schema_version,
-                "reason": f.reason,
+                "reason": &f.reason,
             }),
         );
     }
@@ -199,12 +175,16 @@ pub struct SystemInfo {
     started_at: String,
     uptime_secs: u64,
     database: DatabaseSummary,
+    /// Entries added by the server (`tls`, ADR-0033).
+    #[serde(flatten)]
+    sections: serde_json::Map<String, serde_json::Value>,
 }
 
 /// `GET /api/system/info`: read-only instance information.
 pub async fn system_info(State(state): State<AppState>) -> Result<Response, ApiError> {
     let db = state.db().info().await?;
     let rt = state.database_runtime();
+    let report = crate::capabilities::extension_report(&state).await;
     let path = match &rt.location {
         Some(l) => l.clone(),
         None if db.path.as_os_str().is_empty() => state.db().location(),
@@ -229,7 +209,23 @@ pub async fn system_info(State(state): State<AppState>) -> Result<Response, ApiE
             default_backend: forgebase_core::config::DEFAULT_BACKEND.as_str(),
             bundled_postgres: forgebase_core::config::BUNDLED_POSTGRES,
             engine: rt.engine.as_ref().map(|e| e()),
-            features: feature_engines(&state).await,
+            features: feature_engines(report.as_ref()),
+            capabilities: crate::capabilities::build(state.db().kind(), report.as_ref()).features,
+        },
+        sections: {
+            let mut m = state.status_sections();
+            for builtin in [
+                "name",
+                "version",
+                "mode",
+                "data_dir",
+                "started_at",
+                "uptime_secs",
+                "database",
+            ] {
+                m.remove(builtin);
+            }
+            m
         },
     };
     Ok(no_store(Json(info).into_response()))
@@ -331,7 +327,7 @@ pub async fn not_found() -> ApiError {
     ApiError::not_found("no route for this path")
 }
 
-fn no_store(mut res: Response) -> Response {
+pub(crate) fn no_store(mut res: Response) -> Response {
     res.headers_mut()
         .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
     res

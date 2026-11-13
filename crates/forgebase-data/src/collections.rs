@@ -312,7 +312,7 @@ impl DataService {
 
         let mut tx = self.begin(TxMode::SchemaChange).await?;
         let result = async {
-            let cat = CatalogSnapshot::load_tx(&mut *tx).await?;
+            let cat = CatalogSnapshot::load_tx(&mut *tx).await?.with_pg_trgm(self.pg_trgm());
             let old = cat
                 .get(&current.id)
                 .cloned()
@@ -535,7 +535,8 @@ impl DataService {
             }
             for ix in &manual {
                 let stmts = match ix.kind {
-                    IndexKind::Btree | IndexKind::Trigram => create_index_sql(d, &new_cat, new, ix)?,
+                    IndexKind::Btree => create_index_sql(d, &new_cat, new, ix)?,
+                    IndexKind::Trigram => crate::fuzzy::rebuild_sql(d, &new_cat, new, ix)?,
                     IndexKind::Fulltext => fts_trigger_sql(d, &new_cat, new, ix)?,
                 };
                 for sql in stmts {
@@ -744,7 +745,7 @@ impl DataService {
             }
             let managed = managed_indexes(log.tx, &coll.id).await?;
             for (ix, _) in &managed {
-                if ix.kind == IndexKind::Fulltext {
+                if matches!(ix.kind, IndexKind::Fulltext | IndexKind::Trigram) {
                     for sql in drop_index_sql(d, ix) {
                         log.run(sql).await?;
                     }
@@ -1168,7 +1169,7 @@ impl DataService {
                     return Err(view_conflict(&v.name, &format!("it reads {}", coll.name)));
                 }
                 for (ix, _) in managed {
-                    if ix.kind == IndexKind::Fulltext {
+                    if matches!(ix.kind, IndexKind::Fulltext | IndexKind::Trigram) {
                         for sql in drop_index_sql(d, ix) {
                             log.run(sql).await?;
                         }

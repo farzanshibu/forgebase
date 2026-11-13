@@ -353,6 +353,7 @@ async fn check_extras(r: &mut Report, config: &Config, layout: &DataLayout, db: 
         return;
     }
     check_key(r, layout);
+    check_tls(r, config);
     if forgebase_backup::restore::interrupted(layout) {
         r.push(
             "restore",
@@ -385,6 +386,21 @@ async fn check_extras(r: &mut Report, config: &Config, layout: &DataLayout, db: 
             }
             check_two_phase(r, db).await;
         }
+    }
+}
+
+/// Native TLS (ADR-0033): the certificate's expiry, a warning under 14 days.
+fn check_tls(r: &mut Report, config: &Config) {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX));
+    if let Some((level, detail)) = forgebase_server::tls::doctor_check(config, now) {
+        let level = match level {
+            forgebase_server::tls::DoctorLevel::Ok => Level::Ok,
+            forgebase_server::tls::DoctorLevel::Warn => Level::Warn,
+            forgebase_server::tls::DoctorLevel::Fail => Level::Fail,
+        };
+        r.push("tls", level, detail);
     }
 }
 

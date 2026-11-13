@@ -22,6 +22,8 @@ metrics.workspace = true
 redis = { workspace = true, optional = true, features = ["tokio-comp", "connection-manager"] }
 thiserror.workspace = true
 tokio.workspace = true
+# Optional TLS with the server's certificate (ADR-0033).
+tokio-rustls.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]

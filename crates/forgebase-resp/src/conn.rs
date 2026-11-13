@@ -9,8 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use forgebase_auth::scopes::Access;
 use forgebase_kv::{Class, KvError, Reply, Subscription, glob_matches, spec};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpStream;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
@@ -88,16 +87,17 @@ async fn until(d: Option<Instant>) {
     }
 }
 
-/// Serves one accepted connection until it ends.
-pub(crate) async fn serve(
+/// Serves one accepted connection (plain TCP or TLS) until it ends.
+pub(crate) async fn serve<S>(
     sh: Arc<Shared>,
-    mut sock: TcpStream,
+    mut sock: S,
     peer: SocketAddr,
     id: u64,
     mut shutdown: watch::Receiver<bool>,
-) {
+) where
+    S: AsyncRead + AsyncWrite + Unpin + Send,
+{
     let _guard = ActiveGuard(Arc::clone(&sh));
-    let _ = sock.set_nodelay(true);
     let (msg_tx, mut msg_rx) = mpsc::channel(MSG_QUEUE);
     let started = Instant::now();
     let mut c = Conn {
@@ -171,7 +171,7 @@ pub(crate) async fn serve(
     tracing::debug!(%peer, id, "resp connection closed");
 }
 
-async fn flush(sock: &mut TcpStream, out: &mut Vec<u8>, wt: Duration) -> bool {
+async fn flush<S: AsyncWrite + Unpin>(sock: &mut S, out: &mut Vec<u8>, wt: Duration) -> bool {
     if out.is_empty() {
         return true;
     }
