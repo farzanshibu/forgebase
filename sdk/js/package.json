@@ -1,7 +1,7 @@
 {
   "name": "@forgebase/sdk",
   "version": "0.1.0",
-  "description": "TypeScript SDK for ForgeBase: auth, collections and records, realtime, entitlements and quotas.",
+  "description": "TypeScript SDK for ForgeBase: auth, records, storage, KV, functions, vector, graph, SQL, realtime, queues, jobs, billing, webhook verification and admin APIs.",
   "license": "MIT OR Apache-2.0",
   "type": "module",
   "sideEffects": false,
@@ -17,6 +17,16 @@
       "require": {
         "types": "./dist/index.d.cts",
         "default": "./dist/index.cjs"
+      }
+    },
+    "./webhooks": {
+      "import": {
+        "types": "./dist/webhooks.d.ts",
+        "default": "./dist/webhooks.js"
+      },
+      "require": {
+        "types": "./dist/webhooks.d.cts",
+        "default": "./dist/webhooks.cjs"
       }
     },
     "./package.json": "./package.json"
