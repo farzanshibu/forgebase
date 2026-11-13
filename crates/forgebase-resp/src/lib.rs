@@ -4,6 +4,9 @@
 //!
 //! * **Off by default.** [`start`] binds a TCP listener (`[resp]` in
 //!   `forgebase.toml`, default `127.0.0.1:6380`).
+//! * **TLS optional.** With [`RespConfig::tls`] (`[resp] tls = true`,
+//!   ADR-0033) every connection is TLS with the server's certificate
+//!   (`rediss://`); the handshake must finish within `auth_timeout`.
 //! * **Authenticated.** A connection may only `PING`, `HELLO`, `AUTH` and
 //!   `QUIT` until `AUTH <token>` or `AUTH <user> <token>` succeeds with a
 //!   ForgeBase API key or personal access token ([`KeyAuthenticator`]). Every
@@ -90,8 +93,9 @@ pub async fn start(
 ) -> std::io::Result<RespHandle> {
     let listener = TcpListener::bind((cfg.host.as_str(), cfg.port)).await?;
     let addr = listener.local_addr()?;
-    if !addr.ip().is_loopback() {
-        tracing::warn!(%addr, "RESP listener on a non-loopback address; the protocol has no TLS, so credentials and data cross the network in clear text");
+    let tls = cfg.tls.clone().map(tokio_rustls::TlsAcceptor::from);
+    if !addr.ip().is_loopback() && tls.is_none() {
+        tracing::warn!(%addr, "RESP listener on a non-loopback address without TLS: credentials and data cross the network in clear text (set [resp] tls = true)");
     }
     let shared = Arc::new(Shared {
         limiter: AuthLimiter::new(cfg.max_auth_failures_per_ip, cfg.auth_window),
@@ -103,8 +107,9 @@ pub async fn start(
         started: Instant::now(),
     });
     let (stop, stop_rx) = watch::channel(false);
-    let task = tokio::spawn(accept_loop(listener, Arc::clone(&shared), stop_rx));
-    tracing::info!(%addr, "RESP listener started");
+    let tls_on = tls.is_some();
+    let task = tokio::spawn(accept_loop(listener, Arc::clone(&shared), tls, stop_rx));
+    tracing::info!(%addr, tls = tls_on, "RESP listener started");
     Ok(RespHandle {
         addr,
         stop,
@@ -113,7 +118,36 @@ pub async fn start(
     })
 }
 
-async fn accept_loop(listener: TcpListener, sh: Arc<Shared>, mut stop: watch::Receiver<bool>) {
+/// Completes the TLS handshake (within `auth_timeout`), then serves.
+async fn serve_tls(
+    sh: Arc<Shared>,
+    acceptor: tokio_rustls::TlsAcceptor,
+    sock: tokio::net::TcpStream,
+    peer: SocketAddr,
+    id: u64,
+    stop: watch::Receiver<bool>,
+) {
+    match timeout(sh.cfg.auth_timeout, acceptor.accept(sock)).await {
+        Ok(Ok(tls)) => conn::serve(sh, tls, peer, id, stop).await,
+        Ok(Err(e)) => {
+            metrics::counter!("forgebase_tls_handshake_failures_total", "listener" => "resp").increment(1);
+            tracing::debug!(%peer, error = %e, "RESP TLS handshake failed");
+            drop(conn::ActiveGuard(sh));
+        }
+        Err(_) => {
+            metrics::counter!("forgebase_tls_handshake_failures_total", "listener" => "resp").increment(1);
+            tracing::debug!(%peer, "RESP TLS handshake timed out");
+            drop(conn::ActiveGuard(sh));
+        }
+    }
+}
+
+async fn accept_loop(
+    listener: TcpListener,
+    sh: Arc<Shared>,
+    tls: Option<tokio_rustls::TlsAcceptor>,
+    mut stop: watch::Receiver<bool>,
+) {
     let mut conns: JoinSet<()> = JoinSet::new();
     loop {
         tokio::select! {
@@ -130,7 +164,15 @@ async fn accept_loop(listener: TcpListener, sh: Arc<Shared>, mut stop: watch::Re
                     let n = sh.active.fetch_add(1, Ordering::SeqCst) + 1;
                     metrics::gauge!("forgebase_resp_connections").set(n as f64);
                     let id = sh.next_id.fetch_add(1, Ordering::SeqCst);
-                    conns.spawn(conn::serve(Arc::clone(&sh), sock, peer, id, stop.clone()));
+                    let _ = sock.set_nodelay(true);
+                    match &tls {
+                        None => {
+                            conns.spawn(conn::serve(Arc::clone(&sh), sock, peer, id, stop.clone()));
+                        }
+                        Some(acceptor) => {
+                            conns.spawn(serve_tls(Arc::clone(&sh), acceptor.clone(), sock, peer, id, stop.clone()));
+                        }
+                    }
                 }
                 Err(e) => {
                     // Typically too many open files: back off instead of spinning.
