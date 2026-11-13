@@ -97,6 +97,9 @@ provider_installation {
   defaults are not drift. System fields of `auth` collections stay out of the way unless declared.
 - **Webhook secret.** Changing a push webhook's endpoint makes the server issue a new signing
   secret; the provider captures it. Other changes leave the secret alone.
+- **Room to grow.** `push` is an object, so webhook tooling the server does not have yet (secret
+  rotation, auto-pause) can be added as further `push` attributes. `push_secret` stays computed and
+  sensitive, and is unknown in the plan whenever the push block changes.
 
 ## Develop
 
