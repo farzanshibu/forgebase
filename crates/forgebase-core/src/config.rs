@@ -28,6 +28,11 @@ pub mod topology_config;
 #[path = "tls_config.rs"]
 pub mod tls_config;
 
+/// `[observability]`: slow statements, statement statistics, function
+/// profiling (ADR-0036).
+#[path = "observability_config.rs"]
+pub mod observability_config;
+
 /// Prefix of every environment variable ForgeBase reads.
 pub const ENV_PREFIX: &str = "FORGEBASE_";
 /// Environment variable naming the config file.
@@ -566,6 +571,8 @@ pub struct Config {
     pub access: ModuleSwitch,
     /// Native TLS (ADR-0033), `[tls]`; off by default.
     pub tls: tls_config::TlsConfig,
+    /// Operations insights (ADR-0036), `[observability]`.
+    pub observability: observability_config::ObservabilityConfig,
 }
 
 /// `[<module>] enabled` of a module that has no other settings (FB-91,
@@ -863,6 +870,7 @@ impl Config {
             identity: ModuleSwitch::default(),
             access: ModuleSwitch::default(),
             tls: tls_config::TlsConfig::default(),
+            observability: observability_config::ObservabilityConfig::default(),
         }
     }
 
@@ -1326,6 +1334,7 @@ impl Config {
             self.resp.tls = v;
         }
         self.tls.apply(&o.tls, base_dir);
+        self.observability.apply(&o.observability);
         if let Some(v) = o.realtime_max_connections_per_principal {
             self.realtime.max_connections_per_principal = v;
         }
@@ -1444,6 +1453,8 @@ pub struct ConfigOverrides {
     pub resp_tls: Option<bool>,
     /// `[tls]` and `[tls.acme]` (ADR-0033).
     pub tls: tls_config::TlsOverrides,
+    /// `[observability]` (ADR-0036).
+    pub observability: observability_config::ObservabilityOverrides,
     /// Secret environment variables that were set (names only, never values),
     /// such as `FORGEBASE_STORAGE_S3_SECRET_KEY`. The loader does not read
     /// them; the feature registry reports them as set by the environment.
@@ -1514,6 +1525,12 @@ impl ConfigOverrides {
                 "RESP_MAX_BULK_BYTES" => o.resp_max_bulk_bytes = Some(parse_num(&value).map_err(bad)?),
                 "RESP_IDLE_TIMEOUT_SECS" => o.resp_idle_timeout_secs = Some(parse_num(&value).map_err(bad)?),
                 "RESP_TLS" => o.resp_tls = Some(parse_bool(&value).map_err(bad)?),
+                // ADR-0036: `[observability]`.
+                k if k.starts_with("OBSERVABILITY_") => {
+                    if !o.observability.env(k, &value).map_err(bad)? {
+                        return Err(bad("unknown ForgeBase environment variable".into()));
+                    }
+                }
                 // ADR-0033: `[tls]` and `[tls.acme]`.
                 k if k.starts_with("TLS_") => {
                     if !o.tls.env(k, &value).map_err(bad)? {
@@ -1626,6 +1643,7 @@ impl ConfigOverrides {
         put(self.resp_idle_timeout_secs.is_some(), "resp.idle_timeout_secs");
         put(self.resp_tls.is_some(), "resp.tls");
         self.tls.keys(&mut put);
+        self.observability.keys(&mut put);
         if let Some(st) = &self.storage {
             put(st.enabled.is_some(), "storage.enabled");
             put(st.driver.is_some(), "storage.driver");
@@ -2096,6 +2114,7 @@ struct FileConfig {
     #[serde(default)]
     access: FileSwitch,
     tls: Option<tls_config::TlsOverrides>,
+    observability: Option<observability_config::ObservabilityOverrides>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -2189,6 +2208,7 @@ struct FileLog {
 impl From<FileConfig> for ConfigOverrides {
     fn from(f: FileConfig) -> Self {
         let tls = f.tls.unwrap_or_default();
+        let observability = f.observability.unwrap_or_default();
         let mut o = ConfigOverrides {
             config_file: None,
             data_dir: f.data_dir,
@@ -2240,6 +2260,7 @@ impl From<FileConfig> for ConfigOverrides {
             access_enabled: f.access.enabled,
             resp_tls: f.resp.tls,
             tls,
+            observability,
         };
         if o.tls.sets_secret() {
             // The secret's source is the file (the registry reports it by variable name).
