@@ -19,12 +19,18 @@ pub async fn run(d: &dyn StorageDriver, driver_name: &str, big: usize) {
     d.ping().await.expect("ping");
 
     // Missing blobs.
-    assert_eq!(d.head("blobs/aa/missing").await.unwrap(), None, "head of a missing blob");
+    assert_eq!(
+        d.head("blobs/aa/missing").await.unwrap(),
+        None,
+        "head of a missing blob"
+    );
     assert!(
         matches!(d.get("blobs/aa/missing", None).await, Err(StorageError::NotFound(_))),
         "get of a missing blob"
     );
-    d.delete("blobs/aa/missing").await.expect("deleting a missing blob succeeds");
+    d.delete("blobs/aa/missing")
+        .await
+        .expect("deleting a missing blob succeeds");
 
     // Small blob: put, head, whole read, ranges (clamped at the end).
     let small = pattern(1000);
@@ -43,11 +49,18 @@ pub async fn run(d: &dyn StorageDriver, driver_name: &str, big: usize) {
 
     // A big blob in odd-sized chunks (multipart / resumable / blocks).
     let data = pattern(big);
-    assert_eq!(d.put("blobs/bb/big", chunks_of(data.clone(), 7001)).await.unwrap(), big as u64);
+    assert_eq!(
+        d.put("blobs/bb/big", chunks_of(data.clone(), 7001)).await.unwrap(),
+        big as u64
+    );
     assert_eq!(d.head("blobs/bb/big").await.unwrap().unwrap().size, big as u64);
-    assert_eq!(read(d, "blobs/bb/big", None).await == data, true, "the whole big blob");
+    assert!(read(d, "blobs/bb/big", None).await == data, "the whole big blob");
     let (a, b) = (big / 3, big / 3 * 2 + 17);
-    assert_eq!(read(d, "blobs/bb/big", Some((a as u64, b as u64))).await, data[a..b], "a range across chunks");
+    assert_eq!(
+        read(d, "blobs/bb/big", Some((a as u64, b as u64))).await,
+        data[a..b],
+        "a range across chunks"
+    );
 
     // Overwriting replaces.
     let other = pattern(333);
@@ -68,7 +81,10 @@ pub async fn run(d: &dyn StorageDriver, driver_name: &str, big: usize) {
     assert_eq!(read(d, "blobs/dd/copy", None).await, small);
     assert_eq!(read(d, "blobs/aa/small", None).await, small, "the source stays");
     assert!(
-        matches!(d.copy("blobs/aa/missing", "blobs/dd/nope").await, Err(StorageError::NotFound(_))),
+        matches!(
+            d.copy("blobs/aa/missing", "blobs/dd/nope").await,
+            Err(StorageError::NotFound(_))
+        ),
         "copying a missing blob"
     );
     assert_eq!(d.head("blobs/dd/nope").await.unwrap(), None);
@@ -86,13 +102,17 @@ pub async fn run(d: &dyn StorageDriver, driver_name: &str, big: usize) {
 
     // Listing: prefix filter, key order, paging.
     for i in 0..7 {
-        d.put(&format!("many/k{i:02}"), body_of(vec![i as u8; 10 + i])).await.unwrap();
+        d.put(&format!("many/k{i:02}"), body_of(vec![i as u8; 10 + i]))
+            .await
+            .unwrap();
     }
     let many = d.list("many/").await.unwrap();
     let keys: Vec<&str> = many.iter().map(|o| o.key.as_str()).collect();
     assert_eq!(
         keys,
-        ["many/k00", "many/k01", "many/k02", "many/k03", "many/k04", "many/k05", "many/k06"]
+        [
+            "many/k00", "many/k01", "many/k02", "many/k03", "many/k04", "many/k05", "many/k06"
+        ]
     );
     assert_eq!(many[3].size, 13);
     let blobs = d.list("blobs/").await.unwrap();

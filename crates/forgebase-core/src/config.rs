@@ -684,17 +684,23 @@ pub enum StorageDriverKind {
     Local,
     /// An S3-compatible service.
     S3,
+    /// Google Cloud Storage through its JSON API (ADR-0040).
+    Gcs,
+    /// Azure Blob Storage (ADR-0040).
+    Azure,
 }
 
 /// Object storage settings (FB-30, ADR-0018). The S3 credentials are not
 /// part of the configuration: set `FORGEBASE_STORAGE_S3_ACCESS_KEY` and
 /// `FORGEBASE_STORAGE_S3_SECRET_KEY` (and optionally
-/// `FORGEBASE_STORAGE_S3_SESSION_TOKEN`) in the environment.
+/// `FORGEBASE_STORAGE_S3_SESSION_TOKEN`) in the environment. The same holds
+/// for the Google Cloud Storage and Azure drivers (ADR-0040):
+/// `FORGEBASE_STORAGE_GCS_*` and `FORGEBASE_STORAGE_AZURE_*`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct StorageConfig {
     /// Whether `/api/v1/storage` and its reconciler run (FB-91).
     pub enabled: bool,
-    /// `local` (default) or `s3`.
+    /// `local` (default), `s3`, `gcs` or `azure`.
     pub driver: StorageDriverKind,
     /// Largest object in bytes.
     pub max_object_bytes: u64,
@@ -710,8 +716,24 @@ pub struct StorageConfig {
     pub s3_bucket: String,
     /// Key prefix inside the S3 bucket.
     pub s3_prefix: String,
-    /// Multipart part size in bytes (S3 needs at least 5 MiB).
+    /// Multipart part size in bytes (S3 needs at least 5 MiB). The `gcs` and
+    /// `azure` drivers use it as their upload chunk / block size.
     pub s3_part_size: u64,
+    /// GCS bucket holding the blobs.
+    pub gcs_bucket: String,
+    /// Object name prefix inside the GCS bucket.
+    pub gcs_prefix: String,
+    /// GCS JSON API endpoint; empty means `https://storage.googleapis.com`.
+    pub gcs_endpoint: String,
+    /// Azure storage account name.
+    pub azure_account: String,
+    /// Azure container holding the blobs.
+    pub azure_container: String,
+    /// Blob name prefix inside the Azure container.
+    pub azure_prefix: String,
+    /// Azure account URL; empty means `https://<account>.blob.core.windows.net`
+    /// (Azurite: `http://127.0.0.1:10000/devstoreaccount1`).
+    pub azure_endpoint: String,
 }
 
 /// Settings of the optional RESP (Redis protocol) listener (FB-32, ADR-0013).
@@ -827,6 +849,13 @@ impl Config {
                 s3_bucket: String::new(),
                 s3_prefix: String::new(),
                 s3_part_size: 8 * 1024 * 1024,
+                gcs_bucket: String::new(),
+                gcs_prefix: String::new(),
+                gcs_endpoint: String::new(),
+                azure_account: String::new(),
+                azure_container: String::new(),
+                azure_prefix: String::new(),
+                azure_endpoint: String::new(),
             },
             queue: QueueConfig {
                 enabled: true,
@@ -1001,6 +1030,26 @@ impl Config {
                 invalid(
                     "storage.s3_bucket",
                     "must be set when the driver is s3, such as my-app-files".into(),
+                );
+            }
+        }
+        if self.storage.driver == StorageDriverKind::Gcs && self.storage.gcs_bucket.trim().is_empty() {
+            invalid(
+                "storage.gcs_bucket",
+                "must be set when the driver is gcs, such as my-app-files".into(),
+            );
+        }
+        if self.storage.driver == StorageDriverKind::Azure {
+            if self.storage.azure_account.trim().is_empty() {
+                invalid(
+                    "storage.azure_account",
+                    "must be set when the driver is azure, such as myaccount".into(),
+                );
+            }
+            if self.storage.azure_container.trim().is_empty() {
+                invalid(
+                    "storage.azure_container",
+                    "must be set when the driver is azure, such as forgebase-blobs".into(),
                 );
             }
         }
@@ -1254,6 +1303,27 @@ impl Config {
             }
             if let Some(v) = st.s3_part_size {
                 self.storage.s3_part_size = v;
+            }
+            if let Some(v) = &st.gcs_bucket {
+                self.storage.gcs_bucket.clone_from(v);
+            }
+            if let Some(v) = &st.gcs_prefix {
+                self.storage.gcs_prefix.clone_from(v);
+            }
+            if let Some(v) = &st.gcs_endpoint {
+                self.storage.gcs_endpoint.clone_from(v);
+            }
+            if let Some(v) = &st.azure_account {
+                self.storage.azure_account.clone_from(v);
+            }
+            if let Some(v) = &st.azure_container {
+                self.storage.azure_container.clone_from(v);
+            }
+            if let Some(v) = &st.azure_prefix {
+                self.storage.azure_prefix.clone_from(v);
+            }
+            if let Some(v) = &st.azure_endpoint {
+                self.storage.azure_endpoint.clone_from(v);
             }
         }
         if let Some(q) = &o.queue {
@@ -1560,7 +1630,17 @@ impl ConfigOverrides {
                     }
                 }
                 // Read by the storage driver, never by the loader (ADR-0018).
-                "STORAGE_S3_ACCESS_KEY" | "STORAGE_S3_SECRET_KEY" | "STORAGE_S3_SESSION_TOKEN" => {
+                "STORAGE_S3_ACCESS_KEY"
+                | "STORAGE_S3_SECRET_KEY"
+                | "STORAGE_S3_SESSION_TOKEN"
+                | "STORAGE_GCS_CREDENTIALS_JSON"
+                | "STORAGE_GCS_CREDENTIALS_FILE"
+                | "STORAGE_GCS_ACCESS_TOKEN"
+                | "STORAGE_AZURE_ACCOUNT_KEY"
+                | "STORAGE_AZURE_SAS_TOKEN"
+                | "STORAGE_AZURE_TENANT_ID"
+                | "STORAGE_AZURE_CLIENT_ID"
+                | "STORAGE_AZURE_CLIENT_SECRET" => {
                     if !value.is_empty() {
                         o.secrets_set.push(name.clone());
                     }
@@ -1637,6 +1717,13 @@ impl ConfigOverrides {
             put(st.s3_bucket.is_some(), "storage.s3_bucket");
             put(st.s3_prefix.is_some(), "storage.s3_prefix");
             put(st.s3_part_size.is_some(), "storage.s3_part_size");
+            put(st.gcs_bucket.is_some(), "storage.gcs_bucket");
+            put(st.gcs_prefix.is_some(), "storage.gcs_prefix");
+            put(st.gcs_endpoint.is_some(), "storage.gcs_endpoint");
+            put(st.azure_account.is_some(), "storage.azure_account");
+            put(st.azure_container.is_some(), "storage.azure_container");
+            put(st.azure_prefix.is_some(), "storage.azure_prefix");
+            put(st.azure_endpoint.is_some(), "storage.azure_endpoint");
         }
         if let Some(q) = &self.queue {
             put(q.enabled.is_some(), "queue.enabled");
@@ -2002,7 +2089,7 @@ fn is_pg_parameter_name(name: &str) -> bool {
 pub struct StorageOverrides {
     /// Serve `/api/v1/storage` and run its reconciler.
     pub enabled: Option<bool>,
-    /// `local` or `s3`.
+    /// `local`, `s3`, `gcs` or `azure`.
     pub driver: Option<StorageDriverKind>,
     /// Largest object in bytes.
     pub max_object_bytes: Option<u64>,
@@ -2018,8 +2105,22 @@ pub struct StorageOverrides {
     pub s3_bucket: Option<String>,
     /// S3 key prefix.
     pub s3_prefix: Option<String>,
-    /// Multipart part size.
+    /// Multipart part size (also the `gcs` and `azure` chunk / block size).
     pub s3_part_size: Option<u64>,
+    /// GCS bucket.
+    pub gcs_bucket: Option<String>,
+    /// GCS object name prefix.
+    pub gcs_prefix: Option<String>,
+    /// GCS JSON API endpoint.
+    pub gcs_endpoint: Option<String>,
+    /// Azure storage account.
+    pub azure_account: Option<String>,
+    /// Azure container.
+    pub azure_container: Option<String>,
+    /// Azure blob name prefix.
+    pub azure_prefix: Option<String>,
+    /// Azure account URL.
+    pub azure_endpoint: Option<String>,
 }
 
 /// `[queue]` settings from a config file.
@@ -2504,6 +2605,49 @@ mod tests {
         assert!(!ConfigLoader::new(tmp.path()).load().unwrap().config.mcp.enabled);
         let on = env(&[("FORGEBASE_MCP_ENABLED", "true")]);
         assert!(ConfigLoader::new(tmp.path()).env(on).load().unwrap().config.mcp.enabled);
+    }
+
+    #[test]
+    fn the_cloud_storage_drivers_need_their_settings_and_read_secrets_from_the_environment() {
+        let tmp = tempfile::tempdir().unwrap();
+        let load = |toml: &str, vars: &[(&str, &str)]| {
+            std::fs::write(tmp.path().join("forgebase.toml"), toml).unwrap();
+            ConfigLoader::new(tmp.path()).env(env(vars)).load()
+        };
+        assert!(
+            load("[storage]\ndriver = \"gcs\"\n", &[]).is_err(),
+            "gcs needs a bucket"
+        );
+        let gcs = load(
+            "[storage]\ndriver = \"gcs\"\ngcs_bucket = \"files\"\ngcs_prefix = \"fb/\"\n",
+            &[("FORGEBASE_STORAGE_GCS_CREDENTIALS_FILE", "/run/secrets/gcs.json")],
+        )
+        .unwrap();
+        assert_eq!(gcs.config.storage.driver, StorageDriverKind::Gcs);
+        assert_eq!(
+            (
+                gcs.config.storage.gcs_bucket.as_str(),
+                gcs.config.storage.gcs_prefix.as_str()
+            ),
+            ("files", "fb/")
+        );
+        assert!(gcs.config.storage.gcs_endpoint.is_empty(), "the default endpoint");
+
+        assert!(load("[storage]\ndriver = \"azure\"\nazure_account = \"acct\"\n", &[]).is_err());
+        let azure = load(
+            "[storage]\ndriver = \"azure\"\nazure_account = \"acct\"\nazure_container = \"c\"\nazure_endpoint = \"http://127.0.0.1:10000/acct\"\n",
+            &[
+                ("FORGEBASE_STORAGE_AZURE_ACCOUNT_KEY", "a2V5"),
+                ("FORGEBASE_STORAGE_AZURE_CLIENT_ID", "id"),
+            ],
+        )
+        .unwrap();
+        assert_eq!(azure.config.storage.driver, StorageDriverKind::Azure);
+        assert_eq!(azure.config.storage.azure_endpoint, "http://127.0.0.1:10000/acct");
+        // The secrets are noted as set, never read (and not part of the serialised config).
+        assert!(!serde_json::to_string(&azure.config.storage).unwrap().contains("a2V5"));
+        // Other drivers do not need them.
+        assert!(load("[storage]\ndriver = \"local\"\n", &[]).is_ok());
     }
 
     #[test]

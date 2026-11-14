@@ -15,8 +15,7 @@ use super::http_mock::{Req, Resp, Server};
 
 pub const ACCOUNT: &str = "devstoreaccount1";
 /// Azurite's well-known development account key.
-pub const KEY: &str =
-    "Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==";
+pub const KEY: &str = "Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==";
 pub const CONTAINER: &str = "blobs";
 pub const SAS: &str = "sv=2021-08-06&ss=b&srt=co&sp=rwdl&se=2030-01-01T00%3A00%3A00Z&sig=c2lnbmF0dXJl";
 
@@ -64,7 +63,9 @@ fn xml_err(status: u16, code: &str) -> Resp {
     Resp::new(status)
         .header("x-ms-error-code", code)
         .header("Content-Type", "application/xml")
-        .body(format!("<?xml version=\"1.0\"?><Error><Code>{code}</Code><Message>m</Message></Error>"))
+        .body(format!(
+            "<?xml version=\"1.0\"?><Error><Code>{code}</Code><Message>m</Message></Error>"
+        ))
 }
 
 fn esc(s: &str) -> String {
@@ -207,10 +208,8 @@ fn handle(st: &Arc<Mutex<AzState>>, req: &Req) -> Resp {
         if req.q("resource").as_deref() != Some("https://storage.azure.com/") {
             return Resp::new(400).body("bad resource");
         }
-        s.token_requests.push(format!(
-            "imds {}",
-            req.q("client_id").unwrap_or_default()
-        ));
+        s.token_requests
+            .push(format!("imds {}", req.q("client_id").unwrap_or_default()));
         return issue(&mut s);
     }
 
@@ -223,10 +222,10 @@ fn handle(st: &Arc<Mutex<AzState>>, req: &Req) -> Resp {
                 s.bad.push(format!("bad SharedKey signature on {id}"));
                 return xml_err(403, "AuthenticationFailed");
             }
-            if let Some(d) = &s.expect_date {
-                if req.h("x-ms-date") != Some(d.as_str()) {
-                    s.bad.push(format!("x-ms-date {:?}", req.h("x-ms-date")));
-                }
+            if let Some(d) = &s.expect_date
+                && req.h("x-ms-date") != Some(d.as_str())
+            {
+                s.bad.push(format!("x-ms-date {:?}", req.h("x-ms-date")));
             }
         }
         Mode::Sas => {
@@ -281,7 +280,10 @@ fn list(s: &AzState, req: &Req) -> Resp {
     let prefix = req.q("prefix").unwrap_or_default();
     let delimiter = req.q("delimiter");
     let marker = req.q("marker").unwrap_or_default();
-    let max = req.q("maxresults").and_then(|m| m.parse::<usize>().ok()).unwrap_or(5000);
+    let max = req
+        .q("maxresults")
+        .and_then(|m| m.parse::<usize>().ok())
+        .unwrap_or(5000);
     let page = if s.list_page == 0 { max } else { s.list_page.min(max) };
     let mut blobs = Vec::new();
     let mut prefixes: Vec<String> = Vec::new();
@@ -289,14 +291,14 @@ fn list(s: &AzState, req: &Req) -> Resp {
         if !k.starts_with(&prefix) || k.as_str() <= marker.as_str() {
             continue;
         }
-        if let Some(d) = &delimiter {
-            if let Some(i) = k[prefix.len()..].find(d.as_str()) {
-                let p = k[..prefix.len() + i + d.len()].to_owned();
-                if !prefixes.contains(&p) {
-                    prefixes.push(p);
-                }
-                continue;
+        if let Some(d) = &delimiter
+            && let Some(i) = k[prefix.len()..].find(d.as_str())
+        {
+            let p = k[..prefix.len() + i + d.len()].to_owned();
+            if !prefixes.contains(&p) {
+                prefixes.push(p);
             }
+            continue;
         }
         blobs.push((k.clone(), v.len()));
     }
@@ -341,9 +343,13 @@ fn blob(s: &mut AzState, req: &Req, name: &str) -> Resp {
                 if s.pending_copies > 0 {
                     let n = s.pending_copies;
                     s.copying.insert(name.to_owned(), n);
-                    return Resp::new(202).header("x-ms-copy-status", "pending").header("x-ms-copy-id", "c1");
+                    return Resp::new(202)
+                        .header("x-ms-copy-status", "pending")
+                        .header("x-ms-copy-id", "c1");
                 }
-                return Resp::new(202).header("x-ms-copy-status", "success").header("x-ms-copy-id", "c1");
+                return Resp::new(202)
+                    .header("x-ms-copy-status", "success")
+                    .header("x-ms-copy-id", "c1");
             }
             match req.q("comp").as_deref() {
                 Some("block") => {
@@ -405,7 +411,11 @@ fn blob(s: &mut AzState, req: &Req, name: &str) -> Resp {
             if req.method == "HEAD" {
                 return r.header("Content-Length", data.len().to_string());
             }
-            match req.h("x-ms-range").and_then(|r| r.strip_prefix("bytes=")).and_then(|r| r.split_once('-')) {
+            match req
+                .h("x-ms-range")
+                .and_then(|r| r.strip_prefix("bytes="))
+                .and_then(|r| r.split_once('-'))
+            {
                 Some((a, b)) => {
                     let (a, b): (usize, usize) = (a.parse().unwrap(), b.parse().unwrap());
                     if a >= data.len() {

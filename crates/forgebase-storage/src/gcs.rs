@@ -78,9 +78,9 @@ impl ServiceAccount {
         let v: Json = serde_json::from_str(text)
             .map_err(|_| StorageError::invalid("invalid_gcs_key", "the service-account key is not JSON"))?;
         let field = |name: &str| v.get(name).and_then(Json::as_str).map(str::to_owned);
-        let client_email = field("client_email").filter(|s| !s.is_empty()).ok_or_else(|| {
-            StorageError::invalid("invalid_gcs_key", "the service-account key has no client_email")
-        })?;
+        let client_email = field("client_email")
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| StorageError::invalid("invalid_gcs_key", "the service-account key has no client_email"))?;
         let private_key = field("private_key")
             .filter(|s| !s.is_empty())
             .ok_or_else(|| StorageError::invalid("invalid_gcs_key", "the service-account key has no private_key"))?;
@@ -120,6 +120,32 @@ impl std::fmt::Debug for GcsAuth {
             Self::None => f.write_str("None"),
         }
     }
+}
+
+/// Picks the credentials from environment variables (`env` looks one up;
+/// empty values count as unset). `key_text` is the content of a service-account
+/// key the caller found (the `FORGEBASE_STORAGE_GCS_CREDENTIALS_JSON` variable,
+/// or the file `..._CREDENTIALS_FILE` / `GOOGLE_APPLICATION_CREDENTIALS` names).
+/// Order: a service-account key, `FORGEBASE_STORAGE_GCS_ACCESS_TOKEN`, no
+/// credentials for a custom endpoint (an emulator), else the metadata server
+/// (`GCE_METADATA_HOST` or `metadata.google.internal`).
+pub fn auth_from_env(
+    env: &dyn Fn(&str) -> Option<String>,
+    key_text: Option<String>,
+    custom_endpoint: bool,
+) -> Result<GcsAuth> {
+    if let Some(text) = key_text {
+        return Ok(GcsAuth::ServiceAccount(ServiceAccount::from_json(&text)?));
+    }
+    if let Some(token) = env("FORGEBASE_STORAGE_GCS_ACCESS_TOKEN") {
+        return Ok(GcsAuth::AccessToken(token));
+    }
+    if custom_endpoint {
+        return Ok(GcsAuth::None);
+    }
+    Ok(GcsAuth::Metadata {
+        endpoint: env("GCE_METADATA_HOST").map_or_else(|| GCS_METADATA_ENDPOINT.to_owned(), |h| format!("http://{h}")),
+    })
 }
 
 /// Settings of a GCS store.
@@ -267,7 +293,11 @@ impl GcsDriver {
     }
 
     fn bucket_url(&self) -> String {
-        format!("{}/storage/v1/b/{}", self.inner.base, encode(&self.inner.cfg.bucket, false))
+        format!(
+            "{}/storage/v1/b/{}",
+            self.inner.base,
+            encode(&self.inner.cfg.bucket, false)
+        )
     }
 
     fn object_url(&self, key: &str) -> String {
@@ -294,16 +324,8 @@ impl GcsDriver {
         match &i.cfg.auth {
             GcsAuth::None => Ok(None),
             GcsAuth::AccessToken(t) => Ok(Some(t.clone())),
-            GcsAuth::ServiceAccount(sa) => i
-                .tokens
-                .get(now, || self.exchange_jwt(sa, now))
-                .await
-                .map(Some),
-            GcsAuth::Metadata { endpoint } => i
-                .tokens
-                .get(now, || self.metadata_token(endpoint, now))
-                .await
-                .map(Some),
+            GcsAuth::ServiceAccount(sa) => i.tokens.get(now, || self.exchange_jwt(sa, now)).await.map(Some),
+            GcsAuth::Metadata { endpoint } => i.tokens.get(now, || self.metadata_token(endpoint, now)).await.map(Some),
         }
     }
 
@@ -325,11 +347,18 @@ impl GcsDriver {
             "iat": now,
             "exp": now + 3600,
         });
-        let input = format!("{}.{}", b64url(header.to_string().as_bytes()), b64url(claims.to_string().as_bytes()));
+        let input = format!(
+            "{}.{}",
+            b64url(header.to_string().as_bytes()),
+            b64url(claims.to_string().as_bytes())
+        );
         let jwt = format!("{input}.{}", b64url(&signer.sign(input.as_bytes())?));
         let req = HttpRequest::post_form(
             &sa.token_uri,
-            &[("grant_type", "urn:ietf:params:oauth:grant-type:jwt-bearer"), ("assertion", &jwt)],
+            &[
+                ("grant_type", "urn:ietf:params:oauth:grant-type:jwt-bearer"),
+                ("assertion", &jwt),
+            ],
         );
         let resp = with_retry(&self.inner.cfg.retry, || async {
             self.inner
@@ -420,7 +449,11 @@ impl GcsDriver {
                 body,
             )
             .await?;
-        if r.status == 200 { Ok(()) } else { Err(bad("object upload", &r)) }
+        if r.status == 200 {
+            Ok(())
+        } else {
+            Err(bad("object upload", &r))
+        }
     }
 
     /// Starts a resumable session and returns its URI.
@@ -590,7 +623,12 @@ impl GcsDriver {
         }
     }
 
-    async fn list_page(&self, prefix: &str, delimiter: Option<&str>, token: Option<&str>) -> Result<(ListPage, Option<String>)> {
+    async fn list_page(
+        &self,
+        prefix: &str,
+        delimiter: Option<&str>,
+        token: Option<&str>,
+    ) -> Result<(ListPage, Option<String>)> {
         let mut url = format!(
             "{}/o?maxResults=1000&prefix={}&fields={}",
             self.bucket_url(),
@@ -613,7 +651,9 @@ impl GcsDriver {
             if self.inner.prefix.is_empty() {
                 name.to_owned()
             } else {
-                name.strip_prefix(&format!("{}/", self.inner.prefix)).unwrap_or(name).to_owned()
+                name.strip_prefix(&format!("{}/", self.inner.prefix))
+                    .unwrap_or(name)
+                    .to_owned()
             }
         };
         let mut page = ListPage {
@@ -621,7 +661,9 @@ impl GcsDriver {
             prefixes: Vec::new(),
         };
         for it in v.get("items").and_then(Json::as_array).into_iter().flatten() {
-            let Some(name) = it.get("name").and_then(Json::as_str) else { continue };
+            let Some(name) = it.get("name").and_then(Json::as_str) else {
+                continue;
+            };
             page.objects.push(DriverObject {
                 key: strip(name),
                 size: json_u64(it.get("size")),
@@ -674,14 +716,16 @@ impl GcsDriver {
         }
         v4_signed_url(
             signer,
-            &sa.client_email,
-            &self.inner.base,
-            &self.inner.host,
-            &self.inner.cfg.bucket,
-            &self.full_key(key),
-            method,
-            expires_secs,
-            self.now(),
+            &V4Request {
+                client_email: &sa.client_email,
+                base: &self.inner.base,
+                host: &self.inner.host,
+                bucket: &self.inner.cfg.bucket,
+                object: &self.full_key(key),
+                method,
+                expires_secs,
+                now: self.now(),
+            },
         )
     }
 }
@@ -691,26 +735,36 @@ fn json_u64(v: Option<&Json>) -> u64 {
         .unwrap_or(0)
 }
 
+/// What a V4 signed URL is made for.
+#[derive(Debug, Clone, Copy)]
+pub struct V4Request<'a> {
+    /// The service account's `client_email` (the credential).
+    pub client_email: &'a str,
+    /// `scheme://host[:port]` of the URL.
+    pub base: &'a str,
+    /// The `host` header value that is signed.
+    pub host: &'a str,
+    /// Bucket name.
+    pub bucket: &'a str,
+    /// Object name (prefix included).
+    pub object: &'a str,
+    /// HTTP method the URL allows.
+    pub method: &'a str,
+    /// Validity in seconds.
+    pub expires_secs: u64,
+    /// Signing time, epoch seconds.
+    pub now: i64,
+}
+
 /// Builds a V4 signed URL; split out so a published test vector can drive it.
-#[allow(clippy::too_many_arguments)]
-pub fn v4_signed_url(
-    signer: &RsaSigner,
-    client_email: &str,
-    base: &str,
-    host: &str,
-    bucket: &str,
-    object: &str,
-    method: &str,
-    expires_secs: u64,
-    now: i64,
-) -> Result<String> {
-    let (date, stamp) = stamps(now);
+pub fn v4_signed_url(signer: &RsaSigner, r: &V4Request<'_>) -> Result<String> {
+    let (date, stamp) = stamps(r.now);
     let scope = format!("{date}/auto/storage/goog4_request");
     let mut query = [
         ("X-Goog-Algorithm", "GOOG4-RSA-SHA256".to_owned()),
-        ("X-Goog-Credential", format!("{client_email}/{scope}")),
+        ("X-Goog-Credential", format!("{}/{scope}", r.client_email)),
         ("X-Goog-Date", stamp.clone()),
-        ("X-Goog-Expires", expires_secs.to_string()),
+        ("X-Goog-Expires", r.expires_secs.to_string()),
         ("X-Goog-SignedHeaders", "host".to_owned()),
     ];
     query.sort_by(|a, b| a.0.cmp(b.0));
@@ -719,12 +773,20 @@ pub fn v4_signed_url(
         .map(|(k, v)| format!("{}={}", encode(k, false), encode(v, false)))
         .collect::<Vec<_>>()
         .join("&");
-    let path = format!("/{bucket}/{}", object);
-    let encoded_path = encode(&path, true);
-    let canonical = format!("{method}\n{encoded_path}\n{canonical_query}\nhost:{host}\n\nhost\nUNSIGNED-PAYLOAD");
-    let to_sign = format!("GOOG4-RSA-SHA256\n{stamp}\n{scope}\n{}", sha256_hex(canonical.as_bytes()));
+    let encoded_path = encode(&format!("/{}/{}", r.bucket, r.object), true);
+    let canonical = format!(
+        "{}\n{encoded_path}\n{canonical_query}\nhost:{}\n\nhost\nUNSIGNED-PAYLOAD",
+        r.method, r.host
+    );
+    let to_sign = format!(
+        "GOOG4-RSA-SHA256\n{stamp}\n{scope}\n{}",
+        sha256_hex(canonical.as_bytes())
+    );
     let signature = hex(&signer.sign(to_sign.as_bytes())?);
-    Ok(format!("{base}{encoded_path}?{canonical_query}&X-Goog-Signature={signature}"))
+    Ok(format!(
+        "{}{encoded_path}?{canonical_query}&X-Goog-Signature={signature}",
+        r.base
+    ))
 }
 
 impl StorageDriver for GcsDriver {
@@ -778,7 +840,10 @@ impl StorageDriver for GcsDriver {
                         Err(std::io::Error::other("GCS returned an unexpected number of bytes")),
                         (this, key, end),
                     )),
-                    Ok(resp) => Some((Err(std::io::Error::other(bad("object read", &resp).to_string())), (this, key, end))),
+                    Ok(resp) => Some((
+                        Err(std::io::Error::other(bad("object read", &resp).to_string())),
+                        (this, key, end),
+                    )),
                     Err(e) => Some((Err(std::io::Error::other(e.to_string())), (this, key, end))),
                 }
             });
@@ -811,7 +876,11 @@ impl StorageDriver for GcsDriver {
         let key = key.to_owned();
         Box::pin(async move {
             let r = self.call("DELETE", &self.object_url(&key), &[], Vec::new()).await?;
-            if matches!(r.status, 200 | 204 | 404) { Ok(()) } else { Err(bad("object delete", &r)) }
+            if matches!(r.status, 200 | 204 | 404) {
+                Ok(())
+            } else {
+                Err(bad("object delete", &r))
+            }
         })
     }
 
@@ -831,7 +900,9 @@ impl StorageDriver for GcsDriver {
                     Some(t) => format!("{base}?rewriteToken={}", encode(t, false)),
                     None => base.clone(),
                 };
-                let r = self.call("POST", &url, &[("content-length", "0".into())], Vec::new()).await?;
+                let r = self
+                    .call("POST", &url, &[("content-length", "0".into())], Vec::new())
+                    .await?;
                 match r.status {
                     404 => return Err(StorageError::NotFound("stored blob".into())),
                     200 => {}

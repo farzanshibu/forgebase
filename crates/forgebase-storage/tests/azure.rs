@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use common::{Env, admin, bytes_of, chunked, put, read_all};
 use forgebase_auth::net::{HttpsClient, TlsSettings};
-use forgebase_storage::azure::{service_sas, shared_key_authorization, shared_key_string_to_sign};
+use forgebase_storage::azure::{SasParams, service_sas, shared_key_authorization, shared_key_string_to_sign};
 use forgebase_storage::cloud::{b64_decode, http_date};
 use forgebase_storage::driver::collect;
 use forgebase_storage::{AzureAuth, AzureConfig, AzureDriver, SasPermission, StorageDriver, StorageError, body_of};
@@ -49,7 +49,12 @@ fn shared_key(mock: &AzureMock, part: usize) -> AzureDriver {
 fn clocked(mock: &AzureMock, auth: AzureAuth) -> (AzureDriver, Arc<AtomicI64>) {
     let now = Arc::new(AtomicI64::new(NOW));
     let n = now.clone();
-    let d = AzureDriver::with_clock(config(mock, auth, 64_000), client(), Arc::new(move || n.load(Ordering::SeqCst))).unwrap();
+    let d = AzureDriver::with_clock(
+        config(mock, auth, 64_000),
+        client(),
+        Arc::new(move || n.load(Ordering::SeqCst)),
+    )
+    .unwrap();
     (d, now)
 }
 
@@ -113,34 +118,48 @@ fn shared_key_covers_body_headers_and_query_parameters() {
         "GET",
         "a",
         "/c",
-        &[h("restype", "container"), h("Comp", "list"), h("prefix", "p/q"), h("comp", "x")],
+        &[
+            h("restype", "container"),
+            h("Comp", "list"),
+            h("prefix", "p/q"),
+            h("comp", "x"),
+        ],
         &[],
         0,
     );
-    assert!(sts.ends_with("/a/c\ncomp:list,x\nprefix:p/q\nrestype:container"), "{sts}");
+    assert!(
+        sts.ends_with("/a/c\ncomp:list,x\nprefix:p/q\nrestype:container"),
+        "{sts}"
+    );
 }
 
 #[test]
 fn service_sas_matches_an_independent_computation() {
     let key = b64_decode(KEY).unwrap();
+    let params = |blob, permission, start, expiry, https_only| SasParams {
+        account: ACCOUNT,
+        container: CONTAINER,
+        blob,
+        permission,
+        start,
+        expiry,
+        https_only,
+    };
     let q = service_sas(
         &key,
-        ACCOUNT,
-        CONTAINER,
-        "fb/blobs/aa/x",
-        SasPermission::Read,
-        Some(NOW - 300),
-        NOW + 900,
-        false,
+        &params("fb/blobs/aa/x", SasPermission::Read, Some(NOW - 300), NOW + 900, false),
     );
     // The string to sign (version 2021-08-06) and its HMAC were computed with Python.
     assert_eq!(
         q,
         "sv=2021-08-06&sr=b&sp=r&st=2026-11-09T11%3A55%3A00Z&se=2026-11-09T12%3A15%3A00Z&sig=wLG5GSx3Ji5TYpSQ3DCC6%2BWgyP8SzMcZ5u2C3J%2Burd0%3D"
     );
-    let w = service_sas(&key, ACCOUNT, CONTAINER, "b", SasPermission::Write, None, NOW + 60, true);
-    assert!(w.contains("sp=cw") && w.contains("spr=https") && !w.contains("st="), "{w}");
-    assert!(service_sas(&key, ACCOUNT, CONTAINER, "b", SasPermission::Delete, None, NOW, false).contains("sp=d&"));
+    let w = service_sas(&key, &params("b", SasPermission::Write, None, NOW + 60, true));
+    assert!(
+        w.contains("sp=cw") && w.contains("spr=https") && !w.contains("st="),
+        "{w}"
+    );
+    assert!(service_sas(&key, &params("b", SasPermission::Delete, None, NOW, false)).contains("sp=d&"));
 }
 
 #[tokio::test]
@@ -159,7 +178,10 @@ async fn driver_signed_urls_are_service_sas_urls() {
     let sas = AzureDriver::new(config(&mock, AzureAuth::Sas(SAS.into()), 1000), client()).unwrap();
     assert!(matches!(
         sas.signed_url(SasPermission::Read, "k", 60),
-        Err(StorageError::Invalid { code: "azure_signing_unavailable", .. })
+        Err(StorageError::Invalid {
+            code: "azure_signing_unavailable",
+            ..
+        })
     ));
 }
 
@@ -202,7 +224,11 @@ async fn conformance_with_entra_client_credentials_and_token_refresh() {
 
     let (d, now) = clocked(&mock, auth);
     d.put("blobs/aa/t", body_of(vec![1; 5])).await.unwrap();
-    assert_eq!(mock.st.lock().unwrap().tokens_issued, 2, "a second driver, its own token");
+    assert_eq!(
+        mock.st.lock().unwrap().tokens_issued,
+        2,
+        "a second driver, its own token"
+    );
     now.store(NOW + 3600 - 100, Ordering::SeqCst);
     d.head("blobs/aa/t").await.unwrap().unwrap();
     assert_eq!(mock.st.lock().unwrap().tokens_issued, 3, "refreshed before expiry");
@@ -239,7 +265,10 @@ async fn managed_identity_uses_imds_or_the_app_service_endpoint() {
     };
     let d = AzureDriver::new(config(&mock, imds(None, Some("uami-1")), 1000), client()).unwrap();
     d.put("blobs/aa/mi", body_of(vec![3; 30])).await.unwrap();
-    assert_eq!(collect(d.get("blobs/aa/mi", None).await.unwrap()).await.unwrap(), vec![3; 30]);
+    assert_eq!(
+        collect(d.get("blobs/aa/mi", None).await.unwrap()).await.unwrap(),
+        vec![3; 30]
+    );
     let d = AzureDriver::new(config(&mock, imds(Some("secret-header"), None), 1000), client()).unwrap();
     d.head("blobs/aa/mi").await.unwrap().unwrap();
     let reqs = mock.st.lock().unwrap().token_requests.clone();
@@ -252,13 +281,26 @@ async fn big_writes_are_blocks_committed_by_a_block_list() {
     let d = shared_key(&mock, 1000);
     let small = pattern(1000);
     d.put("blobs/aa/small", chunks_of(small.clone(), 333)).await.unwrap();
-    assert_eq!(mock.server.count("PUT /blobs/fb/blobs/aa/small?"), 1, "one Put Blob: {:?}", mock.server.lines());
+    assert_eq!(
+        mock.server.count("PUT /blobs/fb/blobs/aa/small?"),
+        1,
+        "one Put Blob: {:?}",
+        mock.server.lines()
+    );
     assert_eq!(mock.server.count("PUT /blobs/fb/blobs/aa/small?comp"), 0);
 
     let big = pattern(3500);
     assert_eq!(d.put("blobs/bb/big", chunks_of(big.clone(), 333)).await.unwrap(), 3500);
-    assert_eq!(mock.server.count("PUT /blobs/fb/blobs/bb/big?comp&blockid"), 4, "3 full blocks + the rest");
-    assert_eq!(mock.server.count("PUT /blobs/fb/blobs/bb/big?comp"), 5, "and the block list");
+    assert_eq!(
+        mock.server.count("PUT /blobs/fb/blobs/bb/big?comp&blockid"),
+        4,
+        "3 full blocks + the rest"
+    );
+    assert_eq!(
+        mock.server.count("PUT /blobs/fb/blobs/bb/big?comp"),
+        5,
+        "and the block list"
+    );
     assert_eq!(mock.blob("fb/blobs/bb/big").unwrap(), big);
     assert!(mock.bad().is_empty(), "{:?}", mock.bad());
 
@@ -266,9 +308,14 @@ async fn big_writes_are_blocks_committed_by_a_block_list() {
     let lines_before = mock.server.lines().len();
     let all = collect(d.get("blobs/bb/big", None).await.unwrap()).await.unwrap();
     assert_eq!(all, big);
-    let gets = mock.server.lines()[lines_before..].iter().filter(|l| l.starts_with("GET")).count();
+    let gets = mock.server.lines()[lines_before..]
+        .iter()
+        .filter(|l| l.starts_with("GET"))
+        .count();
     assert_eq!(gets, 1, "3500 bytes fit one read of 100000");
-    let part = collect(d.get("blobs/bb/big", Some((1000, 2500))).await.unwrap()).await.unwrap();
+    let part = collect(d.get("blobs/bb/big", Some((1000, 2500))).await.unwrap())
+        .await
+        .unwrap();
     assert_eq!(part, big[1000..2500]);
 }
 
@@ -284,7 +331,11 @@ async fn transient_failures_are_retried_and_every_attempt_is_signed_afresh() {
     mock.fail("PUT /blobs/fb/blobs/aa/w", 429, 1);
     mock.fail("PUT /blobs/fb/blobs/aa/w", 500, 1);
     d.put("blobs/aa/w", body_of(vec![1; 10])).await.unwrap();
-    assert!(mock.bad().is_empty(), "retries carry valid signatures: {:?}", mock.bad());
+    assert!(
+        mock.bad().is_empty(),
+        "retries carry valid signatures: {:?}",
+        mock.bad()
+    );
     // A 404 is an answer.
     let before = mock.server.count("HEAD");
     assert_eq!(d.head("blobs/aa/none").await.unwrap(), None);
@@ -292,7 +343,10 @@ async fn transient_failures_are_retried_and_every_attempt_is_signed_afresh() {
     // Out of attempts.
     mock.fail("HEAD /blobs/fb/blobs/aa/r", 503, 99);
     let err = d.head("blobs/aa/r").await.unwrap_err();
-    assert!(matches!(&err, StorageError::Driver(m) if m.contains("503") && m.contains("ServerBusy")), "{err:?}");
+    assert!(
+        matches!(&err, StorageError::Driver(m) if m.contains("503") && m.contains("ServerBusy")),
+        "{err:?}"
+    );
 }
 
 #[tokio::test]
@@ -302,7 +356,11 @@ async fn asynchronous_copies_are_awaited() {
     d.put("blobs/aa/src", body_of(vec![8; 40])).await.unwrap();
     mock.st.lock().unwrap().pending_copies = 3;
     d.copy("blobs/aa/src", "blobs/aa/dst").await.unwrap();
-    assert_eq!(mock.server.count("HEAD /blobs/fb/blobs/aa/dst"), 4, "polled until the copy finished");
+    assert_eq!(
+        mock.server.count("HEAD /blobs/fb/blobs/aa/dst"),
+        4,
+        "polled until the copy finished"
+    );
     assert_eq!(mock.blob("fb/blobs/aa/dst").unwrap(), vec![8; 40]);
 }
 
@@ -315,7 +373,11 @@ async fn listing_pages_and_folds_by_delimiter() {
     }
     let all = d.list("").await.unwrap();
     assert_eq!(all.len(), 6);
-    assert!(mock.server.count("GET /blobs?") >= 3, "paged with markers: {:?}", mock.server.lines());
+    assert!(
+        mock.server.count("GET /blobs?") >= 3,
+        "paged with markers: {:?}",
+        mock.server.lines()
+    );
     assert_eq!(all[0].key, "a/1", "the prefix is stripped");
     assert_eq!(all[0].modified_ms, 1_794_225_600_000);
     let (objects, prefixes) = d.list_with_delimiter("", "/").await.unwrap();
@@ -350,14 +412,25 @@ async fn the_storage_service_runs_on_the_azure_driver() {
     let env = Env::with(|_| {}, Some(driver)).await;
     env.bucket("azb", true).await;
     let data = bytes_of(700_000);
-    let info = env.storage.put_object(&admin(), put("azb", "dir/file.bin", &data)).await.unwrap();
-    env.storage.put_object(&admin(), put("azb", "dir/same.bin", &data)).await.unwrap();
+    let info = env
+        .storage
+        .put_object(&admin(), put("azb", "dir/file.bin", &data))
+        .await
+        .unwrap();
+    env.storage
+        .put_object(&admin(), put("azb", "dir/same.bin", &data))
+        .await
+        .unwrap();
     let names = mock.names();
     assert_eq!(names.len(), 1, "{names:?}");
     assert!(names[0].starts_with("fb/blobs/") && names[0].ends_with(&info.checksum_sha256.clone().unwrap()));
     assert!(mock.server.count("PUT /devstoreaccount1/blobs/fb/blobs") >= 1);
 
-    let r = env.storage.get_object(&admin(), "azb", "dir/file.bin", None, None).await.unwrap();
+    let r = env
+        .storage
+        .get_object(&admin(), "azb", "dir/file.bin", None, None)
+        .await
+        .unwrap();
     assert_eq!(read_all(r).await, data);
     let r = env
         .storage
@@ -374,19 +447,89 @@ async fn the_storage_service_runs_on_the_azure_driver() {
 
     let up = env
         .storage
-        .create_upload(&admin(), "azb", forgebase_storage::UploadInput { key: "assembled".into(), ..Default::default() })
+        .create_upload(
+            &admin(),
+            "azb",
+            forgebase_storage::UploadInput {
+                key: "assembled".into(),
+                ..Default::default()
+            },
+        )
         .await
         .unwrap();
-    env.storage.upload_part(&admin(), &up.id, 1, None, chunked(data[..300_000].to_vec(), 50_000)).await.unwrap();
-    env.storage.upload_part(&admin(), &up.id, 2, None, chunked(data[300_000..].to_vec(), 50_000)).await.unwrap();
-    let done = env.storage.complete_upload(&admin(), &up.id, Default::default()).await.unwrap();
+    env.storage
+        .upload_part(&admin(), &up.id, 1, None, chunked(data[..300_000].to_vec(), 50_000))
+        .await
+        .unwrap();
+    env.storage
+        .upload_part(&admin(), &up.id, 2, None, chunked(data[300_000..].to_vec(), 50_000))
+        .await
+        .unwrap();
+    let done = env
+        .storage
+        .complete_upload(&admin(), &up.id, Default::default())
+        .await
+        .unwrap();
     assert_eq!(done.checksum_sha256, info.checksum_sha256);
     assert_eq!(mock.names().len(), 1, "same content, same blob");
 
     env.driver.put("blobs/ab/orphan", body_of(vec![1; 5])).await.unwrap();
-    env.driver.put("staging/single/stale", body_of(vec![1; 5])).await.unwrap();
+    env.driver
+        .put("staging/single/stale", body_of(vec![1; 5]))
+        .await
+        .unwrap();
     let report = env.storage.reconcile(&admin()).await.unwrap();
     assert_eq!(report.staging_deleted, 1);
-    assert!(!mock.names().iter().any(|k| k.ends_with("blobs/ab/orphan") || k.contains("staging/")));
+    assert!(
+        !mock
+            .names()
+            .iter()
+            .any(|k| k.ends_with("blobs/ab/orphan") || k.contains("staging/"))
+    );
     assert!(mock.bad().is_empty(), "{:?}", mock.bad());
+}
+
+#[test]
+fn credentials_are_picked_from_the_environment_in_a_fixed_order() {
+    use forgebase_storage::azure::auth_from_env;
+    let env_of = |pairs: &'static [(&'static str, &'static str)]| {
+        move |k: &str| pairs.iter().find(|(n, _)| *n == k).map(|(_, v)| (*v).to_owned())
+    };
+    let all = env_of(&[
+        ("FORGEBASE_STORAGE_AZURE_ACCOUNT_KEY", KEY),
+        ("FORGEBASE_STORAGE_AZURE_SAS_TOKEN", "sv=1"),
+        ("FORGEBASE_STORAGE_AZURE_TENANT_ID", "t"),
+        ("FORGEBASE_STORAGE_AZURE_CLIENT_ID", "c"),
+        ("FORGEBASE_STORAGE_AZURE_CLIENT_SECRET", "s"),
+    ]);
+    assert!(matches!(auth_from_env(&all).unwrap(), AzureAuth::SharedKey(_)));
+    let bad_key = env_of(&[("FORGEBASE_STORAGE_AZURE_ACCOUNT_KEY", "not base64!")]);
+    assert!(auth_from_env(&bad_key).is_err());
+    let sas = env_of(&[
+        ("FORGEBASE_STORAGE_AZURE_SAS_TOKEN", "sv=1"),
+        ("FORGEBASE_STORAGE_AZURE_CLIENT_SECRET", "s"),
+    ]);
+    assert!(matches!(auth_from_env(&sas).unwrap(), AzureAuth::Sas(t) if t == "sv=1"));
+    let entra = env_of(&[
+        ("FORGEBASE_STORAGE_AZURE_TENANT_ID", "t"),
+        ("FORGEBASE_STORAGE_AZURE_CLIENT_ID", "c"),
+        ("FORGEBASE_STORAGE_AZURE_CLIENT_SECRET", "s"),
+    ]);
+    assert!(matches!(auth_from_env(&entra).unwrap(), AzureAuth::ClientSecret { tenant, .. } if tenant == "t"));
+    // A client id alone selects a user-assigned managed identity.
+    let mi = env_of(&[("FORGEBASE_STORAGE_AZURE_CLIENT_ID", "c")]);
+    assert!(matches!(
+        auth_from_env(&mi).unwrap(),
+        AzureAuth::ManagedIdentity { endpoint, identity_header: None, client_id: Some(c) }
+            if endpoint == "http://169.254.169.254/metadata/identity/oauth2/token" && c == "c"
+    ));
+    let app_service = env_of(&[
+        ("IDENTITY_ENDPOINT", "http://127.0.0.1:42356/msi/token"),
+        ("IDENTITY_HEADER", "h"),
+    ]);
+    assert!(matches!(
+        auth_from_env(&app_service).unwrap(),
+        AzureAuth::ManagedIdentity { endpoint, identity_header: Some(h), .. }
+            if endpoint == "http://127.0.0.1:42356/msi/token" && h == "h"
+    ));
 }

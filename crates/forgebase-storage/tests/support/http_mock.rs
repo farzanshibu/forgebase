@@ -101,7 +101,12 @@ impl Server {
 
     /// Requests whose log line starts with `prefix`.
     pub fn count(&self, prefix: &str) -> usize {
-        self.log.lock().unwrap().iter().filter(|l| l.starts_with(prefix)).count()
+        self.log
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|l| l.starts_with(prefix))
+            .count()
     }
 
     pub fn lines(&self) -> Vec<String> {
@@ -114,15 +119,15 @@ fn pct_decode(s: &str) -> String {
     let mut out = Vec::with_capacity(b.len());
     let mut i = 0;
     while i < b.len() {
-        if b[i] == b'%' && i + 3 <= b.len() {
-            if let Some(v) = std::str::from_utf8(&b[i + 1..i + 3])
+        if b[i] == b'%'
+            && i + 3 <= b.len()
+            && let Some(v) = std::str::from_utf8(&b[i + 1..i + 3])
                 .ok()
                 .and_then(|h| u8::from_str_radix(h, 16).ok())
-            {
-                out.push(v);
-                i += 3;
-                continue;
-            }
+        {
+            out.push(v);
+            i += 3;
+            continue;
         }
         out.push(b[i]);
         i += 1;
@@ -177,7 +182,10 @@ async fn serve(mut sock: tokio::net::TcpStream, handler: Handler, log: Arc<Mutex
         req.query.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>().join("&")
     ));
     let resp = handler(&req);
-    let custom_len = resp.headers.iter().any(|(k, _)| k.eq_ignore_ascii_case("content-length"));
+    let custom_len = resp
+        .headers
+        .iter()
+        .any(|(k, _)| k.eq_ignore_ascii_case("content-length"));
     let mut out = format!("HTTP/1.1 {} X\r\nConnection: close\r\n", resp.status);
     if !custom_len {
         out.push_str(&format!("Content-Length: {}\r\n", resp.body.len()));

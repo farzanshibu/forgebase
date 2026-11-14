@@ -503,7 +503,10 @@ async fn conformance_on_the_s3_driver() {
     let d = mock.driver(100_000, 100_000, "fb");
     support::conformance::run(&d, "s3", 350_000).await;
     assert!(mock.store.lock().unwrap().bad_signatures.is_empty());
-    assert!(mock.store.lock().unwrap().uploads.is_empty(), "failed uploads are aborted");
+    assert!(
+        mock.store.lock().unwrap().uploads.is_empty(),
+        "failed uploads are aborted"
+    );
 }
 
 /// Google Cloud Storage through its S3 interoperability API (HMAC keys): the

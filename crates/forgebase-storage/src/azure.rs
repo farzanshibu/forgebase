@@ -32,7 +32,7 @@ use sha2::Sha256;
 
 use crate::cloud::{
     Clock, RetryPolicy, Token, TokenCache, b64, b64_decode, clean_prefix, error_summary, http_date, iso_z, join_key,
-    parse_http_date_ms, parse_token, system_clock, xml_blocks, xml_escape, xml_tag, with_retry,
+    parse_http_date_ms, parse_token, system_clock, with_retry, xml_blocks, xml_escape, xml_tag,
 };
 use crate::driver::{BoxFuture, ByteStream, DriverObject, StorageDriver};
 use crate::error::{Result, StorageError};
@@ -101,6 +101,39 @@ impl std::fmt::Debug for AzureAuth {
             Self::AccessToken(_) => "AccessToken(..)",
         })
     }
+}
+
+/// Picks the credentials from environment variables (`env` looks one up;
+/// empty values count as unset), in this order: the account key
+/// (`FORGEBASE_STORAGE_AZURE_ACCOUNT_KEY`), a SAS token (`..._SAS_TOKEN`),
+/// Microsoft Entra client credentials (`..._TENANT_ID`, `..._CLIENT_ID`,
+/// `..._CLIENT_SECRET`), else the managed identity of the host: the App Service
+/// / Container Apps endpoint (`IDENTITY_ENDPOINT`, `IDENTITY_HEADER`) or IMDS;
+/// `..._CLIENT_ID` alone picks a user-assigned identity.
+pub fn auth_from_env(env: &dyn Fn(&str) -> Option<String>) -> Result<AzureAuth> {
+    if let Some(key) = env("FORGEBASE_STORAGE_AZURE_ACCOUNT_KEY") {
+        return AzureAuth::shared_key(&key);
+    }
+    if let Some(sas) = env("FORGEBASE_STORAGE_AZURE_SAS_TOKEN") {
+        return Ok(AzureAuth::Sas(sas));
+    }
+    if let (Some(tenant), Some(client_id), Some(client_secret)) = (
+        env("FORGEBASE_STORAGE_AZURE_TENANT_ID"),
+        env("FORGEBASE_STORAGE_AZURE_CLIENT_ID"),
+        env("FORGEBASE_STORAGE_AZURE_CLIENT_SECRET"),
+    ) {
+        return Ok(AzureAuth::ClientSecret {
+            tenant,
+            client_id,
+            client_secret,
+            authority: AZURE_AUTHORITY.to_owned(),
+        });
+    }
+    Ok(AzureAuth::ManagedIdentity {
+        endpoint: env("IDENTITY_ENDPOINT").unwrap_or_else(|| AZURE_IMDS_ENDPOINT.to_owned()),
+        identity_header: env("IDENTITY_HEADER"),
+        client_id: env("FORGEBASE_STORAGE_AZURE_CLIENT_ID"),
+    })
 }
 
 /// Settings of an Azure Blob store.
@@ -281,24 +314,33 @@ impl SasPermission {
     }
 }
 
+/// What a service SAS is made for.
+#[derive(Debug, Clone, Copy)]
+pub struct SasParams<'a> {
+    /// Storage account name.
+    pub account: &'a str,
+    /// Container name.
+    pub container: &'a str,
+    /// Blob name (prefix included).
+    pub blob: &'a str,
+    /// What the URL allows.
+    pub permission: SasPermission,
+    /// Start of validity, epoch seconds (`None`: immediately).
+    pub start: Option<i64>,
+    /// End of validity, epoch seconds.
+    pub expiry: i64,
+    /// Adds `spr=https`.
+    pub https_only: bool,
+}
+
 /// The query string of a service SAS for one blob (version 2021-08-06
-/// string-to-sign), signed with the account key. `start` and `expiry` are
-/// epoch seconds; `https_only` adds `spr=https`.
-pub fn service_sas(
-    key: &[u8],
-    account: &str,
-    container: &str,
-    blob: &str,
-    permission: SasPermission,
-    start: Option<i64>,
-    expiry: i64,
-    https_only: bool,
-) -> String {
-    let sp = permission.letters();
-    let st = start.map(iso_z).unwrap_or_default();
-    let se = iso_z(expiry);
-    let spr = if https_only { "https" } else { "" };
-    let resource = format!("/blob/{account}/{container}/{blob}");
+/// string-to-sign), signed with the account key.
+pub fn service_sas(key: &[u8], p: &SasParams<'_>) -> String {
+    let sp = p.permission.letters();
+    let st = p.start.map(iso_z).unwrap_or_default();
+    let se = iso_z(p.expiry);
+    let spr = if p.https_only { "https" } else { "" };
+    let resource = format!("/blob/{}/{}/{}", p.account, p.container, p.blob);
     // sp, st, se, canonicalized resource, si, sip, spr, sv, sr, snapshot time,
     // encryption scope, rscc, rscd, rsce, rscl, rsct.
     let to_sign = format!("{sp}\n{st}\n{se}\n{resource}\n\n\n{spr}\n{AZURE_API_VERSION}\nb\n\n\n\n\n\n\n");
@@ -308,11 +350,11 @@ pub fn service_sas(
         ("sr", "b".to_owned()),
         ("sp", sp.to_owned()),
     ];
-    if start.is_some() {
+    if p.start.is_some() {
         q.push(("st", st));
     }
     q.push(("se", se));
-    if https_only {
+    if p.https_only {
         q.push(("spr", "https".to_owned()));
     }
     q.push(("sig", sig));
@@ -403,7 +445,9 @@ impl AzureDriver {
             } => self
                 .inner
                 .tokens
-                .get(now, || self.client_credentials(authority, tenant, client_id, client_secret, now))
+                .get(now, || {
+                    self.client_credentials(authority, tenant, client_id, client_secret, now)
+                })
                 .await
                 .map(Some),
             AzureAuth::ManagedIdentity {
@@ -413,7 +457,9 @@ impl AzureDriver {
             } => self
                 .inner
                 .tokens
-                .get(now, || self.managed_identity(endpoint, identity_header.as_deref(), client_id.as_deref(), now))
+                .get(now, || {
+                    self.managed_identity(endpoint, identity_header.as_deref(), client_id.as_deref(), now)
+                })
                 .await
                 .map(Some),
         }
@@ -497,7 +543,8 @@ impl AzureDriver {
         loop {
             let token = self.bearer().await?;
             let resp = with_retry(&self.inner.cfg.retry, || async {
-                self.send_once(method, path, query, headers, &body, token.as_deref()).await
+                self.send_once(method, path, query, headers, &body, token.as_deref())
+                    .await
             })
             .await?;
             if resp.status == 401 && !renewed && token.is_some() {
@@ -581,7 +628,11 @@ impl AzureDriver {
                 body,
             )
             .await?;
-        if r.status == 201 { Ok(()) } else { Err(bad("Put Blob", &r)) }
+        if r.status == 201 {
+            Ok(())
+        } else {
+            Err(bad("Put Blob", &r))
+        }
     }
 
     async fn put_blocks(&self, key: &str, first: Vec<u8>, mut body: ByteStream) -> Result<u64> {
@@ -598,9 +649,15 @@ impl AzureDriver {
                     None => done = true,
                 }
             }
-            let rest = if buf.len() > part { buf.split_off(part) } else { Vec::new() };
+            let rest = if buf.len() > part {
+                buf.split_off(part)
+            } else {
+                Vec::new()
+            };
             if ids.len() >= 50_000 {
-                return Err(StorageError::Driver("Azure block blobs have at most 50000 blocks".into()));
+                return Err(StorageError::Driver(
+                    "Azure block blobs have at most 50000 blocks".into(),
+                ));
             }
             // Block ids must all have the same length.
             let id = b64(format!("{:08}", ids.len()).as_bytes());
@@ -671,7 +728,8 @@ impl AzureDriver {
             if self.inner.prefix.is_empty() {
                 name
             } else {
-                name.strip_prefix(&format!("{}/", self.inner.prefix)).map_or(name.clone(), str::to_owned)
+                name.strip_prefix(&format!("{}/", self.inner.prefix))
+                    .map_or(name.clone(), str::to_owned)
             }
         };
         let mut objects = Vec::new();
@@ -726,15 +784,18 @@ impl AzureDriver {
         }
         let now = self.now();
         let secs = i64::try_from(expires_secs).unwrap_or(i64::MAX / 4);
+        let blob = self.blob_name(key);
         let sas = service_sas(
             account_key,
-            &self.inner.cfg.account,
-            &self.inner.cfg.container,
-            &self.blob_name(key),
-            permission,
-            Some(now - 300),
-            now.saturating_add(secs),
-            self.inner.origin.starts_with("https://"),
+            &SasParams {
+                account: &self.inner.cfg.account,
+                container: &self.inner.cfg.container,
+                blob: &blob,
+                permission,
+                start: Some(now - 300),
+                expiry: now.saturating_add(secs),
+                https_only: self.inner.origin.starts_with("https://"),
+            },
         );
         let path = encode(&format!("{}{}", self.inner.base_path, self.blob_path(key)), true);
         Ok(format!("{}{path}?{sas}", self.inner.origin))
@@ -817,7 +878,10 @@ impl StorageDriver for AzureDriver {
                         Err(std::io::Error::other("Azure returned an unexpected number of bytes")),
                         (this, key, end),
                     )),
-                    Ok(resp) => Some((Err(std::io::Error::other(bad("Get Blob", &resp).to_string())), (this, key, end))),
+                    Ok(resp) => Some((
+                        Err(std::io::Error::other(bad("Get Blob", &resp).to_string())),
+                        (this, key, end),
+                    )),
                     Err(e) => Some((Err(std::io::Error::other(e.to_string())), (this, key, end))),
                 }
             });
@@ -859,7 +923,11 @@ impl StorageDriver for AzureDriver {
                     Vec::new(),
                 )
                 .await?;
-            if matches!(r.status, 200 | 202 | 404) { Ok(()) } else { Err(bad("Delete Blob", &r)) }
+            if matches!(r.status, 200 | 202 | 404) {
+                Ok(())
+            } else {
+                Err(bad("Delete Blob", &r))
+            }
         })
     }
 
@@ -877,7 +945,13 @@ impl StorageDriver for AzureDriver {
                 source.push_str(sas.trim_start_matches('?'));
             }
             let r = self
-                .call("PUT", &self.blob_path(&to), &[], &[("x-ms-copy-source", source)], Vec::new())
+                .call(
+                    "PUT",
+                    &self.blob_path(&to),
+                    &[],
+                    &[("x-ms-copy-source", source)],
+                    Vec::new(),
+                )
                 .await?;
             match r.status {
                 404 => return Err(StorageError::NotFound("stored blob".into())),
@@ -918,7 +992,11 @@ impl StorageDriver for AzureDriver {
                 ("maxresults", "1".to_owned()),
             ];
             let r = self.call("GET", &self.container_path(), &q, &[], Vec::new()).await?;
-            if r.status == 200 { Ok(()) } else { Err(bad("List Blobs", &r)) }
+            if r.status == 200 {
+                Ok(())
+            } else {
+                Err(bad("List Blobs", &r))
+            }
         })
     }
 }

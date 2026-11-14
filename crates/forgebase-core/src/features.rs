@@ -559,9 +559,9 @@ const STORAGE: &[SettingDef] = &[
         "storage.driver",
         "Storage driver",
         Enum,
-        "Where files are kept: local stores them under <data dir>/storage; s3 uses Amazon S3 or an S3-compatible service and needs an endpoint and a bucket. Start with local.",
+        "Where files are kept: local stores them under <data dir>/storage; s3 uses Amazon S3 or an S3-compatible service (MinIO, Cloudflare R2, Backblaze B2, Wasabi, DigitalOcean Spaces, or Google Cloud Storage with HMAC keys) and needs an endpoint and a bucket; gcs uses Google Cloud Storage natively and needs a bucket; azure uses Azure Blob Storage and needs an account and a container. Start with local.",
     )
-    .options(&["local", "s3"]),
+    .options(&["local", "s3", "gcs", "azure"]),
     SettingDef::new(
         "storage.max_object_bytes",
         "Largest file",
@@ -612,7 +612,7 @@ const STORAGE: &[SettingDef] = &[
         "storage.s3_part_size",
         "S3 upload part size",
         Int,
-        "S3 driver only: size of each part of a large upload, in bytes. S3 needs at least 5242880 (5 MiB); the default 8388608 (8 MiB) suits most services.",
+        "S3, GCS and Azure drivers: size of each part of a large upload, in bytes (GCS rounds it up to a multiple of 256 KiB). S3 needs at least 5242880 (5 MiB); the default 8388608 (8 MiB) suits most services.",
     )
     .unit("bytes"),
     SettingDef::secret(
@@ -632,6 +632,80 @@ const STORAGE: &[SettingDef] = &[
         "S3 session token",
         Some("FORGEBASE_STORAGE_S3_SESSION_TOKEN"),
         "S3 driver only, optional: a temporary session token. It is a secret, so set it with the environment variable FORGEBASE_STORAGE_S3_SESSION_TOKEN, not here.",
+    ),
+    SettingDef::new(
+        "storage.gcs_bucket",
+        "GCS bucket",
+        Text,
+        "GCS driver only: name of the Google Cloud Storage bucket that holds the files, such as my-app-files. Create the bucket first.",
+    ),
+    SettingDef::new(
+        "storage.gcs_prefix",
+        "GCS folder prefix",
+        Text,
+        "GCS driver only: folder inside the bucket for ForgeBase's files, such as forgebase/. Leave it empty to use the whole bucket.",
+    ),
+    SettingDef::new(
+        "storage.gcs_endpoint",
+        "GCS endpoint",
+        Url,
+        "GCS driver only, optional: address of the JSON API. Leave it empty for https://storage.googleapis.com; set it for an emulator such as fake-gcs-server.",
+    )
+    .example("https://storage.googleapis.com"),
+    SettingDef::secret(
+        "storage.gcs_credentials_json",
+        "GCS service-account key",
+        Some("FORGEBASE_STORAGE_GCS_CREDENTIALS_JSON"),
+        "GCS driver only: the contents of a service-account JSON key. It is a secret, so set it with the environment variable FORGEBASE_STORAGE_GCS_CREDENTIALS_JSON (or FORGEBASE_STORAGE_GCS_CREDENTIALS_FILE with the path of the key file), not here. With neither, the driver uses the metadata server of Google Cloud (workload identity).",
+    ),
+    SettingDef::secret(
+        "storage.gcs_access_token",
+        "GCS access token",
+        Some("FORGEBASE_STORAGE_GCS_ACCESS_TOKEN"),
+        "GCS driver only, optional: a fixed OAuth access token, for tests and short-lived tooling. It is a secret, so set it with the environment variable FORGEBASE_STORAGE_GCS_ACCESS_TOKEN, not here.",
+    ),
+    SettingDef::new(
+        "storage.azure_account",
+        "Azure storage account",
+        Text,
+        "Azure driver only: name of the storage account, such as myaccount.",
+    ),
+    SettingDef::new(
+        "storage.azure_container",
+        "Azure container",
+        Text,
+        "Azure driver only: name of the blob container that holds the files, such as forgebase-blobs. Create the container first.",
+    ),
+    SettingDef::new(
+        "storage.azure_prefix",
+        "Azure folder prefix",
+        Text,
+        "Azure driver only: folder inside the container for ForgeBase's files, such as forgebase/. Leave it empty to use the whole container.",
+    ),
+    SettingDef::new(
+        "storage.azure_endpoint",
+        "Azure endpoint",
+        Url,
+        "Azure driver only, optional: address of the account. Leave it empty for https://<account>.blob.core.windows.net; set it for Azurite, such as http://127.0.0.1:10000/devstoreaccount1.",
+    )
+    .example("http://127.0.0.1:10000/devstoreaccount1"),
+    SettingDef::secret(
+        "storage.azure_account_key",
+        "Azure account key",
+        Some("FORGEBASE_STORAGE_AZURE_ACCOUNT_KEY"),
+        "Azure driver only: the storage account's shared key. It is a secret, so set it with the environment variable FORGEBASE_STORAGE_AZURE_ACCOUNT_KEY, not here. Alternatives, in this order: FORGEBASE_STORAGE_AZURE_SAS_TOKEN, Microsoft Entra client credentials (FORGEBASE_STORAGE_AZURE_TENANT_ID, ..._CLIENT_ID, ..._CLIENT_SECRET), or a managed identity when none is set.",
+    ),
+    SettingDef::secret(
+        "storage.azure_sas_token",
+        "Azure SAS token",
+        Some("FORGEBASE_STORAGE_AZURE_SAS_TOKEN"),
+        "Azure driver only, optional: a shared access signature for the container. It is a secret, so set it with the environment variable FORGEBASE_STORAGE_AZURE_SAS_TOKEN, not here.",
+    ),
+    SettingDef::secret(
+        "storage.azure_client_secret",
+        "Azure client secret",
+        Some("FORGEBASE_STORAGE_AZURE_CLIENT_SECRET"),
+        "Azure driver only, optional: the client secret of a Microsoft Entra application, used with FORGEBASE_STORAGE_AZURE_TENANT_ID and FORGEBASE_STORAGE_AZURE_CLIENT_ID. It is a secret, so set it with the environment variable FORGEBASE_STORAGE_AZURE_CLIENT_SECRET, not here.",
     ),
 ];
 
@@ -1826,10 +1900,14 @@ mod tests {
         unique.sort_unstable();
         unique.dedup();
         assert_eq!(unique.len(), ids.len(), "ids are unique");
-        // Every key of the example file, the commented S3 ones included.
+        // Every key of the example file, the commented S3, GCS and Azure ones included.
         let uncommented = EXAMPLE
             .lines()
-            .map(|l| l.strip_prefix("# ").filter(|r| r.starts_with("s3_")).unwrap_or(l))
+            .map(|l| {
+                l.strip_prefix("# ")
+                    .filter(|r| r.starts_with("s3_") || r.starts_with("gcs_") || r.starts_with("azure_"))
+                    .unwrap_or(l)
+            })
             .collect::<Vec<_>>()
             .join("\n");
         let keys = keys_of(&uncommented);
@@ -2090,6 +2168,9 @@ mod tests {
             "HTTP",
             "IP",
             "S3",
+            "GCS",
+            "Azure",
+            "SAS",
             "TCP",
             "URL",
             "X-Forwarded-For",

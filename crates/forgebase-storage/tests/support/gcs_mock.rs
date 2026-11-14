@@ -140,10 +140,16 @@ fn handle(st: &Arc<Mutex<GcsState>>, base: &str, req: &Req) -> Resp {
             return Resp::json(400, &json!({ "error": "invalid_grant" }));
         }
         let ok = signature::UnparsedPublicKey::new(&signature::RSA_PKCS1_2048_8192_SHA256, public_key())
-            .verify(format!("{}.{}", parts[0], parts[1]).as_bytes(), &b64url_decode(parts[2]))
+            .verify(
+                format!("{}.{}", parts[0], parts[1]).as_bytes(),
+                &b64url_decode(parts[2]),
+            )
             .is_ok();
         if !ok {
-            return Resp::json(400, &json!({ "error": "invalid_grant", "error_description": "bad signature" }));
+            return Resp::json(
+                400,
+                &json!({ "error": "invalid_grant", "error_description": "bad signature" }),
+            );
         }
         let header: Json = serde_json::from_slice(&b64url_decode(parts[0])).unwrap();
         let claims: Json = serde_json::from_slice(&b64url_decode(parts[1])).unwrap();
@@ -155,7 +161,10 @@ fn handle(st: &Arc<Mutex<GcsState>>, base: &str, req: &Req) -> Resp {
         let tok = format!("tok-{}", s.tokens_issued);
         s.accepted.insert(tok.clone());
         let ttl = s.token_ttl;
-        return Resp::json(200, &json!({ "access_token": tok, "expires_in": ttl, "token_type": "Bearer" }));
+        return Resp::json(
+            200,
+            &json!({ "access_token": tok, "expires_in": ttl, "token_type": "Bearer" }),
+        );
     }
     // The GCE metadata server.
     if req.path == "/computeMetadata/v1/instance/service-accounts/default/token" {
@@ -166,7 +175,10 @@ fn handle(st: &Arc<Mutex<GcsState>>, base: &str, req: &Req) -> Resp {
         let tok = format!("meta-{}", s.tokens_issued);
         s.accepted.insert(tok.clone());
         let ttl = s.token_ttl;
-        return Resp::json(200, &json!({ "access_token": tok, "expires_in": ttl, "token_type": "Bearer" }));
+        return Resp::json(
+            200,
+            &json!({ "access_token": tok, "expires_in": ttl, "token_type": "Bearer" }),
+        );
     }
 
     // Resumable upload sessions are pre-authorised by their URI.
@@ -231,7 +243,11 @@ fn object(s: &mut GcsState, req: &Req, name: &str, tail: &[&str]) -> Resp {
                 return err(404, "No such object");
             };
             if req.q("alt").as_deref() == Some("media") {
-                match req.h("range").and_then(|r| r.strip_prefix("bytes=")).and_then(|r| r.split_once('-')) {
+                match req
+                    .h("range")
+                    .and_then(|r| r.strip_prefix("bytes="))
+                    .and_then(|r| r.split_once('-'))
+                {
                     Some((a, b)) => {
                         let (a, b): (usize, usize) = (a.parse().unwrap(), b.parse().unwrap());
                         if a >= data.len() {
@@ -267,7 +283,10 @@ fn object(s: &mut GcsState, req: &Req, name: &str, tail: &[&str]) -> Resp {
                 Resp::json(200, &json!({ "done": true, "resource": meta(&dst, &data) }))
             } else {
                 s.rewrites.insert(key);
-                Resp::json(200, &json!({ "done": false, "rewriteToken": "rt-1", "totalBytesRewritten": "1" }))
+                Resp::json(
+                    200,
+                    &json!({ "done": false, "rewriteToken": "rt-1", "totalBytesRewritten": "1" }),
+                )
             }
         }
         ("POST", ["compose"]) => {
@@ -301,7 +320,10 @@ fn list(s: &GcsState, req: &Req) -> Resp {
     let prefix = req.q("prefix").unwrap_or_default();
     let delimiter = req.q("delimiter");
     let after = req.q("pageToken").unwrap_or_default();
-    let max = req.q("maxResults").and_then(|m| m.parse::<usize>().ok()).unwrap_or(1000);
+    let max = req
+        .q("maxResults")
+        .and_then(|m| m.parse::<usize>().ok())
+        .unwrap_or(1000);
     let page = if s.list_page == 0 { max } else { s.list_page.min(max) };
     let mut items = Vec::new();
     let mut prefixes: Vec<String> = Vec::new();
@@ -309,14 +331,14 @@ fn list(s: &GcsState, req: &Req) -> Resp {
         if !k.starts_with(&prefix) || k.as_str() <= after.as_str() {
             continue;
         }
-        if let Some(d) = &delimiter {
-            if let Some(i) = k[prefix.len()..].find(d.as_str()) {
-                let p = format!("{}{}", &k[..prefix.len()], &k[prefix.len()..prefix.len() + i + d.len()]);
-                if !prefixes.contains(&p) {
-                    prefixes.push(p);
-                }
-                continue;
+        if let Some(d) = &delimiter
+            && let Some(i) = k[prefix.len()..].find(d.as_str())
+        {
+            let p = format!("{}{}", &k[..prefix.len()], &k[prefix.len()..prefix.len() + i + d.len()]);
+            if !prefixes.contains(&p) {
+                prefixes.push(p);
             }
+            continue;
         }
         items.push((k.clone(), v.len()));
     }
@@ -354,7 +376,11 @@ fn session(s: &mut GcsState, sid: &str, req: &Req) -> Resp {
     let total_n: Option<usize> = total.parse().ok();
     let status = |len: usize| {
         let r = Resp::new(308);
-        if len > 0 { r.header("Range", format!("bytes=0-{}", len - 1)) } else { r }
+        if len > 0 {
+            r.header("Range", format!("bytes=0-{}", len - 1))
+        } else {
+            r
+        }
     };
     if span == "*" {
         // A status query, or the empty last chunk of an upload.
@@ -397,7 +423,8 @@ fn session(s: &mut GcsState, sid: &str, req: &Req) -> Resp {
         Some(t) => {
             data.extend_from_slice(&req.body);
             if data.len() != t {
-                s.bad.push(format!("final chunk says total {t} but {} arrived", data.len()));
+                s.bad
+                    .push(format!("final chunk says total {t} but {} arrived", data.len()));
                 return err(400, "total");
             }
             s.sessions.remove(sid);

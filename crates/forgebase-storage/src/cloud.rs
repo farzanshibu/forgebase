@@ -265,7 +265,9 @@ pub fn b64(bytes: &[u8]) -> String {
 
 /// Decodes standard base64.
 pub fn b64_decode(s: &str) -> Option<Vec<u8>> {
-    base64::engine::general_purpose::STANDARD.decode(s.trim().as_bytes()).ok()
+    base64::engine::general_purpose::STANDARD
+        .decode(s.trim().as_bytes())
+        .ok()
 }
 
 /// Escapes text for XML.
