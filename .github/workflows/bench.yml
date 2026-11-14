@@ -89,7 +89,7 @@ jobs:
           } >> "$GITHUB_ENV"
 
       - name: Compare script self-test
-        run: python3 -m unittest discover -s crates/forgebase-bench/scripts -p 'test_*.py'
+        run: PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s crates/forgebase-bench/scripts -p 'test_*.py'
 
       - name: Build the dashboard so rust-embed embeds the real assets
         run: |
