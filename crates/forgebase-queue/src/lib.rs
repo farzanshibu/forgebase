@@ -51,4 +51,4 @@ pub use http::{StreamClientMessage, StreamServerMessage, api, extension, openapi
 pub use model::*;
 pub use ops::QueueBacklog;
 pub use pgmq::{CONVERT_JOB, register_jobs};
-pub use service::QueueService;
+pub use service::{QueueService, TRACEPARENT_ATTRIBUTE, TRACESTATE_ATTRIBUTE};

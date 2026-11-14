@@ -125,6 +125,11 @@ pub struct Job {
     #[serde(skip)]
     #[schema(ignore)]
     pub(crate) context: Option<String>,
+    /// W3C `traceparent` of the span that enqueued the job (ADR-0035): the
+    /// run continues that trace, and an external worker may too. Absent
+    /// while trace propagation is off.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub traceparent: Option<String>,
     /// Creation time (RFC 3339).
     pub created_at: String,
     /// Last change (RFC 3339).

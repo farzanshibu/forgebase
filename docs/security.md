@@ -229,6 +229,42 @@ their own, so §4.2 and §4.3 apply. Proof: `forgebase-vector/tests/service.rs`,
 | A certificate silently expiring | Renewal at two thirds of the lifetime with backoff; expiry gauge, `doctor` warning under 14 days, status `last_error` | `tls_renewal::*`, `tls::doctor_reports_expiry` |
 | Clients spoofing their address when exposed directly | `trust_forwarded_for` stays off with native TLS (warning when on) | documented (deployment.md §5) |
 
+### 4.15 Tracing export and alert notifications (ADR-0035)
+
+What leaves the box, and only when you configure it:
+
+* **Traces** (`[observability.otlp] enabled`, off by default) go to your
+  collector. Spans carry route templates (never raw paths or query strings),
+  methods, status codes, request ids, function, topic, subscription, queue and
+  job names, message ids and the host (never the URL) of outbound requests.
+  Only span fields with a dotted name are exported, so a log field added to a
+  span later is never sent by accident. Resource attributes: service name,
+  version, instance id and what you add.
+* **Logs** (`export_logs`, off by default) are the lines the server logs at
+  `log.level`, with all their fields: they can hold user ids, emails and
+  addresses, so turn it on only for a collector that may keep them.
+* **Trace headers.** With export on, responses carry `traceparent`, outbound
+  requests (function `fetch`, push webhooks, notifiers) carry it, and queue
+  messages store it as an attribute: a receiver learns a trace id, nothing
+  more. A caller cannot force its traces to be recorded unless trusted
+  (`trust_incoming_trace = "auto"`: behind `[auth] trust_forwarded_for` or
+  on loopback), so outside traffic cannot inflate your export volume.
+* **Collector credentials** come from the environment (`env:NAME` header
+  values, `FORGEBASE_OTLP_HEADERS`), never from the file or the API. The
+  collector may be on a private network (it is your configuration), unlike
+  notifier URLs.
+* **Notifications** carry alert names, labels, annotations and values:
+  subscription, topic, queue, provider and SLO names, never record data.
+  Webhook, Slack and PagerDuty notifiers go through the SSRF-safe client
+  (public `https://` addresses only, `allow_http` to permit `http://`);
+  webhooks are signed with a per-notifier secret (ADR-0031 scheme). Slack
+  URLs, PagerDuty routing keys and signing secrets are sealed with the
+  keyring and never listed. Email goes through the server's mail settings,
+  queue notifications stay inside ForgeBase.
+* **Access.** `/api/v1/alerts/*` and `/api/v1/slos/*` are for platform
+  administrators only (checked before a body is read); a signed-in
+  non-administrator gets `403`, an anonymous caller `401`.
+
 ## 5. Admin and operational access
 
 The dashboard at `/admin/` and the admin sign-in at `POST /api/auth/admins/login`

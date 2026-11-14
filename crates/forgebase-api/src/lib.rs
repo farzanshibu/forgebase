@@ -403,6 +403,9 @@ pub struct RouterOptions {
     /// passes one with the shard router and the `graph.materialise` job
     /// hook attached). `None`: a plain one on the app state's data service.
     pub graph: Option<forgebase_graph::GraphService>,
+    /// Told about every answered request with its route template, status
+    /// and latency (the SLO engine, ADR-0035 §5).
+    pub http_observers: Vec<Arc<dyn forgebase_observability::HttpObserver>>,
 }
 
 /// Routes of a feature crate that depends on `forgebase-api` (so this crate
@@ -436,6 +439,7 @@ impl Default for RouterOptions {
             system_config: None,
             database_topology: None,
             graph: None,
+            http_observers: Vec::new(),
         }
     }
 }
@@ -470,12 +474,15 @@ fn cors_layer(origins: &[String]) -> Option<CorsLayer> {
                 HeaderName::from_static(forgebase_auth::http::CSRF_HEADER),
                 HeaderName::from_static(consistency::READ_AFTER_HEADER),
                 HeaderName::from_static(consistency::CONSISTENCY_HEADER),
+                HeaderName::from_static("traceparent"),
+                HeaderName::from_static("tracestate"),
             ])
             .expose_headers([
                 header::ETAG,
                 header::LOCATION,
                 HeaderName::from_static("x-request-id"),
                 HeaderName::from_static(consistency::COMMIT_HEADER),
+                HeaderName::from_static("traceparent"),
             ])
             .max_age(Duration::from_secs(600)),
     )
@@ -602,20 +609,16 @@ pub fn router_with(
             opts.request_timeout,
         ))
         .layer(CatchPanicLayer::new())
-        .layer(middleware::from_fn(context::track_metrics))
+        .layer(middleware::from_fn_with_state(
+            context::Observers::from(opts.http_observers.clone()),
+            context::track_metrics,
+        ))
+        .layer(middleware::from_fn(context::trace_header))
         .layer(
             TraceLayer::new_for_http()
-                .make_span_with(|req: &Request| {
-                    let request_id = req.extensions().get::<RequestId>().map_or("-", RequestId::as_str);
-                    // Path only: query strings may carry tokens.
-                    tracing::info_span!(
-                        "http",
-                        method = %req.method(),
-                        path = %req.uri().path(),
-                        request_id = %request_id,
-                    )
-                })
-                .on_response(DefaultOnResponse::new().level(Level::INFO))
+                // ADR-0035: `<METHOD> <route template>`, the caller's trace as parent.
+                .make_span_with(|req: &Request| context::server_span(req))
+                .on_response(context::RecordStatus(DefaultOnResponse::new().level(Level::INFO)))
                 .on_failure(DefaultOnFailure::new().level(Level::ERROR)),
         );
     let app = match cors_layer(&opts.cors_allowed_origins) {

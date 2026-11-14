@@ -104,6 +104,8 @@ pub struct RunningServer {
     billing: Option<forgebase_billing::BillingService>,
     customize: CustomizeService,
     queue: Option<forgebase_queue::QueueService>,
+    /// The alerting engine and SLOs (ADR-0035), unless `[alerts] enabled = false`.
+    alerts: Option<forgebase_alerts::AlertService>,
     shutdown_timeout: Duration,
     lock: Option<DataDirLock>,
     /// First-run setup token (FB-90), while no administrator exists.
@@ -743,7 +745,27 @@ async fn start_on(
     if let Some(q) = &queue {
         extensions.push(forgebase_queue::extension(q.clone()));
     }
+    // ADR-0035: alerting engine and SLOs, unless `[alerts] enabled = false`.
+    let alerts = if config.alerts.enabled {
+        match open_alerts(&fn_auth, layout, config, &customize, queue.as_ref()).await {
+            Ok(a) => Some(a),
+            Err(e) => {
+                db.close().await;
+                return Err(e);
+            }
+        }
+    } else {
+        None
+    };
+    if let Some(a) = &alerts {
+        extensions.push(forgebase_alerts::extension(a.clone()));
+    }
     let opts = RouterOptions {
+        // SLO request counting.
+        http_observers: alerts
+            .iter()
+            .map(forgebase_alerts::AlertService::http_observer)
+            .collect(),
         extensions,
         graph: Some(graph.clone()),
         gates: vec![
@@ -933,6 +955,9 @@ async fn start_on(
     if let Some(q) = &queue {
         q.start_background();
     }
+    if let Some(a) = &alerts {
+        a.start_background();
+    }
 
     tracing::info!(
         %addr,
@@ -965,6 +990,7 @@ async fn start_on(
         billing,
         customize,
         queue,
+        alerts,
         shutdown_timeout: Duration::from_secs(config.server.shutdown_timeout_secs),
         lock: None,
         setup_token,
@@ -1153,6 +1179,47 @@ async fn open_queue(
     }
     queue.set_fetcher(fetcher);
     Ok(queue)
+}
+
+/// The alerting engine (ADR-0035): notifier secrets sealed with the data
+/// directory's master key, webhook/Slack/PagerDuty calls through the
+/// SSRF-safe client, email through customization, queue notifiers and
+/// signals through the queue service.
+async fn open_alerts(
+    auth: &forgebase_auth::AuthService,
+    layout: &DataLayout,
+    config: &Config,
+    customize: &CustomizeService,
+    queue: Option<&forgebase_queue::QueueService>,
+) -> Result<forgebase_alerts::AlertService, ServerError> {
+    let path = auth.config().master_key_path.clone();
+    let keyring = tokio::task::spawn_blocking(move || forgebase_auth::crypto::Keyring::load_or_create(&path))
+        .await
+        .map_err(|e| ServerError::Alerts(e.to_string()))?
+        .map_err(|e| ServerError::Alerts(e.to_string()))?;
+    let tls = auth.tls_settings().map_err(|e| ServerError::Alerts(e.to_string()))?;
+    let fetcher = forgebase_functions::Fetcher::new(
+        &tls,
+        forgebase_functions::FetchConfig {
+            timeout: Duration::from_secs(15),
+            ..forgebase_functions::FetchConfig::default()
+        },
+    )
+    .map_err(|e| ServerError::Alerts(e.to_string()))?;
+    forgebase_alerts::AlertService::open(forgebase_alerts::AlertDeps {
+        db: auth.data().backend().clone(),
+        keyring,
+        clock: Arc::new(forgebase_jobs::SystemClock),
+        fetcher: Some(fetcher),
+        customize: Some(customize.clone()),
+        queue: queue.cloned(),
+        layout: Some(layout.clone()),
+        metrics: Arc::new(forgebase_alerts::ProcessMetrics),
+        settings: forgebase_alerts::AlertSettings::from_config(&config.alerts),
+        public_url: config.server.public_url.clone(),
+    })
+    .await
+    .map_err(|e| ServerError::Alerts(e.to_string()))
 }
 
 async fn open_functions(auth: &forgebase_auth::AuthService, kv: &KvService) -> Result<FunctionService, ServerError> {
@@ -1353,6 +1420,11 @@ impl RunningServer {
         &self.customize
     }
 
+    /// The alerting engine (ADR-0035), unless `[alerts] enabled = false`.
+    pub fn alerts(&self) -> Option<&forgebase_alerts::AlertService> {
+        self.alerts.as_ref()
+    }
+
     /// The topics and queues service (FB-63), unless `[queue] enabled = false`.
     pub fn queue(&self) -> Option<&forgebase_queue::QueueService> {
         self.queue.as_ref()
@@ -1467,6 +1539,9 @@ impl RunningServer {
         }
         if let Some(t) = self.tls_tasks.take() {
             t.stop().await;
+        }
+        if let Some(a) = &self.alerts {
+            a.shutdown(self.shutdown_timeout.min(Duration::from_secs(5))).await;
         }
         if let Some(q) = &self.queue {
             q.close_streams();
@@ -1632,6 +1707,10 @@ pub enum ServerError {
     /// The queue service could not start.
     #[error("queue: {0}")]
     Queue(String),
+    /// The alerting engine could not start (ADR-0035): an invalid
+    /// `[[alerts.rules]]` entry, or its tables.
+    #[error("alerts: {0}")]
+    Alerts(String),
     /// The credit service failed to open.
     #[error("credits: {0}")]
     Credits(String),
@@ -1713,6 +1792,7 @@ impl ErrorCode for ServerError {
             ServerError::Functions(_) => "functions_unavailable",
             ServerError::Storage(_) => "storage_unavailable",
             ServerError::Queue(_) => "queue_unavailable",
+            ServerError::Alerts(_) => "alerts_unavailable",
             ServerError::Credits(_) => "credits_unavailable",
             ServerError::Billing(_) => "billing_unavailable",
             ServerError::Customize(_) => "customize_unavailable",
@@ -1739,6 +1819,7 @@ impl ErrorCode for ServerError {
             | ServerError::Functions(_)
             | ServerError::Storage(_)
             | ServerError::Queue(_)
+            | ServerError::Alerts(_)
             | ServerError::Credits(_)
             | ServerError::Customize(_)
             | ServerError::Billing(_) => ErrorKind::Internal,

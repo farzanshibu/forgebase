@@ -312,7 +312,7 @@ pub async fn ops_gate(State(access): State<OpsAccess>, req: Request, next: Next)
 /// proxy, not the client.
 const FORWARDING_HEADERS: [&str; 3] = ["forwarded", "x-forwarded-for", "x-real-ip"];
 
-fn direct_loopback(req: &Request) -> bool {
+pub(crate) fn direct_loopback(req: &Request) -> bool {
     let peer = req.extensions().get::<ConnectInfo<SocketAddr>>().map(|c| c.0.ip());
     let loopback = match peer {
         Some(IpAddr::V4(a)) => a.is_loopback(),

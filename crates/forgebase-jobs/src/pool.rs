@@ -357,9 +357,27 @@ async fn run_job(
     };
     let _heartbeat_guard = AbortOnDrop(heartbeat.abort_handle());
 
+    // ADR-0035: the run continues the trace of the enqueuing span.
+    let span = tracing::info_span!(
+        "job",
+        job = %claimed.job.id,
+        otel.name = %format_args!("job {}", claimed.job.kind),
+        otel.kind = "consumer",
+        otel.parent = %claimed.job.traceparent.as_deref().unwrap_or(""),
+        messaging.system = "forgebase.jobs",
+        messaging.operation.type = "process",
+        messaging.destination.name = %claimed.job.queue,
+        forgebase.job.id = %claimed.job.id,
+        forgebase.job.kind = %claimed.job.kind,
+        forgebase.job.attempt = claimed.job.attempts,
+        otel.status_code = tracing::field::Empty,
+    );
     // The handler runs in its own task so a panic is caught and reported.
     let ctx = JobContext::new(claimed, service.clone(), cancel_tx, cancel_rx);
-    let work = tokio::spawn(handler.handle(ctx));
+    let work = {
+        use tracing::Instrument as _;
+        tokio::spawn(handler.handle(ctx).instrument(span.clone()))
+    };
     let _work_guard = AbortOnDrop(work.abort_handle());
     let outcome = match work.await {
         Ok(result) => result,
@@ -367,6 +385,9 @@ async fn run_job(
         Err(_) => Err(HandlerError::retry("handler task was cancelled")),
     };
     heartbeat.abort();
+    if outcome.is_err() {
+        span.record("otel.status_code", "error");
+    }
     report(service, &system, &id, &lease_id, outcome).await;
     in_flight.lock().unwrap_or_else(|p| p.into_inner()).remove(&id);
 }

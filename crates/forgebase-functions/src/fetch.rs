@@ -270,10 +270,54 @@ impl Fetcher {
 
     /// Performs `req`, following redirects, each hop checked as described in
     /// the module documentation.
-    pub async fn fetch(&self, req: FetchRequest, allowed_hosts: &[String]) -> Result<FetchResponse, FetchError> {
-        tokio::time::timeout(self.cfg.timeout, self.fetch_inner(req, allowed_hosts))
+    ///
+    /// ADR-0035: the request is a client span (`<METHOD>`, with the host as
+    /// `server.address`; never the URL, which may carry secrets); while trace
+    /// propagation is on, its `traceparent` is added to the request unless
+    /// the caller set one.
+    pub async fn fetch(&self, mut req: FetchRequest, allowed_hosts: &[String]) -> Result<FetchResponse, FetchError> {
+        use forgebase_observability::trace;
+        use tracing::Instrument as _;
+        let method = match req.method.to_ascii_uppercase() {
+            m if m.is_empty() => "GET".to_owned(),
+            m => m,
+        };
+        let host = url::Url::parse(&req.url)
+            .ok()
+            .and_then(|u| u.host_str().map(str::to_owned))
+            .unwrap_or_default();
+        let span = tracing::info_span!(
+            "fetch",
+            host = %host,
+            otel.name = %method,
+            otel.kind = "client",
+            http.request.method = %method,
+            server.address = %host,
+            http.response.status_code = tracing::field::Empty,
+            otel.status_code = tracing::field::Empty,
+        );
+        if trace::propagation_enabled()
+            && let Some(ctx) = trace::span_context(&span)
+        {
+            trace::inject_context(&ctx, &mut req.headers);
+        }
+        let r = tokio::time::timeout(self.cfg.timeout, self.fetch_inner(req, allowed_hosts))
+            .instrument(span.clone())
             .await
-            .map_err(|_| FetchError::Failed("the request timed out".into()))?
+            .map_err(|_| FetchError::Failed("the request timed out".into()))
+            .and_then(|r| r);
+        match &r {
+            Ok(res) => {
+                span.record("http.response.status_code", res.status);
+                if res.status >= 500 {
+                    span.record("otel.status_code", "error");
+                }
+            }
+            Err(_) => {
+                span.record("otel.status_code", "error");
+            }
+        }
+        r
     }
 
     async fn fetch_inner(&self, req: FetchRequest, allowed: &[String]) -> Result<FetchResponse, FetchError> {

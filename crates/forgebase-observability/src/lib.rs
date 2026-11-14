@@ -1,19 +1,43 @@
-//! Logging and metrics.
+//! Logging, metrics and tracing.
 //!
 //! * [`init_logging`] installs a global `tracing` subscriber writing to
 //!   stderr, human-readable or JSON lines, filtered by a `tracing` directive.
+//!   [`init_telemetry`] does the same with `[observability]` (ADR-0035):
+//!   trace ids in JSON lines and, when `[observability.otlp]` is on, OTLP
+//!   export of spans and logs ([`trace`], [`otlp`]).
 //! * [`metrics_handle`] installs the process-wide Prometheus recorder once
 //!   and returns the handle used to render `/metrics`. Crates record through
 //!   the `metrics` macros with the names in [`names`].
+//! * [`HttpObserver`]: a hook the HTTP layer calls once per request (the SLO
+//!   engine counts good and bad requests through it).
+
+mod http_client;
+pub mod otlp;
+mod otlp_encode;
+pub mod trace;
 
 use std::io::IsTerminal;
 use std::sync::OnceLock;
 
 use forgebase_core::LogFormat;
+use forgebase_core::config::telemetry_config::ObservabilityConfig;
 use metrics_exporter_prometheus::{Matcher, PrometheusBuilder, PrometheusHandle};
+use tracing::{Event, Level, Metadata, Subscriber};
 use tracing_subscriber::EnvFilter;
-use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::filter::LevelFilter;
+use tracing_subscriber::fmt::format::{FormatEvent, FormatFields, Writer};
+use tracing_subscriber::fmt::{FmtContext, format};
+use tracing_subscriber::layer::{Context, Filter, Layer, SubscriberExt};
+use tracing_subscriber::registry::LookupSpan;
 use tracing_subscriber::util::SubscriberInitExt;
+
+/// Told about every HTTP request once it is answered (ADR-0035 §5). Keep it
+/// cheap: it runs on the request path.
+pub trait HttpObserver: Send + Sync + std::fmt::Debug {
+    /// One request: method, matched route template (`<unmatched>` when no
+    /// route matched), status code and latency in seconds.
+    fn observe(&self, method: &str, route: &str, status: u16, seconds: f64);
+}
 
 /// Metric names. Keep them stable: dashboards and alerts depend on them.
 pub mod names {
@@ -99,6 +123,28 @@ pub mod names {
     pub const TLS_RELOAD_FAILURES_TOTAL: &str = "forgebase_tls_reload_failures_total";
     /// Counter: TLS handshakes that failed or timed out.
     pub const TLS_HANDSHAKE_FAILURES_TOTAL: &str = "forgebase_tls_handshake_failures_total";
+    /// Counter: spans or log records sent to the OTLP collector, label `signal` (`traces`, `logs`).
+    pub const OTLP_EXPORTED_TOTAL: &str = "forgebase_otlp_exported_total";
+    /// Counter: spans or log records not exported, labels `signal` and
+    /// `reason` (`queue_full`, `export_failed`).
+    pub const OTLP_DROPPED_TOTAL: &str = "forgebase_otlp_dropped_total";
+    /// Counter: finished job attempts, labels `queue` and `outcome`
+    /// (`succeeded`, `failed` = will be retried, `dead`).
+    pub const JOBS_COMPLETED_TOTAL: &str = "forgebase_jobs_completed_total";
+    /// Gauge: alerts by `state` (`pending`, `firing`) and `severity`.
+    pub const ALERTS: &str = "forgebase_alerts";
+    /// Counter: alert notification attempts, labels `notifier_type` and `outcome` (`sent`, `failed`).
+    pub const ALERT_NOTIFICATIONS_TOTAL: &str = "forgebase_alert_notifications_total";
+    /// Counter: rule evaluations that failed (unknown metric names are not failures), label `rule`.
+    pub const ALERT_EVALUATION_FAILURES_TOTAL: &str = "forgebase_alert_evaluation_failures_total";
+    /// Gauge: share of good events over the SLO window, label `slo`.
+    pub const SLO_SLI: &str = "forgebase_slo_sli_ratio";
+    /// Gauge: the objective (0-1), label `slo`.
+    pub const SLO_OBJECTIVE: &str = "forgebase_slo_objective_ratio";
+    /// Gauge: share of the error budget left (below 0 when overspent), label `slo`.
+    pub const SLO_ERROR_BUDGET_REMAINING: &str = "forgebase_slo_error_budget_remaining_ratio";
+    /// Gauge: error-budget burn rate over a window, labels `slo` and `window` (`5m`, `30m`, `1h`, `2h`, `6h`, `1d`, `3d`).
+    pub const SLO_BURN_RATE: &str = "forgebase_slo_burn_rate";
 }
 
 /// Resident memory and CPU time of this process, where the platform reports them.
@@ -161,6 +207,9 @@ pub enum ObservabilityError {
         /// Parser message.
         message: String,
     },
+    /// `[observability.otlp]` cannot be used.
+    #[error("{0}")]
+    Otlp(String),
 }
 
 impl forgebase_core::ErrorCode for ObservabilityError {
@@ -173,36 +222,198 @@ impl forgebase_core::ErrorCode for ObservabilityError {
 }
 
 /// Installs the global log subscriber. A second call is a no-op (the first
-/// subscriber stays), so tests and embedders can call it freely.
+/// subscriber stays), so tests and embedders can call it freely. Tracing
+/// export stays off; see [`init_telemetry`].
 pub fn init_logging(level: &str, format: LogFormat) -> Result<(), ObservabilityError> {
-    let filter = EnvFilter::try_new(level).map_err(|e| ObservabilityError::InvalidLogLevel {
+    init_telemetry(level, format, &ObservabilityConfig::default(), false)
+}
+
+fn parse_filter(level: &str) -> Result<EnvFilter, ObservabilityError> {
+    EnvFilter::try_new(level).map_err(|e| ObservabilityError::InvalidLogLevel {
         level: level.to_owned(),
         message: e.to_string(),
-    })?;
-    let registry = tracing_subscriber::registry().with(filter);
-    let result = match format {
-        LogFormat::Json => registry
-            .with(
-                tracing_subscriber::fmt::layer()
-                    .json()
-                    .with_current_span(true)
-                    .with_span_list(false)
-                    .with_writer(std::io::stderr),
-            )
-            .try_init(),
-        LogFormat::Pretty => registry
-            .with(
-                tracing_subscriber::fmt::layer()
-                    .compact()
-                    .with_ansi(std::io::stderr().is_terminal())
-                    .with_writer(std::io::stderr),
-            )
-            .try_init(),
+    })
+}
+
+/// Installs the global subscriber with `[observability]` (ADR-0035):
+///
+/// * OTLP off (the default): the log layer alone, as before, plus the
+///   trace-context layer in JSON mode so each line carries `trace_id` and
+///   `span_id`. Nothing is recorded or sent; nothing is propagated.
+/// * OTLP on: the exporter thread starts; spans at `INFO` and above get a
+///   trace context and sampled ones are exported (whatever `log.level`
+///   says), log events at `log.level` too when `export_logs` is on; trace
+///   context is propagated (response `traceparent`, outbound requests, queue
+///   messages, jobs).
+///
+/// `trust_proxy` is `[auth] trust_forwarded_for`. A second call keeps the
+/// first subscriber.
+pub fn init_telemetry(
+    level: &str,
+    format: LogFormat,
+    obs: &ObservabilityConfig,
+    trust_proxy: bool,
+) -> Result<(), ObservabilityError> {
+    let filter = parse_filter(level)?;
+    let otlp_cfg = &obs.otlp;
+    let installed_before = tracing::dispatcher::has_been_set();
+    if !installed_before {
+        trace::configure(trace::TraceOptions {
+            sampling_ratio: otlp_cfg.sampling_ratio,
+            trust: obs.trust_incoming_trace,
+            trust_proxy,
+            propagate: otlp_cfg.enabled,
+        });
+    }
+    let result = if otlp_cfg.enabled && !installed_before {
+        let opts = otlp::OtlpOptions::from_config(otlp_cfg, None, |k| std::env::var(k).ok())
+            .map_err(|e| ObservabilityError::Otlp(e.to_string()))?;
+        let (spans, logs) = (opts.export_traces, opts.export_logs);
+        otlp::start(opts).map_err(|e| ObservabilityError::Otlp(e.to_string()))?;
+        let log_filter = if logs { Some(parse_filter(level)?) } else { None };
+        let ctx = trace::ContextLayer::exporting(spans, logs).with_filter(TelemetryFilter { logs: log_filter });
+        let registry = tracing_subscriber::registry().with(ctx);
+        match format {
+            LogFormat::Json => registry.with(json_layer().with_filter(filter)).try_init(),
+            LogFormat::Pretty => registry.with(pretty_layer().with_filter(filter)).try_init(),
+        }
+    } else {
+        let registry = tracing_subscriber::registry().with(filter);
+        match format {
+            LogFormat::Json => registry
+                .with(trace::ContextLayer::ids_only())
+                .with(json_layer())
+                .try_init(),
+            LogFormat::Pretty => registry.with(pretty_layer()).try_init(),
+        }
     };
     if result.is_err() {
         tracing::debug!("log subscriber already installed; keeping the existing one");
     }
     Ok(())
+}
+
+fn json_layer<S>() -> impl Layer<S>
+where
+    S: Subscriber + for<'a> LookupSpan<'a>,
+{
+    tracing_subscriber::fmt::layer()
+        .fmt_fields(format::JsonFields::new())
+        .event_format(WithTraceIds(
+            format().json().with_current_span(true).with_span_list(false),
+        ))
+        .with_writer(std::io::stderr)
+}
+
+fn pretty_layer<S>() -> impl Layer<S>
+where
+    S: Subscriber + for<'a> LookupSpan<'a>,
+{
+    tracing_subscriber::fmt::layer()
+        .compact()
+        .with_ansi(std::io::stderr().is_terminal())
+        .with_writer(std::io::stderr)
+}
+
+/// The JSON event format with `trace_id` and `span_id` of the event's span
+/// as the first keys (ADR-0035 §2).
+struct WithTraceIds<F>(F);
+
+impl<S, N, F> FormatEvent<S, N> for WithTraceIds<F>
+where
+    S: Subscriber + for<'a> LookupSpan<'a>,
+    N: for<'w> FormatFields<'w> + 'static,
+    F: FormatEvent<S, N>,
+{
+    fn format_event(&self, ctx: &FmtContext<'_, S, N>, mut writer: Writer<'_>, event: &Event<'_>) -> std::fmt::Result {
+        let ids = ctx.parent_span().and_then(|span| {
+            let ext = span.extensions();
+            ext.get::<trace::SpanState>()
+                .map(|st| (st.ctx.trace_id_hex(), st.ctx.span_id_hex()))
+        });
+        let Some((trace_id, span_id)) = ids else {
+            return self.0.format_event(ctx, writer, event);
+        };
+        let mut buf = String::new();
+        self.0.format_event(ctx, Writer::new(&mut buf), event)?;
+        match buf.strip_prefix('{') {
+            Some(rest) => write!(writer, "{{\"trace_id\":\"{trace_id}\",\"span_id\":\"{span_id}\",{rest}"),
+            None => writer.write_str(&buf),
+        }
+    }
+}
+
+/// What the trace-context layer sees while exporting: spans at `INFO` and
+/// above (whatever `log.level` says, so a quiet log still traces), and
+/// events at `log.level` when logs are exported (never this crate's own,
+/// which would loop through the exporter).
+struct TelemetryFilter {
+    logs: Option<EnvFilter>,
+}
+
+impl<S> Filter<S> for TelemetryFilter
+where
+    S: Subscriber + for<'a> LookupSpan<'a>,
+{
+    fn enabled(&self, meta: &Metadata<'_>, cx: &Context<'_, S>) -> bool {
+        if meta.is_span() {
+            return *meta.level() <= Level::INFO;
+        }
+        match &self.logs {
+            Some(f) => !meta.target().starts_with("forgebase_observability") && Filter::<S>::enabled(f, meta, cx),
+            None => false,
+        }
+    }
+
+    fn callsite_enabled(&self, meta: &'static Metadata<'static>) -> tracing::subscriber::Interest {
+        use tracing::subscriber::Interest;
+        if meta.is_span() {
+            return if *meta.level() <= Level::INFO {
+                Interest::always()
+            } else {
+                Interest::never()
+            };
+        }
+        match &self.logs {
+            Some(f) if !meta.target().starts_with("forgebase_observability") => Filter::<S>::callsite_enabled(f, meta),
+            _ => Interest::never(),
+        }
+    }
+
+    fn max_level_hint(&self) -> Option<LevelFilter> {
+        let logs = self.logs.as_ref().and_then(|f| Filter::<S>::max_level_hint(f));
+        Some(logs.map_or(LevelFilter::INFO, |l| l.max(LevelFilter::INFO)))
+    }
+
+    fn on_new_span(&self, attrs: &tracing::span::Attributes<'_>, id: &tracing::span::Id, ctx: Context<'_, S>) {
+        if let Some(f) = &self.logs {
+            Filter::<S>::on_new_span(f, attrs, id, ctx);
+        }
+    }
+
+    fn on_record(&self, id: &tracing::span::Id, values: &tracing::span::Record<'_>, ctx: Context<'_, S>) {
+        if let Some(f) = &self.logs {
+            Filter::<S>::on_record(f, id, values, ctx);
+        }
+    }
+
+    fn on_enter(&self, id: &tracing::span::Id, ctx: Context<'_, S>) {
+        if let Some(f) = &self.logs {
+            Filter::<S>::on_enter(f, id, ctx);
+        }
+    }
+
+    fn on_exit(&self, id: &tracing::span::Id, ctx: Context<'_, S>) {
+        if let Some(f) = &self.logs {
+            Filter::<S>::on_exit(f, id, ctx);
+        }
+    }
+
+    fn on_close(&self, id: tracing::span::Id, ctx: Context<'_, S>) {
+        if let Some(f) = &self.logs {
+            Filter::<S>::on_close(f, id, ctx);
+        }
+    }
 }
 
 /// The process-wide Prometheus handle, installing the recorder on first use.
@@ -329,6 +540,22 @@ fn describe() {
         names::QUEUE_REDRIVEN_TOTAL,
         "Dead letters redriven to their subscription."
     );
+    describe_counter!(names::OTLP_EXPORTED_TOTAL, "Spans and log records exported over OTLP.");
+    describe_counter!(names::OTLP_DROPPED_TOTAL, "Spans and log records not exported.");
+    describe_counter!(names::JOBS_COMPLETED_TOTAL, "Finished job attempts by outcome.");
+    describe_gauge!(names::ALERTS, "Alerts by state and severity.");
+    describe_counter!(
+        names::ALERT_NOTIFICATIONS_TOTAL,
+        "Alert notification attempts by outcome."
+    );
+    describe_counter!(
+        names::ALERT_EVALUATION_FAILURES_TOTAL,
+        "Alert rule evaluations that failed."
+    );
+    describe_gauge!(names::SLO_SLI, "Share of good events over the SLO window.");
+    describe_gauge!(names::SLO_OBJECTIVE, "SLO objective.");
+    describe_gauge!(names::SLO_ERROR_BUDGET_REMAINING, "Share of the SLO error budget left.");
+    describe_gauge!(names::SLO_BURN_RATE, "SLO error-budget burn rate over a window.");
 }
 
 #[cfg(test)]
@@ -354,8 +581,95 @@ mod tests {
         assert!(text.contains("# TYPE process_cpu_seconds_total counter"), "{text}");
     }
 
+    /// Tests that touch the process-wide trace options.
+    static OPTIONS_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn json_lines_carry_the_trace_and_span_id() {
+        use std::sync::{Arc, Mutex};
+        let buf: Arc<Mutex<Vec<u8>>> = Arc::default();
+        #[derive(Clone)]
+        struct W(Arc<Mutex<Vec<u8>>>);
+        impl std::io::Write for W {
+            fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap_or_else(|p| p.into_inner()).extend_from_slice(b);
+                Ok(b.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let w = W(buf.clone());
+        let layer = tracing_subscriber::fmt::layer()
+            .fmt_fields(format::JsonFields::new())
+            .event_format(WithTraceIds(
+                format().json().with_current_span(true).with_span_list(false),
+            ))
+            .with_writer(move || w.clone());
+        let sub = tracing_subscriber::registry()
+            .with(trace::ContextLayer::ids_only())
+            .with(layer);
+        let tp = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
+        let span_id = tracing::subscriber::with_default(sub, || {
+            let span = tracing::info_span!("http", otel.parent = tp, request_id = "r1");
+            let ctx = trace::span_context(&span).expect("a context");
+            assert_eq!(ctx.trace_id_hex(), "4bf92f3577b34da6a3ce929d0e0e4736");
+            assert_ne!(ctx.span_id_hex(), "00f067aa0ba902b7", "a child of the remote span");
+            span.in_scope(|| {
+                assert_eq!(trace::current().map(|c| c.span_id), Some(ctx.span_id));
+                tracing::info!(x = 1, "inside");
+            });
+            tracing::info!("outside");
+            ctx.span_id_hex()
+        });
+        let text = String::from_utf8(buf.lock().unwrap_or_else(|p| p.into_inner()).clone()).unwrap_or_default();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 2, "{text}");
+        let first: serde_json::Value = serde_json::from_str(lines[0]).unwrap_or_default();
+        assert_eq!(first["trace_id"], "4bf92f3577b34da6a3ce929d0e0e4736", "{text}");
+        assert_eq!(first["span_id"], span_id.as_str());
+        assert_eq!(first["fields"]["message"], "inside");
+        assert_eq!(first["span"]["request_id"], "r1", "the rest of the format is unchanged");
+        assert!(lines[0].starts_with("{\"trace_id\":"), "first keys: {}", lines[0]);
+        let second: serde_json::Value = serde_json::from_str(lines[1]).unwrap_or_default();
+        assert!(second.get("trace_id").is_none(), "no span, no ids: {}", lines[1]);
+    }
+
+    #[test]
+    fn incoming_trace_context_follows_the_trust_rules() {
+        use forgebase_core::config::telemetry_config::TraceTrust;
+        let _g = OPTIONS_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let tp = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
+        let set = |trust, trust_proxy| {
+            trace::configure(trace::TraceOptions {
+                // Nothing new is sampled: only a trusted caller's flag records.
+                sampling_ratio: 0.0,
+                trust,
+                trust_proxy,
+                propagate: true,
+            })
+        };
+        set(TraceTrust::Auto, false);
+        assert!(!trace::caller_trusted(false));
+        assert!(trace::caller_trusted(true), "a direct loopback caller");
+        let untrusted = trace::accept_incoming(Some(tp), Some("v=1"), false).expect("the trace is kept");
+        assert_eq!(untrusted.trace_id_hex(), "4bf92f3577b34da6a3ce929d0e0e4736");
+        assert!(!untrusted.sampled, "an outside caller cannot force recording");
+        assert_eq!(untrusted.trace_state.as_deref(), Some("v=1"));
+        assert!(trace::accept_incoming(Some(tp), None, true).expect("kept").sampled);
+        set(TraceTrust::Auto, true);
+        assert!(trace::caller_trusted(false), "behind a declared proxy");
+        set(TraceTrust::Always, false);
+        assert!(trace::accept_incoming(Some(tp), None, false).expect("kept").sampled);
+        set(TraceTrust::Never, false);
+        assert!(trace::accept_incoming(Some(tp), None, true).is_none());
+        assert!(trace::accept_incoming(Some("garbage"), None, true).is_none());
+        trace::configure(trace::TraceOptions::default());
+    }
+
     #[test]
     fn bad_log_level_is_rejected() {
+        let _g = OPTIONS_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         assert!(init_logging("not a [valid filter", LogFormat::Pretty).is_err());
         assert!(init_logging("info", LogFormat::Json).is_ok());
         assert!(

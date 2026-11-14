@@ -1,0 +1,48 @@
+[package]
+name = "forgebase-alerts"
+description = "ForgeBase alerting: rules over metrics and health signals, alert states and history, silences, notifiers (webhook, Slack, email, PagerDuty, queue) and SLOs with error budgets and burn-rate alerts."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+axum.workspace = true
+forgebase-api.workspace = true
+forgebase-auth.workspace = true
+forgebase-backup.workspace = true
+forgebase-core.workspace = true
+forgebase-customize.workspace = true
+forgebase-data.workspace = true
+forgebase-db.workspace = true
+forgebase-functions.workspace = true
+forgebase-jobs.workspace = true
+forgebase-observability.workspace = true
+forgebase-queue.workspace = true
+fs4.workspace = true
+metrics.workspace = true
+regex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+time.workspace = true
+# `process`: forgebase-backup spawns pg tools and relies on it being on.
+tokio = { workspace = true, features = ["process"] }
+tracing.workspace = true
+url.workspace = true
+utoipa.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+forgebase-db = { workspace = true, features = ["testing"] }
+forgebase-policy.workspace = true
+forgebase-realtime.workspace = true
+forgebase-entitlements.workspace = true
+forgebase-kv.workspace = true
+tempfile.workspace = true
+tower.workspace = true
+
+[lints]
+workspace = true

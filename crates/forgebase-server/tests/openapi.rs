@@ -73,6 +73,7 @@ fn schema_names_do_not_collide_across_fragments() {
         ("vector", forgebase_vector::openapi()),
         ("storage", forgebase_storage::openapi()),
         ("queue", forgebase_queue::openapi()),
+        ("alerts", forgebase_alerts::openapi()),
     ];
     let mut seen: BTreeMap<String, (&str, serde_json::Value)> = BTreeMap::new();
     let mut clashes = Vec::new();

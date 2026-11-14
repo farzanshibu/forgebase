@@ -499,7 +499,13 @@ pub(crate) fn running_hint(e: ServerError) -> anyhow::Error {
 pub async fn serve(g: &GlobalArgs) -> anyhow::Result<ExitCode> {
     let loaded = g.load()?;
     let config = &loaded.config;
-    forgebase_observability::init_logging(&config.log.level, config.log.format)?;
+    // ADR-0035: trace context, and OTLP export when `[observability.otlp]` is on.
+    forgebase_observability::init_telemetry(
+        &config.log.level,
+        config.log.format,
+        &config.observability,
+        config.auth.trust_forwarded_for,
+    )?;
     match &loaded.file {
         Some(f) => tracing::info!(config = %f.display(), "configuration loaded"),
         None => tracing::info!("no config file; using defaults, environment and flags"),
@@ -543,7 +549,18 @@ pub async fn serve(g: &GlobalArgs) -> anyhow::Result<ExitCode> {
         let base = config.server.public_url.clone().unwrap_or_else(|| url.clone());
         println!("First run: create the administrator at {}", setup_link(&base, token));
     }
-    server.run_until_signals(signals).await?;
+    let result = server.run_until_signals(signals).await;
+    // Spans and logs still queued go out (up to five seconds).
+    if config.observability.otlp.enabled {
+        let flushed =
+            tokio::task::spawn_blocking(|| forgebase_observability::otlp::flush(std::time::Duration::from_secs(5)))
+                .await
+                .unwrap_or(false);
+        if !flushed {
+            eprintln!("forgebase: not every span was exported before exit");
+        }
+    }
+    result?;
     Ok(ExitCode::SUCCESS)
 }
 

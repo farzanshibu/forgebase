@@ -247,6 +247,16 @@ pub static SYSTEM_MIGRATIONS: &[Migration] = &[
         include_str!("../../../migrations/system/0056_portable_trigram.sql"),
     ),
     Migration::new(
+        58,
+        "alerts_slos",
+        include_str!("../../../migrations/system/0058_alerts_slos.sql"),
+    ),
+    Migration::new(
+        59,
+        "trace_context",
+        include_str!("../../../migrations/system/0059_trace_context.sql"),
+    ),
+    Migration::new(
         65,
         "oauth_identity_avatar",
         include_str!("../../../migrations/system/0065_oauth_identity_avatar.sql"),

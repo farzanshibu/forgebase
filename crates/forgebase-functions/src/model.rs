@@ -475,6 +475,8 @@ pub struct ExecutionLog {
     pub request_id: Option<String>,
     /// When it started (RFC 3339).
     pub created_at: String,
+    /// Trace id of the run (32 hex digits; ADR-0035), when it ran in a trace.
+    pub trace_id: Option<String>,
 }
 
 /// What started an execution.

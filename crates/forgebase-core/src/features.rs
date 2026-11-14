@@ -1041,6 +1041,166 @@ const MCP: &[SettingDef] = &[SettingDef::new(
 .env("FORGEBASE_MCP_ENABLED")
 .flag("--mcp")];
 
+/// `[observability]`: trace context and OpenTelemetry export (ADR-0035).
+const OBSERVABILITY: &[SettingDef] = &[
+    SettingDef::new(
+        "observability.trust_incoming_trace",
+        "Continue callers' traces",
+        Enum,
+        "Whether a W3C traceparent header sent by a caller continues the caller's trace. auto (the default) continues it with the caller's sampling choice when the request comes through a proxy you trust (auth.trust_forwarded_for) or from this machine, and otherwise keeps the trace id but lets this server decide whether to record it, so outside callers cannot make you export every request. always trusts every caller; never ignores the header.",
+    )
+    .options(&["auto", "always", "never"])
+    .env("FORGEBASE_TRUST_INCOMING_TRACE"),
+    SettingDef::new(
+        "observability.otlp.enabled",
+        "Export traces",
+        Bool,
+        "Sends traces (and, if you turn on log export, log lines) to an OpenTelemetry collector over OTLP/HTTP, such as Grafana Tempo, Jaeger, Honeycomb or an OpenTelemetry Collector. Off by default: turn it on to follow requests through functions, queues, jobs and webhooks. Metrics stay on /metrics for Prometheus.",
+    )
+    .env("FORGEBASE_OTLP_ENABLED"),
+    SettingDef::new(
+        "observability.otlp.endpoint",
+        "Collector address",
+        Url,
+        "The collector's OTLP/HTTP address; /v1/traces and /v1/logs are added to it. 127.0.0.1:4318 is a collector on this machine, such as http://127.0.0.1:4318 or https://api.honeycomb.io.",
+    )
+    .env("FORGEBASE_OTLP_ENDPOINT"),
+    SettingDef::new(
+        "observability.otlp.protocol",
+        "Export format",
+        Enum,
+        "The wire format of the export: http/protobuf (the default, understood by every collector) or http/json.",
+    )
+    .options(&["http/protobuf", "http/json"])
+    .env("FORGEBASE_OTLP_PROTOCOL"),
+    SettingDef::new(
+        "observability.otlp.headers",
+        "Collector headers",
+        Map,
+        "Extra headers sent to the collector, such as {\"x-honeycomb-team\" = \"env:HONEYCOMB_API_KEY\"}. A value env:NAME is read from the environment variable NAME when the server starts, so API keys stay out of this file.",
+    ),
+    SettingDef::secret(
+        "observability.otlp.secret_headers",
+        "Secret collector headers",
+        Some("FORGEBASE_OTLP_HEADERS"),
+        "More collector headers as name=value pairs separated by commas, such as authorization=Bearer abc. They are secrets, so set them with the environment variable FORGEBASE_OTLP_HEADERS (or in the .env file next to forgebase.toml), not here.",
+    ),
+    SettingDef::new(
+        "observability.otlp.service_name",
+        "Service name",
+        Text,
+        "The service.name your tracing tool shows for this server, such as forgebase or shop-backend.",
+    )
+    .env("FORGEBASE_OTLP_SERVICE_NAME"),
+    SettingDef::new(
+        "observability.otlp.service_instance_id",
+        "Instance id",
+        Text,
+        "The service.instance.id attribute that tells servers of one service apart. Empty picks a random id each time the server starts; set one such as eu-1 to keep it stable.",
+    )
+    .env("FORGEBASE_OTLP_SERVICE_INSTANCE_ID")
+    .example("eu-1"),
+    SettingDef::new(
+        "observability.otlp.resource_attributes",
+        "Resource attributes",
+        Map,
+        "More attributes describing this server, such as {\"deployment.environment.name\" = \"production\"}.",
+    ),
+    SettingDef::new(
+        "observability.otlp.sampling_ratio",
+        "Sampling ratio",
+        Text,
+        "Share of new traces that are recorded, from 0 to 1: 1.0 records every request, 0.1 one in ten. A trace a caller already samples is always followed. Edit it in forgebase.toml.",
+    )
+    .env("FORGEBASE_OTLP_SAMPLING_RATIO")
+    .read_only(),
+    SettingDef::new(
+        "observability.otlp.export_traces",
+        "Export spans",
+        Bool,
+        "Sends spans: one per HTTP request, function run, queue publish and delivery, job and outbound call. Leave it on unless you only want log lines.",
+    )
+    .env("FORGEBASE_OTLP_EXPORT_TRACES"),
+    SettingDef::new(
+        "observability.otlp.export_logs",
+        "Export log lines",
+        Bool,
+        "Also sends the server's log lines (at log.level) with their trace ids. Off by default: logs can hold names, emails and addresses, so turn it on only if your collector may keep them.",
+    )
+    .env("FORGEBASE_OTLP_EXPORT_LOGS"),
+    SettingDef::new(
+        "observability.otlp.timeout_secs",
+        "Export timeout",
+        Int,
+        "Seconds one export request may take before it is retried, from 1 to 120. 10 is a good value.",
+    )
+    .unit("seconds")
+    .env("FORGEBASE_OTLP_TIMEOUT_SECS"),
+    SettingDef::new(
+        "observability.otlp.ca_file",
+        "Collector certificate authority file",
+        Text,
+        "A PEM file with the certificate authority of an https:// collector that uses a private certificate. Empty uses the public certificate authorities; otherwise give a path such as /etc/forgebase/collector-ca.pem.",
+    )
+    .env("FORGEBASE_OTLP_CA_FILE")
+    .example("/etc/forgebase/collector-ca.pem"),
+];
+
+/// `[alerts]`: alerting rules, notifiers and SLOs (ADR-0035).
+const ALERTS: &[SettingDef] = &[
+    SettingDef::new(
+        "alerts.enabled",
+        "Alerts and service levels",
+        Bool,
+        "Turns the alerting engine on or off: built-in and custom rules over this server's metrics and health, notifications (webhook, Slack, email, PagerDuty, a queue topic), silences and service level objectives under /api/v1/alerts and /api/v1/slos. Leave it on: rules that have nothing to watch cost almost nothing.",
+    )
+    .env("FORGEBASE_ALERTS_ENABLED"),
+    SettingDef::new(
+        "alerts.evaluation_interval_secs",
+        "Evaluation interval",
+        Int,
+        "Seconds between two evaluations of every rule, from 1 to 3600. 30 is a good value.",
+    )
+    .unit("seconds")
+    .env("FORGEBASE_ALERTS_EVALUATION_INTERVAL_SECS"),
+    SettingDef::new(
+        "alerts.disabled_rules",
+        "Disabled built-in rules",
+        List,
+        "Built-in rules that never run, by id, such as [\"queue_backlog_high\"]. GET /api/v1/alerts/rules lists them.",
+    )
+    .env("FORGEBASE_ALERTS_DISABLED_RULES"),
+    SettingDef::new(
+        "alerts.allow_http",
+        "Allow http:// notifiers",
+        Bool,
+        "Lets webhook, Slack and PagerDuty notifiers use plain http:// addresses. Off: only https://. Turn it on only for receivers you reach over a network you trust; addresses on private networks are refused either way.",
+    )
+    .env("FORGEBASE_ALERTS_ALLOW_HTTP"),
+    SettingDef::new(
+        "alerts.history_retention_days",
+        "Alert history",
+        Int,
+        "Days resolved alerts and notification deliveries are kept, from 1 to 3650. 30 is a good value.",
+    )
+    .unit("days")
+    .env("FORGEBASE_ALERTS_HISTORY_RETENTION_DAYS"),
+    SettingDef::new(
+        "alerts.tls_cert_expiry_metric",
+        "Certificate expiry metric",
+        Text,
+        "The gauge holding the Unix time a TLS (Transport Layer Security) certificate expires; the built-in certificate rules warn 14 days and 3 days before it, such as forgebase_tls_certificate_expiry_timestamp_seconds.",
+    )
+    .env("FORGEBASE_ALERTS_TLS_CERT_EXPIRY_METRIC"),
+    SettingDef::new(
+        "alerts.rules",
+        "Rules declared in the file",
+        List,
+        "Custom alert rules declared as [[alerts.rules]] tables in forgebase.toml with a name, an expression, a threshold, for, a severity, labels and annotations, such as name = \"ManyJobFailures\" with expr = \"sum(rate(forgebase_jobs_completed_total{outcome='failed'}[15m]))\" and threshold = 0.1. Edit them in the file; add others from the API.",
+    )
+    .read_only(),
+];
+
 /// Every module, in display order.
 pub const FEATURES: &[FeatureDef] = &[
     FeatureDef {
@@ -1239,6 +1399,28 @@ pub const FEATURES: &[FeatureDef] = &[
         docs: "docs/mcp.md#mcp-server",
         routes: &["/api/mcp"],
         settings: MCP,
+    },
+    FeatureDef {
+        id: "observability",
+        name: "Tracing",
+        summary: "Trace ids in logs and responses, and OpenTelemetry export of traces and logs to your collector.",
+        can_disable: false,
+        enable_key: None,
+        studio_path: None,
+        docs: "docs/observability.md#1-tracing",
+        routes: &[],
+        settings: OBSERVABILITY,
+    },
+    FeatureDef {
+        id: "alerts",
+        name: "Alerts and service levels",
+        summary: "Alert rules over metrics and health signals, notifications, silences and service level objectives with error budgets.",
+        can_disable: true,
+        enable_key: Some("alerts.enabled"),
+        studio_path: None,
+        docs: "docs/observability.md#2-alerts",
+        routes: &["/api/v1/alerts/**", "/api/v1/slos/**"],
+        settings: ALERTS,
     },
     FeatureDef {
         id: "billing",

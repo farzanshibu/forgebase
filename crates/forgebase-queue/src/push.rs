@@ -360,9 +360,34 @@ impl QueueService {
         let mut ok = 0;
         for m in &batch {
             let envelope = Self::push_body(sub, m);
-            let rec = self
-                .send_push(sub, push, &envelope, &m.message.id, m.delivery_attempt)
-                .await;
+            // ADR-0035: the delivery continues the trace of the publish
+            // (the message's `traceparent` attribute); the webhook request or
+            // function run is its child.
+            let attr = |k: &str| m.message.attributes.get(k).map_or("", String::as_str);
+            let span = tracing::info_span!(
+                "queue.deliver",
+                subscription = %sub.name,
+                otel.name = %format_args!("deliver {}", bare(&sub.name)),
+                otel.kind = "consumer",
+                otel.parent = %attr(crate::service::TRACEPARENT_ATTRIBUTE),
+                otel.tracestate = %attr(crate::service::TRACESTATE_ATTRIBUTE),
+                messaging.system = "forgebase",
+                messaging.operation.type = "process",
+                messaging.destination.name = %m.message.topic,
+                messaging.destination.subscription.name = %bare(&sub.name),
+                messaging.message.id = %m.message.id,
+                forgebase.delivery_attempt = m.delivery_attempt,
+                otel.status_code = tracing::field::Empty,
+            );
+            let rec = {
+                use tracing::Instrument as _;
+                self.send_push(sub, push, &envelope, &m.message.id, m.delivery_attempt)
+                    .instrument(span.clone())
+                    .await
+            };
+            if !rec.succeeded() {
+                span.record("otel.status_code", "error");
+            }
             if rec.succeeded() {
                 ok += 1;
             } else {

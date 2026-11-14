@@ -14,6 +14,7 @@ bundled-postgres = ["forgebase-core/bundled-postgres", "forgebase-pgengine/bundl
 
 [dependencies]
 axum.workspace = true
+forgebase-alerts.workspace = true
 forgebase-api.workspace = true
 forgebase-backup.workspace = true
 forgebase-auth.workspace = true
