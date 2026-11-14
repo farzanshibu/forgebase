@@ -5,19 +5,32 @@ use std::time::Duration;
 
 use serde_json::Value;
 
+use crate::access::AccessApi;
+use crate::alerts::{AlertsApi, SlosApi};
 use crate::auth::{AuthApi, AuthState, MemoryStore, SessionStore};
 use crate::billing::BillingApi;
 use crate::consistency::{CommitTokens, Consistency};
+use crate::credits::CreditsApi;
+use crate::customize::CustomizeApi;
+use crate::documents::DocumentsApi;
 use crate::entitlements::EntitlementsApi;
 use crate::error::{Error, Result};
 use crate::functions::FunctionsApi;
+use crate::graph::GraphApi;
 use crate::http::{Req, RetryPolicy, Transport, seg};
+use crate::identity::IdentityApi;
+use crate::indexes::IndexesApi;
+use crate::insights::InsightsApi;
 use crate::jobs::JobsApi;
 use crate::kv::Kv;
+use crate::orgs::OrgsApi;
 use crate::queues::QueuesApi;
 use crate::realtime::{Realtime, RealtimeConfig};
 use crate::records::{CollectionsApi, Records};
+use crate::sql::SqlApi;
 use crate::storage::StorageApi;
+use crate::system::SystemApi;
+use crate::vector::VectorApi;
 
 /// Builds a [`ForgeBase`] client.
 ///
@@ -300,10 +313,95 @@ impl ForgeBase {
         QueuesApi { t: self.t.clone() }
     }
 
-    /// Billing helpers (store receipts).
+    /// Billing: store receipts, customers, subscriptions, orders, invoices, the catalog, providers,
+    /// settings and the webhook inspector.
     #[must_use]
     pub fn billing(&self) -> BillingApi {
         BillingApi { t: self.t.clone() }
+    }
+
+    /// Prepaid credits: balances, ledger, spend, refunds, rates and statistics.
+    #[must_use]
+    pub fn credits(&self) -> CreditsApi {
+        CreditsApi { t: self.t.clone() }
+    }
+
+    /// Vector search: collections, upsert, similarity and hybrid search.
+    #[must_use]
+    pub fn vector(&self) -> VectorApi {
+        VectorApi { t: self.t.clone() }
+    }
+
+    /// Property graph: nodes, edges, traversal, shortest path and read-only openCypher.
+    #[must_use]
+    pub fn graph(&self) -> GraphApi {
+        GraphApi { t: self.t.clone() }
+    }
+
+    /// SQL editor: run, batch, explain, tables (administrators by default).
+    #[must_use]
+    pub fn sql(&self) -> SqlApi {
+        SqlApi { t: self.t.clone() }
+    }
+
+    /// Index management, planner statistics and the slow-query log.
+    #[must_use]
+    pub fn indexes(&self) -> IndexesApi {
+        IndexesApi { t: self.t.clone() }
+    }
+
+    /// Document collections (`/api/v1/documents`).
+    #[must_use]
+    pub fn documents(&self) -> DocumentsApi {
+        DocumentsApi { t: self.t.clone() }
+    }
+
+    /// Authorization: permission checks, ACLs, overrides, collection and resource rules.
+    #[must_use]
+    pub fn access(&self) -> AccessApi {
+        AccessApi { t: self.t.clone() }
+    }
+
+    /// Organizations, projects, members, invitations, teams, roles and suspensions.
+    #[must_use]
+    pub fn orgs(&self) -> OrgsApi {
+        OrgsApi { t: self.t.clone() }
+    }
+
+    /// Identity administration: API keys, service accounts, OAuth clients, realms and providers, users, impersonation.
+    #[must_use]
+    pub fn identity(&self) -> IdentityApi {
+        IdentityApi { t: self.t.clone() }
+    }
+
+    /// Customization: branding, domains, email templates and provider, legal agreements.
+    #[must_use]
+    pub fn customize(&self) -> CustomizeApi {
+        CustomizeApi { t: self.t.clone() }
+    }
+
+    /// Instance administration: info, capabilities, features, backups, database topology.
+    #[must_use]
+    pub fn system(&self) -> SystemApi {
+        SystemApi { t: self.t.clone() }
+    }
+
+    /// Alert rules, alerts, silences and notifiers.
+    #[must_use]
+    pub fn alerts(&self) -> AlertsApi {
+        AlertsApi { t: self.t.clone() }
+    }
+
+    /// Service level objectives.
+    #[must_use]
+    pub fn slos(&self) -> SlosApi {
+        SlosApi { t: self.t.clone() }
+    }
+
+    /// Operations insights: statements, usage, functions, audit.
+    #[must_use]
+    pub fn insights(&self) -> InsightsApi {
+        InsightsApi { t: self.t.clone() }
     }
 
     /// Entitlements and quotas.

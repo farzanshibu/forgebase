@@ -71,7 +71,7 @@ pub struct SignInOptions {
 }
 
 impl SignInOptions {
-    fn apply(&self, mut body: Value) -> Value {
+    pub(crate) fn apply(&self, mut body: Value) -> Value {
         if let Value::Object(m) = &mut body {
             if let Some(c) = &self.collection {
                 m.insert("collection".into(), json!(c));
@@ -324,7 +324,7 @@ impl Transport {
         }
     }
 
-    fn accept(&self, v: &Value) -> Result<SignInResult> {
+    pub(crate) fn accept(&self, v: &Value) -> Result<SignInResult> {
         if v.get("mfa_required").and_then(Value::as_bool) == Some(true) {
             return Ok(SignInResult::MfaRequired(MfaChallenge {
                 mfa_token: v
