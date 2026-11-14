@@ -1722,6 +1722,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/system/capabilities": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The capability matrix (ADR-0034): per feature, the engine it runs on
+         *     (a PostgreSQL extension or the portable engine), its state (`active`,
+         *     `portable`, `off`, `native`, `unavailable`), mode and limits.
+         */
+        get: operations["doc_system_capabilities"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/system/config": {
         parameters: {
             query?: never;
@@ -2268,6 +2289,219 @@ export interface paths {
         post?: never;
         /** Deletes an add-on. */
         delete: operations["delete_addon"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/alerts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Open alerts (pending and firing), most severe first. */
+        get: operations["alerts_list_active"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/alerts/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** One alert with its state changes. */
+        get: operations["alerts_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/alerts/history": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Every alert, newest first, resolved ones included. */
+        get: operations["alerts_history"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/alerts/notifications": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Notification deliveries, newest first. */
+        get: operations["alerts_list_deliveries"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/alerts/notifiers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Notifiers (secrets never listed). */
+        get: operations["alerts_list_notifiers"];
+        put?: never;
+        /** Creates a notifier. A webhook's signing secret is in this answer only. */
+        post: operations["alerts_create_notifier"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/alerts/notifiers/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** One notifier (by id or name). */
+        get: operations["alerts_get_notifier"];
+        /** Replaces a notifier's settings (secrets kept unless given). */
+        put: operations["alerts_update_notifier"];
+        post?: never;
+        /** Deletes a notifier and its deliveries. */
+        delete: operations["alerts_delete_notifier"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/alerts/notifiers/{id}/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Sends a test notification now (10 per notifier and minute). */
+        post: operations["alerts_test_notifier"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/alerts/query": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Evaluates an expression now (nothing changes). */
+        post: operations["alerts_query"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/alerts/rules": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Every rule: built-in, from the file, custom and SLO burn-rate rules, with their state. */
+        get: operations["alerts_list_rules"];
+        put?: never;
+        /** Creates a custom rule. */
+        post: operations["alerts_create_rule"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/alerts/rules/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** One rule. */
+        get: operations["alerts_get_rule"];
+        put?: never;
+        post?: never;
+        /** Deletes a custom rule. */
+        delete: operations["alerts_delete_rule"];
+        options?: never;
+        head?: never;
+        /** Changes a rule (built-in, file and SLO rules: `enabled` only). */
+        patch: operations["alerts_update_rule"];
+        trace?: never;
+    };
+    "/api/v1/alerts/silences": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Silences that have not ended (`all=true`: expired ones too). */
+        get: operations["alerts_list_silences"];
+        put?: never;
+        /** Creates a silence: matching alerts send no notifications until it ends. */
+        post: operations["alerts_create_silence"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/alerts/silences/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** One silence. */
+        get: operations["alerts_get_silence"];
+        /** Replaces a silence. */
+        put: operations["alerts_update_silence"];
+        post?: never;
+        /** Ends a silence now. */
+        delete: operations["alerts_expire_silence"];
         options?: never;
         head?: never;
         patch?: never;
@@ -3202,6 +3436,91 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/billing/webhook-deliveries": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Inbound webhook deliveries, newest first, with filters and paging
+         *     (platform administrators): every request to `webhooks/{provider}`,
+         *     verified or not (unverified ones within a budget), with its verification
+         *     and processing outcome (ADR-0032).
+         */
+        get: operations["billing_webhook_deliveries"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/billing/webhook-deliveries/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * One inbound webhook delivery with its allowlisted headers and stored body
+         *     (platform administrators; bodies can contain personal data).
+         */
+        get: operations["billing_webhook_delivery"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/billing/webhook-deliveries/{id}/replay": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Replays a verified stored delivery through the normal processing path
+         *     (platform administrators; audit-logged). The stored body is verified again
+         *     with the current secrets; a processed event is a reported no-op
+         *     (`already_applied`).
+         */
+        post: operations["billing_replay_webhook_delivery"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/billing/webhook-deliveries/{id}/reverify": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Verifies a stored rejected delivery again with the current secrets (after
+         *     a misconfigured secret was fixed) and processes it, exactly once, if it
+         *     now verifies (platform administrators; audit-logged).
+         */
+        post: operations["billing_reverify_webhook_delivery"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/billing/webhook-events": {
         parameters: {
             query?: never;
@@ -3363,7 +3682,7 @@ export interface paths {
         };
         /**
          * Lists records.
-         * @description Query string: `filter`, `p.<name>` (filter parameters), `sort` (`-created,name`), `fields`, `expand`, `search` (full text; the words are ANDed), `fuzzy` (trigram match, PostgreSQL with pg_trgm: `400 fuzzy_unsupported` elsewhere), `fuzzy_fields` (fields with a trigram index), `fuzzy_threshold` (0 to 1, default 0.3), `page`, `per_page` (max 500), `cursor`, `skip_total`.
+         * @description Query string: `filter`, `p.<name>` (filter parameters), `sort` (`-created,name`), `fields`, `expand`, `search` (full text; the words are ANDed), `fuzzy` (trigram match: pg_trgm where it is in use, else the portable engine, ADR-0034), `fuzzy_fields` (fields with a trigram index), `fuzzy_threshold` (0 to 1, default 0.3), `page`, `per_page` (max 500), `cursor`, `skip_total`.
          */
         get: operations["records_list"];
         put?: never;
@@ -4105,6 +4424,54 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/customize/email/provider": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The mail provider of a realm (`realm=*`: the instance), secrets masked.
+         *     `configured: false` means the next level applies: the realm uses the
+         *     instance's provider, which falls back to the log provider.
+         */
+        get: operations["mail_provider"];
+        /**
+         * Sets the mail provider: `{"provider": "resend" | "postmark" | "sendgrid" | "mailgun" | "ses" | "smtp" | "log",
+         *     ...settings, "from_address"?}`. Secrets (`api_key`, `server_token`, `password`, `secret_access_key`,
+         *     `session_token`) are sealed at rest and never returned; `"********"` or an absent field keeps the stored one.
+         *     Nothing is sent: use `POST /email/provider/test`. Platform administrators only.
+         */
+        put: operations["put_mail_provider"];
+        post?: never;
+        /** Removes the provider configuration of a realm (`realm=*`: the instance). */
+        delete: operations["delete_mail_provider"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/customize/email/provider/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Sends a test message to `to` through the provider now (not queued, not in the delivery log)
+         *     and reports the provider's message id, or why it was refused (`409 mail_test_failed`).
+         */
+        post: operations["test_mail"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/customize/email/send": {
         parameters: {
             query?: never;
@@ -4675,6 +5042,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/functions/{name}/versions/{version}/module": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The module of a WebAssembly version (`application/wasm`). */
+        get: operations["version_module"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/functions/{name}/versions/{version}/source": {
         parameters: {
             query?: never;
@@ -4719,10 +5103,13 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * A read-only openCypher query on the tenant's derived Apache AGE graph
-         *     (PostgreSQL with AGE; FB-163). Needs `engine:graph_cypher`; the caller's
-         *     graph label and edge-type rules apply inside the query. The first query
-         *     of a tenant builds the graph (`409 graph_materialising` with the job id).
+         * A read-only openCypher query on the tenant's graph. Where Apache AGE is
+         *     in use (PostgreSQL with AGE; FB-163) it runs on the derived AGE graph,
+         *     and the first query of a tenant builds it (`409 graph_materialising`
+         *     with the job id); elsewhere the portable engine (ADR-0034) compiles a
+         *     subset of openCypher to SQL over the graph tables. `engine` in the
+         *     response says which. Needs `engine:graph_cypher`; the caller's graph
+         *     label and edge-type rules apply inside the query.
          */
         post: operations["graph_cypher"];
         delete?: never;
@@ -5010,6 +5397,395 @@ export interface paths {
         };
         /** Index recommendations derived from the slow-query log. */
         get: operations["recommendations"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/insights/audit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Searches the audit trail. Newest first by default; page with `cursor`.
+         * @description Filters: actor, actor_type (user, admin, service_account, api_key, anonymous), action (prefix), resource_type, collection, resource_id, outcome (success|failure), ip, request_id, from, to, q (text in the details), order (asc|desc)
+         */
+        get: operations["insights_audit_search"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/insights/audit/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** One audit entry. */
+        get: operations["insights_audit_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/insights/audit/{id}/related": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The entries of the same request, and of the same actor within a time
+         *     window (default 5 minutes either side, at most one hour).
+         */
+        get: operations["insights_audit_related"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/insights/audit/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Streams the entries matching the filters of `/insights/audit` as CSV
+         *     (`format=csv`, the default) or JSON lines (`format=jsonl`), oldest first
+         *     unless `order=desc`, in pages of 1000, so a large export never sits in
+         *     memory. At most `max_rows` (default 100 000, at most 1 000 000). In CSV,
+         *     cells that start like a formula are prefixed with `'`.
+         * @description Filters: actor, actor_type (user, admin, service_account, api_key, anonymous), action (prefix), resource_type, collection, resource_id, outcome (success|failure), ip, request_id, from, to, q (text in the details), order (asc|desc)
+         */
+        get: operations["insights_audit_export"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/insights/audit/summary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Counts of the audit trail in a range: per outcome, and the top events,
+         *     actors and client addresses.
+         */
+        get: operations["insights_audit_summary"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/insights/flush": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Writes the statistics held in memory to the database now (they are written
+         *     every `[observability] flush_interval_secs` anyway).
+         */
+        post: operations["insights_flush"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/insights/functions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Statistics per function version over a range: executions, errors, timeouts,
+         *     cold starts, duration percentiles, fuel used against its limit, peak memory
+         *     and the host-call breakdown.
+         */
+        get: operations["insights_functions_list"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/insights/functions/{name}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** One function: statistics per version and a time series. */
+        get: operations["insights_functions_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/insights/functions/invocations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Recent executions with their profile: cold start, fuel and memory against
+         *     their limits, per-operation host-call counts and times, a timeline of the
+         *     first host calls, the log lines, the outcome and the trigger. Newest first;
+         *     kept as long as the execution log (`log_retention` rows per function).
+         */
+        get: operations["insights_invocations_list"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/insights/functions/invocations/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** One execution with its profile. */
+        get: operations["insights_invocations_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/insights/queries": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Statistics per statement shape (fingerprint) over a time range: calls,
+         *     errors, rows, total, mean and maximum time and the 50th, 95th and 99th
+         *     percentile. The text has every value replaced by `?`.
+         */
+        get: operations["insights_queries_list"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/insights/queries/{fingerprint}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** One statement shape with its time series. */
+        get: operations["insights_queries_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/insights/queries/regressions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Statements whose 95th percentile in a recent window is at least `min_ratio`
+         *     times their baseline (the window before), or whose error rate jumped.
+         */
+        get: operations["insights_queries_regressions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/insights/slow-queries": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Statements at or above `[observability] slow_query_ms`, newest first, with
+         *     their text (every value replaced by `?`) and duration. At most 200 are kept
+         *     per flush interval.
+         */
+        get: operations["insights_slow_queries_list"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/insights/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** State of the statement statistics and the slow statement threshold. */
+        get: operations["insights_status"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/insights/usage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Usage per tenant over a period (a day, a month or a custom range), grouped
+         *     by environment, project, organization or realm, with an **estimated** cost:
+         *     each counter priced through the metered price of the same feature in the
+         *     billing catalog, and the credits the credit rates would charge. Sorted by
+         *     `sort` (a metric key or `cost`), largest first.
+         * @description period=day|month with date (YYYY-MM-DD or YYYY-MM), or from/to; group_by=environment|project|org|realm
+         */
+        get: operations["insights_usage_list"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/insights/usage/metrics": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The built-in usage metrics and what they mean. */
+        get: operations["insights_usage_metrics"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/insights/usage/rollup": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Recomputes the resource and work numbers of a day from the live tables
+         *     (every 15 minutes the server does this for today and yesterday).
+         */
+        post: operations["insights_usage_rollup"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/insights/usage/series": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Daily values of one scope (`env:<environment id>`). */
+        get: operations["insights_usage_series"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/insights/usage/top": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The top `n` tenants by one metric (or by `cost`). */
+        get: operations["insights_usage_top"];
         put?: never;
         post?: never;
         delete?: never;
@@ -6512,6 +7288,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/queues/catalog": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The event catalog: every topic the caller may read, with description,
+         *     data schema, example, and the event types of record-source topics.
+         */
+        get: operations["queues_event_catalog"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/queues/snapshots": {
         parameters: {
             query?: never;
@@ -6596,6 +7392,43 @@ export interface paths {
         put?: never;
         /** Acknowledges deliveries. */
         post: operations["queues_ack"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/queues/subscriptions/{sub}/attempts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Push attempts of a subscription (deliveries and test sends), newest first. */
+        get: operations["queues_list_push_attempts"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/queues/subscriptions/{sub}/attempts/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * One push attempt with its request headers (signature masked), status,
+         *     latency, error class and response.
+         */
+        get: operations["queues_get_push_attempt"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -6692,6 +7525,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/queues/subscriptions/{sub}/pause": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Pauses push delivery; messages accumulate (none is dead-lettered) until resumed. */
+        post: operations["queues_pause"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/queues/subscriptions/{sub}/pull": {
         parameters: {
             query?: never;
@@ -6703,6 +7553,97 @@ export interface paths {
         put?: never;
         /** Pulls messages, optionally waiting (long poll) up to `wait_ms`. */
         post: operations["queues_pull"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/queues/subscriptions/{sub}/redrive": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Delivers dead letters to their subscription again (attempt counter reset):
+         *     `ids`, or `all` (optionally `since` and `filter`). Each record is redriven once.
+         */
+        post: operations["queues_redrive"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/queues/subscriptions/{sub}/resume": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Resumes push delivery (manual or auto pause); the backlog is delivered in order. */
+        post: operations["queues_resume"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/queues/subscriptions/{sub}/retry": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Retries now the deliveries waiting for a retry backoff (all, or `message_ids`). */
+        post: operations["queues_retry_now"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/queues/subscriptions/{sub}/secret/expire-previous": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Ends a rotation's grace window now: only the new secret signs. */
+        post: operations["queues_expire_previous_secret"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/queues/subscriptions/{sub}/secret/rotate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Rotates a webhook's signing secret with a grace window in which both
+         *     secrets sign (`t=…,v1=<new>,v1=<old>`). The new secret is shown here only.
+         */
+        post: operations["queues_rotate_secret"];
         delete?: never;
         options?: never;
         head?: never;
@@ -6743,6 +7684,27 @@ export interface paths {
         get: operations["queues_stream"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/queues/subscriptions/{sub}/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Sends a synthetic signed `forgebase.test` event to the push endpoint now
+         *     and returns the attempt. Not a message: no effect on cursors, totals or
+         *     dead letters. Rate-limited per subscription.
+         */
+        post: operations["queues_test_push"];
         delete?: never;
         options?: never;
         head?: never;
@@ -7077,6 +8039,77 @@ export interface paths {
          * @description Delete a custom realm role (super-admins).
          */
         delete: operations["delete_realm_role"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/slos": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** SLOs. */
+        get: operations["slos_list"];
+        put?: never;
+        /** Creates an SLO (counting starts now). */
+        post: operations["slos_create"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/slos/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** One SLO (by id or name). */
+        get: operations["slos_get"];
+        /** Replaces an SLO's definition. */
+        put: operations["slos_update"];
+        post?: never;
+        /** Deletes an SLO and its counts. */
+        delete: operations["slos_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/slos/{id}/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** SLI, error budget, burn rates and burn-rate alerts of an SLO. */
+        get: operations["slos_status"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/slos/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The status of every SLO. */
+        get: operations["slos_list_status"];
+        put?: never;
+        post?: never;
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -8598,6 +9631,363 @@ export interface components {
              */
             version: number;
         };
+        /** @description One alert: a rule and one label set. */
+        Alert: {
+            /** @description When the condition first held. */
+            active_at: string;
+            /** @description Annotations with labels and value filled in. */
+            annotations: {
+                [key: string]: string;
+            };
+            /** @description Rule id + labels, hashed: the same alert across evaluations. */
+            fingerprint: string;
+            /** @description When it started firing. */
+            fired_at?: string | null;
+            /** @description Id. */
+            id: string;
+            /** @description Labels (`alertname`, `severity`, the series' and the rule's). */
+            labels: {
+                [key: string]: string;
+            };
+            /** @description Last evaluation. */
+            last_evaluated_at: string;
+            /** @description `alertname`. */
+            name: string;
+            /** @description When it resolved. */
+            resolved_at?: string | null;
+            /** @description Rule id. */
+            rule_id: string;
+            /** @description Severity. */
+            severity: components["schemas"]["AlertSeverity"];
+            /** @description Ids of the active silences that match it (notifications muted). */
+            silenced_by: string[];
+            /** @description State. */
+            state: components["schemas"]["AlertState"];
+            /**
+             * Format: double
+             * @description Last value of the expression.
+             */
+            value?: number | null;
+        };
+        /**
+         * @description Comparison of a rule.
+         * @enum {string}
+         */
+        AlertComparison: ">" | ">=" | "<" | "<=" | "==" | "!=";
+        /** @description One notification and its delivery. */
+        AlertDelivery: {
+            /**
+             * Format: int64
+             * @description Attempts so far.
+             */
+            attempts: number;
+            /** @description Created. */
+            created_at: string;
+            /** @description `firing`, `resolved` or `test`. */
+            event: string;
+            /** @description The alert group. */
+            group_key: string;
+            /** @description Id. */
+            id: string;
+            /** @description Error of the last attempt. */
+            last_error?: string | null;
+            /**
+             * Format: int64
+             * @description HTTP status of the last attempt.
+             */
+            last_status?: number | null;
+            /** @description Next attempt (pending). */
+            next_attempt_at?: string | null;
+            /** @description Notifier id. */
+            notifier_id: string;
+            /** @description What was (or will be) sent. */
+            payload: Record<string, never>;
+            /** @description When it was delivered. */
+            sent_at?: string | null;
+            /** @description `pending` (waiting for a first try or a retry), `sent` or `failed` (gave up). */
+            status: string;
+        };
+        /** @description A page of deliveries. */
+        AlertDeliveryPage: {
+            /** @description Newest first. */
+            items: components["schemas"]["AlertDelivery"][];
+        };
+        /** @description An alert with its state changes. */
+        AlertDetail: components["schemas"]["Alert"] & {
+            /** @description State changes, oldest first. */
+            events: components["schemas"]["AlertEvent"][];
+        };
+        /** @description A state change of an alert. */
+        AlertEvent: {
+            /** @description When. */
+            at: string;
+            /** @description New state. */
+            state: components["schemas"]["AlertState"];
+            /**
+             * Format: double
+             * @description Value then.
+             */
+            value?: number | null;
+        };
+        /** @description A label matcher of a silence or notifier. */
+        AlertMatcher: {
+            /** @description Label name. */
+            label: string;
+            /** @description `=` (default), `!=`, `=~` or `!~` (anchored regular expression). */
+            op?: string;
+            /** @description Value or pattern. */
+            value: string;
+        };
+        /**
+         * @description A notification destination. Secrets (the webhook signing secret, the
+         *     Slack URL, the PagerDuty routing key) are sealed and never listed.
+         */
+        AlertNotifier: {
+            /** @description Created. */
+            created_at: string;
+            /** @description On or off. */
+            enabled: boolean;
+            /** @description Labels that group alerts into one notification (default `alertname`). */
+            group_by: string[];
+            /** @description Id. */
+            id: string;
+            /** @description Kind. */
+            kind: components["schemas"]["AlertNotifierKind"];
+            /** @description Last delivery error. */
+            last_error?: string | null;
+            /** @description Last failed delivery. */
+            last_failure_at?: string | null;
+            /** @description Last successful delivery. */
+            last_success_at?: string | null;
+            /** @description Only alerts matching all of these. */
+            matchers: components["schemas"]["AlertMatcher"][];
+            /** @description Only alerts at least this severe. */
+            min_severity: components["schemas"]["AlertSeverity"];
+            /** @description Unique name. */
+            name: string;
+            /** @description Re-send a group that is still firing after this long (`4h`). */
+            repeat_interval: string;
+            /** @description Also notify when a group resolves. */
+            send_resolved: boolean;
+            /** @description Webhook signing secret (`whsec_…`): only in the answer that created it. */
+            signing_secret?: string | null;
+            /** @description Email recipients. */
+            to: string[];
+            /** @description Queue topic. */
+            topic?: string | null;
+            /** @description Changed. */
+            updated_at: string;
+            /** @description Webhook URL, PagerDuty events URL (Slack: host only). */
+            url?: string | null;
+        };
+        /**
+         * @description A new notifier, or a change (every field replaces; secrets are kept
+         *     when not given).
+         */
+        AlertNotifierInput: {
+            /** @description On (default true). */
+            enabled?: boolean | null;
+            /** @description Grouping labels (default `["alertname"]`). */
+            group_by?: string[] | null;
+            /** @description Kind. */
+            kind: components["schemas"]["AlertNotifierKind"];
+            /** @description Only alerts matching all of these. */
+            matchers?: components["schemas"]["AlertMatcher"][];
+            min_severity?: components["schemas"]["AlertSeverity"] | null;
+            /** @description Unique name (letters, digits, `_`, `-`, `.`; 1-64). */
+            name: string;
+            /** @description Repeat interval (default `4h`; 1m to 7d). */
+            repeat_interval?: string | null;
+            /** @description PagerDuty integration (routing) key (a secret). */
+            routing_key?: string | null;
+            /** @description Notify on resolve (default true). */
+            send_resolved?: boolean | null;
+            /** @description Email recipients (1-20). */
+            to?: string[];
+            /** @description Queue topic. */
+            topic?: string | null;
+            /**
+             * @description Webhook URL; Slack incoming-webhook URL (a secret); PagerDuty events
+             *     URL (default `https://events.pagerduty.com/v2/enqueue`).
+             */
+            url?: string | null;
+        };
+        /**
+         * @description Where notifications go.
+         * @enum {string}
+         */
+        AlertNotifierKind: "webhook" | "slack" | "email" | "pagerduty" | "queue";
+        /** @description A page of alerts. */
+        AlertPage: {
+            /** @description Alerts, newest first. */
+            items: components["schemas"]["Alert"][];
+            /** @description Pass as `before` for the next page. */
+            next_before?: string | null;
+        };
+        /** @description An expression evaluated now. */
+        AlertQueryInput: {
+            /** @description Expression. */
+            expr: string;
+        };
+        /** @description The result of a query. */
+        AlertQueryResult: {
+            /** @description Evaluation time. */
+            at: string;
+            /** @description Samples. */
+            samples: components["schemas"]["AlertQuerySample"][];
+        };
+        /** @description One sample of a query. */
+        AlertQuerySample: {
+            /** @description Labels. */
+            labels: {
+                [key: string]: string;
+            };
+            /**
+             * Format: double
+             * @description Value (`null` for NaN).
+             */
+            value?: number | null;
+        };
+        /** @description An alert rule. */
+        AlertRule: {
+            /** @description Annotations (`summary`, `description`, `runbook_url`). */
+            annotations: {
+                [key: string]: string;
+            };
+            /** @description Creation time (API rules). */
+            created_at?: string | null;
+            /** @description Switched off by `[alerts] disabled_rules` (the API cannot switch it on). */
+            disabled_by_config: boolean;
+            /** @description Whether it is evaluated. */
+            enabled: boolean;
+            /** @description Expression (PromQL subset). */
+            expr: string;
+            /** @description How long the condition must hold before firing (`5m`). */
+            for: string;
+            /**
+             * Format: int64
+             * @description The same in milliseconds.
+             */
+            for_ms: number;
+            /** @description Id: the built-in id (`queue_backlog_high`), `config:<name>`, `rule-…` or `slo:<slo>:<tier>`. */
+            id: string;
+            /** @description Extra labels of its alerts. */
+            labels: {
+                [key: string]: string;
+            };
+            /** @description The `alertname` label. */
+            name: string;
+            /** @description Comparison. */
+            op: components["schemas"]["AlertComparison"];
+            /** @description Severity. */
+            severity: components["schemas"]["AlertSeverity"];
+            /** @description Origin. */
+            source: components["schemas"]["AlertRuleSource"];
+            /**
+             * Format: double
+             * @description Threshold.
+             */
+            threshold: number;
+            /** @description Last change (API rules). */
+            updated_at?: string | null;
+        };
+        /** @description A new custom rule. */
+        AlertRuleInput: {
+            /** @description Annotations. */
+            annotations?: {
+                [key: string]: string;
+            };
+            /** @description Evaluated (default true). */
+            enabled?: boolean | null;
+            /** @description Expression. */
+            expr: string;
+            /** @description Hold time before firing (default `0s`). */
+            for?: string | null;
+            /** @description Extra labels. */
+            labels?: {
+                [key: string]: string;
+            };
+            /** @description The `alertname` label (letters, digits, `_`, `-`, `.`; 1-128). */
+            name: string;
+            op?: components["schemas"]["AlertComparison"] | null;
+            severity?: components["schemas"]["AlertSeverity"] | null;
+            /**
+             * Format: double
+             * @description Threshold.
+             */
+            threshold: number;
+        };
+        /** @description A change to a rule. Built-in, file and SLO rules take `enabled` only. */
+        AlertRulePatch: {
+            /** @description New annotations (replace). */
+            annotations?: {
+                [key: string]: string;
+            } | null;
+            /** @description Switch the rule on or off. */
+            enabled?: boolean | null;
+            /** @description New expression. */
+            expr?: string | null;
+            /** @description New hold time. */
+            for?: string | null;
+            /** @description New labels (replace). */
+            labels?: {
+                [key: string]: string;
+            } | null;
+            op?: components["schemas"]["AlertComparison"] | null;
+            severity?: components["schemas"]["AlertSeverity"] | null;
+            /**
+             * Format: double
+             * @description New threshold.
+             */
+            threshold?: number | null;
+        };
+        /**
+         * @description Where a rule comes from.
+         * @enum {string}
+         */
+        AlertRuleSource: "builtin" | "config" | "api" | "slo";
+        /**
+         * @description How urgent an alert is.
+         * @enum {string}
+         */
+        AlertSeverity: "info" | "warning" | "critical";
+        /** @description A silence: notifications of matching alerts are muted until `ends_at`. */
+        AlertSilence: {
+            /** @description Why. */
+            comment: string;
+            /** @description Created. */
+            created_at: string;
+            /** @description Who. */
+            created_by: string;
+            /** @description End. */
+            ends_at: string;
+            /** @description Id. */
+            id: string;
+            /** @description All must match. */
+            matchers: components["schemas"]["AlertMatcher"][];
+            /** @description Start. */
+            starts_at: string;
+            /** @description `active`, `pending` (starts later) or `expired`. */
+            status: string;
+        };
+        /** @description A new silence (or a change: every field replaces). */
+        AlertSilenceInput: {
+            /** @description Why (shown in the dashboard). */
+            comment?: string;
+            /** @description Length from `starts_at` (`2h`), when `ends_at` is not given. */
+            duration?: string | null;
+            /** @description End; or give `duration`. */
+            ends_at?: string | null;
+            /** @description At least one; all must match. */
+            matchers: components["schemas"]["AlertMatcher"][];
+            /** @description Start (default now). */
+            starts_at?: string | null;
+        };
+        /**
+         * @description State of an alert.
+         * @enum {string}
+         */
+        AlertState: "pending" | "firing" | "resolved";
         /**
          * @description Body of a refund (of a consumption or spend) or a reversal (of a top-up
          *     or grant).
@@ -8656,6 +10046,57 @@ export interface components {
             /** @description Oldest first. */
             items: components["schemas"]["Attempt"][];
         };
+        /** @description An audit entry. */
+        AuditEntryView: {
+            /** @description Who acted: `user:<collection>/<id>`, `admin:<id>`, `service_account:<id>`, `anonymous`. */
+            actor: string;
+            /** @description When (RFC 3339). */
+            at: string;
+            /** @description Collection of the resource concerned. */
+            collection?: string | null;
+            /** @description Non-secret details. */
+            detail: Record<string, never>;
+            /** @description The action, such as `login` or `api_key.create`. */
+            event: string;
+            /**
+             * Format: int64
+             * @description Row id (increasing; the paging cursor).
+             */
+            id: number;
+            /** @description Administrator acting as the actor (impersonation). */
+            impersonator?: string | null;
+            /** @description Client address. */
+            ip?: string | null;
+            /** @description `success` or `failure`. */
+            outcome: string;
+            /** @description Request id. */
+            request_id?: string | null;
+            /** @description Id of the resource concerned. */
+            resource_id?: string | null;
+            /** @description Kind of the resource concerned. */
+            resource_type?: string | null;
+            /** @description User agent. */
+            user_agent?: string | null;
+        };
+        /** @description A page of audit entries. */
+        AuditPageView: {
+            /** @description The entries. */
+            items: components["schemas"]["AuditEntryView"][];
+            /**
+             * Format: int64
+             * @description Pass as `cursor` for the next page; absent after the last one.
+             */
+            next_cursor?: number | null;
+        };
+        /** @description An entry and the entries around it. */
+        AuditRelatedView: {
+            /** @description The entry. */
+            event: components["schemas"]["AuditEntryView"];
+            /** @description Other entries of the same actor within the window, oldest first. */
+            same_actor: components["schemas"]["AuditEntryView"][];
+            /** @description Other entries of the same request, oldest first. */
+            same_request: components["schemas"]["AuditEntryView"][];
+        };
         /** @description Consistency of one account: the balance, the ledger and the lots agree. */
         AuditReport: {
             /**
@@ -8686,6 +10127,22 @@ export interface components {
             lots_remaining: number;
             /** @description Subject. */
             subject: string;
+        };
+        /** @description Counts of an audit time range. */
+        AuditSummaryView: {
+            /** @description The most active actors. */
+            actors: components["schemas"]["Count"][];
+            /** @description The most frequent events. */
+            events: components["schemas"]["Count"][];
+            /** @description The most frequent client addresses. */
+            ips: components["schemas"]["Count"][];
+            /** @description Per outcome. */
+            outcomes: components["schemas"]["Count"][];
+            /**
+             * Format: int64
+             * @description Entries in the range.
+             */
+            total: number;
         };
         /** @description `{status:"accepted", message}`. */
         AuthAccepted: {
@@ -8977,6 +10434,11 @@ export interface components {
              * @description Usage records stored for metered prices.
              */
             usage_recorded: number;
+            /**
+             * Format: int64
+             * @description Inbound webhook deliveries deleted after the retention (ADR-0032).
+             */
+            webhook_deliveries_pruned: number;
         };
         /** @description Operator settings. */
         BillingSettings: {
@@ -9314,6 +10776,83 @@ export interface components {
             /** @description Why. */
             reason?: string | null;
         };
+        /** @description Every feature of this server. */
+        Capabilities: {
+            /** @description `sqlite` or `postgres`. */
+            backend: string;
+            /** @description One entry per feature, in a fixed order. */
+            features: components["schemas"]["Capability"][];
+        };
+        /** @description One feature on this server. */
+        Capability: {
+            /** @description Whether `engine` is a PostgreSQL extension (an accelerator). */
+            accelerated: boolean;
+            /**
+             * @description What it runs on: an extension and its version (`pgvector 0.8.7`,
+             *     `Apache AGE 1.8.0`, `pg_trgm 1.6`) or a description of the
+             *     portable or built-in engine.
+             */
+            engine: string;
+            /** @description The accelerator's PostgreSQL extension, for accelerated features. */
+            extension?: string | null;
+            /**
+             * @description Stable name: `vector`, `graph`, `opencypher`, `fulltext`, `fuzzy`,
+             *     `queue`, `cron`, `kv`, `realtime`, `read_replicas`, `sharding`.
+             */
+            feature: string;
+            /** @description Human name. */
+            label: string;
+            /** @description Limits of the engine in use (names and values). */
+            limits: Record<string, never>;
+            /**
+             * @description `[database.postgres.extensions]` mode (`auto`, `on`, `off`) of an
+             *     accelerated feature on PostgreSQL.
+             */
+            mode?: string | null;
+            /**
+             * @description Why the feature is not on its accelerator although it could be, or
+             *     why it is unavailable.
+             */
+            reason?: string | null;
+            /**
+             * @description `active`, `portable`, `off`, `native` or `unavailable` (see the
+             *     module documentation).
+             */
+            state: string;
+        };
+        /** @description One kind of event of a record-source topic. */
+        CatalogEventType: {
+            /** @description JSON Schema of the message `data`. */
+            data_schema: Record<string, never>;
+            /** @description What it means. */
+            description: string;
+            /** @description Example message `data`. */
+            example: Record<string, never>;
+            /** @description A subscription filter that selects only this event type. */
+            filter: Record<string, never>;
+            /** @description The record operation (`create`, `update`, `delete`): attribute `forgebase.op`. */
+            op: string;
+            /** @description `created`, `updated` or `deleted`. */
+            type: string;
+        };
+        /** @description A subscribable topic in the event catalog. */
+        CatalogTopic: {
+            /** @description JSON Schema of message `data` (the topic schema; for a record source, the change event). */
+            data_schema?: Record<string, never> | null;
+            /** @description What the topic's events are. */
+            description?: string | null;
+            /** @description For a record source: its event types (empty otherwise). */
+            event_types: components["schemas"]["CatalogEventType"][];
+            /** @description Example message `data`. */
+            example: Record<string, never>;
+            /** @description Where `example` comes from. */
+            example_source: components["schemas"]["ExampleSource"];
+            source?: components["schemas"]["RecordSource"] | null;
+            /** @description Owning tenant. */
+            tenant?: string | null;
+            /** @description Topic name. */
+            topic: string;
+        };
         /** @description Body of `POST /billing/subscriptions/{id}/change`. */
         ChangePlanInput: {
             /** @description Switch at the end of the period instead (no proration). */
@@ -9581,6 +11120,62 @@ export interface components {
             key: string;
             /** @description Source version (copy only). */
             version_id?: string | null;
+        };
+        /**
+         * @description A cost estimate. It prices the period's quantities with the catalog as
+         *     they are now: not an invoice.
+         */
+        CostEstimate: {
+            /** @description The same as a decimal string. */
+            amount: string;
+            /**
+             * Format: int64
+             * @description Sum of the priced lines in minor units.
+             */
+            amount_minor: number;
+            /**
+             * Format: int64
+             * @description Credits the credit rates would charge, in total.
+             */
+            credits: number;
+            /** @description ISO 4217 code. */
+            currency: string;
+            /** @description Always true: this is an estimate. */
+            estimate: boolean;
+            /** @description What was priced. */
+            lines: components["schemas"]["CostLine"][];
+        };
+        /** @description One priced line of a cost estimate. */
+        CostLine: {
+            /**
+             * Format: int64
+             * @description Estimated amount in minor units of the currency.
+             */
+            amount_minor?: number | null;
+            /**
+             * Format: int64
+             * @description Credits the credit rate of the feature would charge.
+             */
+            credits?: number | null;
+            /** @description The metric. */
+            metric: string;
+            /** @description The price used (its key), when one is set for the feature. */
+            price?: string | null;
+            /**
+             * Format: int64
+             * @description Units priced.
+             */
+            quantity: number;
+        };
+        /** @description A count of something. */
+        Count: {
+            /**
+             * Format: int64
+             * @description Entries.
+             */
+            count: number;
+            /** @description The value counted (an event, actor, address or outcome). */
+            key: string;
         };
         CountResponse: {
             /** Format: int64 */
@@ -9952,6 +11547,11 @@ export interface components {
             /** @description One name per `RETURN` item (its alias, else its text). */
             columns: string[];
             /**
+             * @description The engine that answered: `age` (Apache AGE on the derived graph) or
+             *     `portable` (SQL over the canonical tables, ADR-0034).
+             */
+            engine: string;
+            /**
              * @description The rows: one JSON value per column. Vertices come back as
              *     `{id, label, properties}`, edges as `{id, type, source, target,
              *     directed, properties}` and paths as `{nodes, edges}`, with ForgeBase
@@ -10074,6 +11674,10 @@ export interface components {
             published_at: string;
             /** @description Why it was dead-lettered. */
             reason: string;
+            /** @description When it was redriven to the subscription (RFC 3339); a record is redriven once. */
+            redriven_at?: string | null;
+            /** @description Who redrove it. */
+            redriven_by?: string | null;
             /** @description Subscription it failed on. */
             subscription: string;
             /** @description Its topic. */
@@ -10173,6 +11777,8 @@ export interface components {
             last_error?: string | null;
             /** @description Provider that handled it. */
             provider?: string | null;
+            /** @description The provider's id of the message (its own dashboard and logs use it). */
+            provider_message_id?: string | null;
             /** @description Realm. */
             realm: string;
             /**
@@ -10495,11 +12101,21 @@ export interface components {
             /** @description The error. */
             error: components["schemas"]["ErrorDetail"];
         };
+        /** @description The subscribable event types: every topic the caller may read. */
+        EventCatalog: {
+            /** @description By topic name. */
+            topics: components["schemas"]["CatalogTopic"][];
+        };
         /** @description History of a job. */
         EventList: {
             /** @description Oldest first. */
             items: components["schemas"]["JobEvent"][];
         };
+        /**
+         * @description Where an example in the catalog comes from.
+         * @enum {string}
+         */
+        ExampleSource: "topic" | "schema" | "none";
         /** @description Body of `POST /exec`. */
         ExecBody: {
             /** @description Command name followed by arguments, e.g. `["INCRBY", "hits", "5"]`. */
@@ -10539,6 +12155,8 @@ export interface components {
             request_id?: string | null;
             /** @description `ok`, `rejected`, `failed`, `trap`, `fuel_exhausted`, `memory_limit`, `timeout` or `bad_output`. */
             status: string;
+            /** @description Trace id of the run (32 hex digits; ADR-0035), when it ran in a trace. */
+            trace_id?: string | null;
             /** @description `http`, `hook`, `job` or `test`. */
             trigger: string;
             /**
@@ -10783,6 +12401,29 @@ export interface components {
          * @enum {string}
          */
         FinalAction: "cancel" | "leave_past_due";
+        /** @description What one flush wrote. */
+        FlushReport: {
+            /** @description Function (name, version) rows written. */
+            functions: number;
+            /**
+             * Format: int64
+             * @description Slow statements dropped by the sampling budget.
+             */
+            slow_dropped: number;
+            /** @description Slow statements written. */
+            slow_statements: number;
+            /** @description Statement fingerprints written. */
+            statements: number;
+        };
+        /** @description A function over a range: its versions and its time series. */
+        FunctionDetail: {
+            /** @description Function name. */
+            function: string;
+            /** @description Buckets of all versions, oldest first. */
+            series: components["schemas"]["FunctionPoint"][];
+            /** @description Statistics per version, newest version first. */
+            versions: components["schemas"]["FunctionStat"][];
+        };
         /** @description A function. */
         FunctionInfo: {
             /** @description HTTP access mode. */
@@ -10820,11 +12461,147 @@ export interface components {
             /** @description By name. */
             items: components["schemas"]["FunctionInfo"][];
         };
+        /** @description One time bucket of a function. */
+        FunctionPoint: {
+            /** @description Start of the bucket (RFC 3339). */
+            at: string;
+            /**
+             * Format: int64
+             * @description Cold starts.
+             */
+            cold_starts: number;
+            /**
+             * Format: int64
+             * @description Failures.
+             */
+            errors: number;
+            /**
+             * Format: int64
+             * @description Executions.
+             */
+            invocations: number;
+            /**
+             * Format: double
+             * @description Mean duration in milliseconds.
+             */
+            mean_ms: number;
+            /**
+             * Format: double
+             * @description 95th percentile in milliseconds.
+             */
+            p95_ms: number;
+        };
         /**
          * @description How a version runs.
          * @enum {string}
          */
         FunctionRuntime: "wasm" | "js";
+        /** @description Statistics of one function version over a range. */
+        FunctionStat: {
+            /**
+             * Format: int64
+             * @description Executions that had to load their module or script.
+             */
+            cold_starts: number;
+            /**
+             * Format: double
+             * @description `errors / invocations`.
+             */
+            error_rate: number;
+            /**
+             * Format: int64
+             * @description Executions that did not end `ok`.
+             */
+            errors: number;
+            /**
+             * Format: int64
+             * @description The fuel limit of the version.
+             */
+            fuel_limit: number;
+            /**
+             * Format: int64
+             * @description Most fuel one execution used.
+             */
+            fuel_max: number;
+            /**
+             * Format: int64
+             * @description Mean fuel (WebAssembly instructions, roughly) per execution.
+             */
+            fuel_mean: number;
+            /**
+             * Format: double
+             * @description `fuel_max / fuel_limit`: how close the worst execution came.
+             */
+            fuel_utilisation: number;
+            /** @description Function name. */
+            function: string;
+            /** @description Host calls by operation, most time first. */
+            host: components["schemas"]["HostBreakdown"][];
+            /**
+             * Format: double
+             * @description Host calls per execution, on average.
+             */
+            host_calls_per_invocation: number;
+            /**
+             * Format: int64
+             * @description Executions.
+             */
+            invocations: number;
+            /**
+             * Format: double
+             * @description Longest execution in milliseconds.
+             */
+            max_ms: number;
+            /**
+             * Format: double
+             * @description Mean duration in milliseconds.
+             */
+            mean_ms: number;
+            /**
+             * Format: int64
+             * @description The memory limit in bytes.
+             */
+            memory_limit_bytes: number;
+            /**
+             * Format: int64
+             * @description Largest memory one execution had, in bytes.
+             */
+            memory_max_bytes: number;
+            /**
+             * Format: double
+             * @description Median duration in milliseconds (within about 11 %).
+             */
+            p50_ms: number;
+            /**
+             * Format: double
+             * @description 95th percentile in milliseconds.
+             */
+            p95_ms: number;
+            /**
+             * Format: double
+             * @description 99th percentile in milliseconds.
+             */
+            p99_ms: number;
+            /**
+             * Format: int64
+             * @description Executions that hit their time limit.
+             */
+            timeouts: number;
+            /**
+             * Format: int64
+             * @description Version.
+             */
+            version: number;
+        };
+        /** @description Functions with their versions, most executions first. */
+        FunctionStatList: {
+            /** @description Start of the range (RFC 3339). */
+            from: string;
+            /** @description One row per function version. */
+            items: components["schemas"]["FunctionStat"][];
+            /** @description End of the range, exclusive. */
+            to: string;
+        };
         /** @description Body of a gauge change: `delta` (may be negative) or the new `value`. */
         GaugeRequest: {
             /**
@@ -10941,6 +12718,41 @@ export interface components {
             collection: string;
             /** @description Events. */
             events: components["schemas"]["HookEvent"][];
+        };
+        /** @description Host calls of one operation. */
+        HostBreakdown: {
+            /**
+             * Format: int64
+             * @description Calls.
+             */
+            count: number;
+            /**
+             * Format: int64
+             * @description Calls that returned an error to the function.
+             */
+            errors: number;
+            /**
+             * Format: double
+             * @description Longest call in milliseconds.
+             */
+            max_ms: number;
+            /**
+             * Format: double
+             * @description Mean time in milliseconds.
+             */
+            mean_ms: number;
+            /** @description The operation (`db.get`, `kv`, `fetch`, `storage.put`, ...). */
+            op: string;
+            /**
+             * Format: double
+             * @description Share of all the function's host time, 0 to 1.
+             */
+            share: number;
+            /**
+             * Format: double
+             * @description Total time in milliseconds.
+             */
+            total_ms: number;
         };
         /** @description A provider-hosted page. */
         HostedPage: {
@@ -11086,8 +12898,8 @@ export interface components {
             collection: string;
             keys: components["schemas"]["IndexKeySchema"][];
             /**
-             * @description `btree` (default), `fulltext` or `trigram` (PostgreSQL with pg_trgm;
-             *     `400 index_kind_unsupported` elsewhere).
+             * @description `btree` (default), `fulltext` or `trigram` (pg_trgm where it is in
+             *     use, else the portable engine; ADR-0034).
              */
             kind?: string | null;
             name?: string | null;
@@ -11222,6 +13034,26 @@ export interface components {
          * @enum {string}
          */
         Interval: "hour" | "day" | "month";
+        /** @description One recorded execution with its profile (ADR-0036 §3). */
+        InvocationDetail: components["schemas"]["ExecutionLog"] & {
+            /**
+             * @description What the host-call boundary measured: cold start, fuel and memory
+             *     against their limits, per-operation counts and times, and a timeline
+             *     of the first host calls. `null` for executions recorded before
+             *     profiling existed or while it was off.
+             */
+            profile?: Record<string, never> | null;
+        };
+        /** @description A page of recorded executions with their profiles, newest first. */
+        InvocationPage: {
+            /** @description The executions. */
+            items: components["schemas"]["InvocationDetail"][];
+            /**
+             * Format: int64
+             * @description Pass as `cursor` for the next page; absent after the last one.
+             */
+            next_cursor?: number | null;
+        };
         /** @description An invoice. */
         Invoice: {
             /**
@@ -11774,6 +13606,8 @@ export interface components {
                 last_error?: string | null;
                 /** @description Provider that handled it. */
                 provider?: string | null;
+                /** @description The provider's id of the message (its own dashboard and logs use it). */
+                provider_message_id?: string | null;
                 /** @description Realm. */
                 realm: string;
                 /**
@@ -12687,6 +14521,12 @@ export interface components {
              * @description Longest run of one attempt in ms (`null`: no limit).
              */
             timeout_ms?: number | null;
+            /**
+             * @description W3C `traceparent` of the span that enqueued the job (ADR-0035): the
+             *     run continues that trace, and an external worker may too. Absent
+             *     while trace propagation is off.
+             */
+            traceparent?: string | null;
             /** @description Last change (RFC 3339). */
             updated_at: string;
             /**
@@ -13041,6 +14881,11 @@ export interface components {
              */
             next?: number | null;
         };
+        /**
+         * @description The level usage is grouped at.
+         * @enum {string}
+         */
+        Level: "environment" | "project" | "org" | "realm";
         /** @description Resource limits of one execution. */
         Limits: {
             /**
@@ -13092,14 +14937,33 @@ export interface components {
          * @enum {string}
          */
         LineKind: "subscription" | "proration" | "usage" | "one_time" | "adjustment";
+        /** @description Internal objects a delivery touched. */
+        Links: {
+            /** @description Billing customer. */
+            customer_id?: string | null;
+            /** @description Invoice. */
+            invoice_id?: string | null;
+            /** @description One-time order. */
+            order_id?: string | null;
+            /** @description Payment. */
+            payment_id?: string | null;
+            /** @description Refund. */
+            refund_id?: string | null;
+            /** @description Store purchase (App Store, Google Play, Creem). */
+            store_purchase_id?: string | null;
+            /** @description Subscription. */
+            subscription_id?: string | null;
+            /** @description Row of the event dedup table (`webhook-events`). */
+            webhook_event_id?: string | null;
+        };
         ListQueryBody: {
             cursor?: string | null;
             expand?: string[] | null;
             fields?: string[] | null;
             filter?: string | null;
             /**
-             * @description Fuzzy text: trigram similarity, best match first (PostgreSQL with
-             *     pg_trgm; `400 fuzzy_unsupported` otherwise).
+             * @description Fuzzy text: trigram similarity, best match first (pg_trgm where it
+             *     is in use, else the portable engine; ADR-0034).
              */
             fuzzy?: string | null;
             /**
@@ -13355,6 +15219,43 @@ export interface components {
          * @enum {string}
          */
         Metric: "cosine" | "l2" | "dot";
+        /** @description What a built-in metric is. */
+        MetricInfo: {
+            /** @description What it counts. */
+            description: string;
+            /** @description Key, as used in `metric` and `sort`. */
+            key: string;
+            /**
+             * @description `counter` (work done: summed over the period) or `gauge` (a resource
+             *     held: last value of the period and its peak).
+             */
+            kind: string;
+            /** @description Where it comes from. */
+            source: string;
+            /** @description Unit. */
+            unit: string;
+        };
+        /** @description A list of metrics. */
+        MetricList: {
+            /** @description The built-in metrics. */
+            items: components["schemas"]["MetricInfo"][];
+        };
+        /** @description One metric of a tenant over the period. */
+        MetricValue: {
+            /** @description `counter` or `gauge`. */
+            kind: string;
+            /**
+             * Format: int64
+             * @description Gauges: the largest daily value of the period.
+             */
+            peak?: number | null;
+            /**
+             * Format: int64
+             * @description Counters: the sum over the period. Gauges: the value of the last day
+             *     with data in the period.
+             */
+            value: number;
+        };
         /** @description Body of `POST /mget`. */
         MgetBody: {
             /** @description Keys to read. */
@@ -13637,10 +15538,22 @@ export interface components {
             name: string;
             /** @description Deliver messages with the same ordering key in publish order, one at a time; immutable. */
             ordering?: boolean;
+            /**
+             * Format: int64
+             * @description Push: pause delivery after this many consecutive failed attempts
+             *     (1-1000; default: never). Paused subscriptions keep their messages.
+             */
+            pause_after_failures?: number | null;
             push?: components["schemas"]["PushConfig"] | null;
             start?: components["schemas"]["StartPosition"] | null;
             /** @description Topic to subscribe to. */
             topic: string;
+            /**
+             * Format: int64
+             * @description Delete the subscription this long after creation (60 s to 31 days;
+             *     default: never). A later change with `ttl_ms` extends it.
+             */
+            ttl_ms?: number | null;
         };
         /** @description Body of a topic creation. */
         NewTopic: {
@@ -13649,6 +15562,10 @@ export interface components {
              * @description A repeated `dedup_id` inside this window is accepted once (default 10 minutes).
              */
             dedup_window_ms?: number | null;
+            /** @description What the topic's events are (event catalog; at most 1024 characters). */
+            description?: string | null;
+            /** @description An example of message `data` (event catalog); must satisfy the schema when one is set. */
+            example?: Record<string, never> | null;
             /** @description Free-form labels. */
             labels?: {
                 [key: string]: string;
@@ -14116,6 +16033,11 @@ export interface components {
             length?: number | null;
             /** @description Nodes from `from` to `to`. */
             nodes: components["schemas"]["Node"][];
+        };
+        /** @description Body of a pause (optional). */
+        PauseRequest: {
+            /** @description Why (shown as `paused_reason`; at most 500 characters). */
+            reason?: string | null;
         };
         /** @description Body of `POST /billing/invoices/{id}/pay`. */
         PayInput: {
@@ -14822,6 +16744,73 @@ export interface components {
             /** @description Possibly empty. */
             messages: components["schemas"]["ReceivedMessage"][];
         };
+        /** @description One push attempt of a subscription: a delivery or a test send (ADR-0031 §1). */
+        PushAttempt: {
+            /** @description When it started (RFC 3339). */
+            at: string;
+            /**
+             * Format: int64
+             * @description Delivery attempt of the message, from 1.
+             */
+            attempt: number;
+            /** @description Webhook URL or function name. */
+            endpoint: string;
+            /** @description The failure in words. */
+            error?: string | null;
+            error_class?: components["schemas"]["PushErrorClass"] | null;
+            /**
+             * Format: int64
+             * @description Record id (increasing).
+             */
+            id: number;
+            /** @description `webhook` or `function`. */
+            kind: components["schemas"]["PushKind"];
+            /**
+             * Format: int64
+             * @description How long it took in milliseconds.
+             */
+            latency_ms: number;
+            /** @description Message delivered (`test-…` for a test send). */
+            message_id: string;
+            /** @description `success` or `failure`. */
+            outcome: components["schemas"]["PushOutcome"];
+            /** @description Headers sent (the signature masked). */
+            request_headers: {
+                [key: string]: string;
+            };
+            /** @description The answer's body, cut to `[queue] push_response_body_bytes` (lossy UTF-8). */
+            response_body?: string | null;
+            /**
+             * Format: int64
+             * @description Full size of the answer's body in bytes.
+             */
+            response_bytes?: number | null;
+            /** @description Allowlisted headers of the answer (`content-type`, `retry-after`, request ids, ...). */
+            response_headers: {
+                [key: string]: string;
+            };
+            /** @description The body was cut. */
+            response_truncated: boolean;
+            /**
+             * Format: int64
+             * @description HTTP status of the answer (webhooks that answered).
+             */
+            status?: number | null;
+            /** @description Subscription. */
+            subscription: string;
+            /** @description A test send: not a message, no effect on delivery state or totals. */
+            test: boolean;
+        };
+        /** @description Push attempts of a subscription. */
+        PushAttemptPage: {
+            /** @description Newest first. */
+            items: components["schemas"]["PushAttempt"][];
+            /**
+             * Format: int64
+             * @description Pass as `before` for the next page; absent at the end.
+             */
+            next_before?: number | null;
+        };
         /** @description Body of `POST .../lists/{key}/push`. */
         PushBody: {
             /** @description Head or tail. */
@@ -14837,10 +16826,89 @@ export interface components {
             kind: components["schemas"]["PushKind"];
         };
         /**
+         * @description Why a push attempt failed.
+         * @enum {string}
+         */
+        PushErrorClass: "timeout" | "dns" | "connect" | "tls" | "ssrf_refused" | "http_status" | "redirect" | "protocol" | "invalid_request" | "config" | "function";
+        /**
+         * @description Endpoint health of a push subscription (ADR-0031 §5): the attempts of the
+         *     last hour (at most the newest 1000; test sends excluded) and the
+         *     circuit-breaker state.
+         */
+        PushHealth: {
+            /**
+             * Format: int64
+             * @description Attempts in the window.
+             */
+            attempts: number;
+            /**
+             * Format: int64
+             * @description Failed attempts since the last success.
+             */
+            consecutive_failures: number;
+            /**
+             * Format: int64
+             * @description Failed attempts in the window.
+             */
+            failures: number;
+            /** @description Error of the last failed attempt. */
+            last_error?: string | null;
+            /** @description Last failed attempt (RFC 3339). */
+            last_failure_at?: string | null;
+            /** @description Last successful attempt (RFC 3339). */
+            last_success_at?: string | null;
+            /**
+             * Format: int64
+             * @description Median latency in milliseconds.
+             */
+            latency_p50_ms?: number | null;
+            /**
+             * Format: int64
+             * @description 95th percentile latency in milliseconds.
+             */
+            latency_p95_ms?: number | null;
+            /**
+             * Format: int64
+             * @description 99th percentile latency in milliseconds.
+             */
+            latency_p99_ms?: number | null;
+            /**
+             * Format: int64
+             * @description Auto-pause threshold.
+             */
+            pause_after_failures?: number | null;
+            /** @description Push delivery is paused. */
+            paused: boolean;
+            /** @description When it was paused (RFC 3339). */
+            paused_at?: string | null;
+            /** @description Why it was paused. */
+            paused_reason?: string | null;
+            /**
+             * Format: double
+             * @description `successes / attempts` (absent without attempts).
+             */
+            success_rate?: number | null;
+            /**
+             * Format: int64
+             * @description Successful attempts in the window.
+             */
+            successes: number;
+            /**
+             * Format: int64
+             * @description Length of the rolling window in milliseconds.
+             */
+            window_ms: number;
+        };
+        /**
          * @description Kind of push endpoint.
          * @enum {string}
          */
         PushKind: "webhook" | "function";
+        /**
+         * @description How a push attempt ended.
+         * @enum {string}
+         */
+        PushOutcome: "success" | "failure";
         /**
          * @description Element type of the ANN index. Canonical vectors are always stored as
          *     float32; a smaller type makes the derived index smaller and faster at some
@@ -15016,6 +17084,8 @@ export interface components {
             created_by: string;
             /** @description Dead-letter topic. */
             dead_letter_topic?: string | null;
+            /** @description When the subscription is deleted (RFC 3339). */
+            expires_at?: string | null;
             /** @description Attribute filter. */
             filter?: Record<string, never> | null;
             /** @description Labels. */
@@ -15031,9 +17101,23 @@ export interface components {
             name: string;
             /** @description Ordered delivery per ordering key. */
             ordering: boolean;
+            /**
+             * Format: int64
+             * @description Auto-pause after this many consecutive failed push attempts.
+             */
+            pause_after_failures?: number | null;
+            /** @description When push delivery was paused (RFC 3339); messages accumulate until it is resumed. */
+            paused_at?: string | null;
+            /** @description Why it was paused (`auto: …` for the circuit breaker). */
+            paused_reason?: string | null;
             push?: components["schemas"]["PushConfig"] | null;
             /** @description Webhook signing secret: returned only when it is created. */
             push_secret?: string | null;
+            /**
+             * @description End of the grace window of the secret a rotation replaced (RFC 3339):
+             *     until then deliveries carry a signature with each secret.
+             */
+            push_secret_previous_expires_at?: string | null;
             /** @description Owning tenant (FB-141); `None` for an instance-wide subscription. */
             tenant?: string | null;
             /** @description Topic. */
@@ -15397,6 +17481,36 @@ export interface components {
              */
             subscriptions: number;
         };
+        /** @description Body of a redrive: `ids`, or `all` (optionally filtered). */
+        RedriveRequest: {
+            /** @description Every dead letter of the subscription not yet redriven (oldest first, at most `limit`). */
+            all?: boolean;
+            /** @description With `all`: only records whose message attributes match this filter (subscription filter syntax). */
+            filter?: Record<string, never> | null;
+            /** @description Dead-letter record ids (1-1000). */
+            ids?: number[];
+            /**
+             * Format: int64
+             * @description With `all`: most records to redrive in this call (1-1000, default 1000).
+             */
+            limit?: number | null;
+            /** @description With `all`: only records dead-lettered at or after this RFC 3339 time. */
+            since?: string | null;
+        };
+        /** @description Outcome of a redrive. */
+        RedriveResult: {
+            /** @description Records that were redriven before (each record is redriven once). */
+            already_redriven: number[];
+            /** @description Ids that are not dead letters of this subscription. */
+            not_found: number[];
+            /** @description Records delivered to the subscription again (attempt counter reset). */
+            redriven: number[];
+            /**
+             * Format: int64
+             * @description With `all`: matching records left for another call.
+             */
+            remaining: number;
+        };
         /** @description A refund. */
         Refund: {
             /**
@@ -15430,6 +17544,66 @@ export interface components {
          * @enum {string}
          */
         RefundStatus: "pending" | "succeeded" | "failed";
+        /** @description A statement that got slower, or started failing. */
+        Regression: {
+            /** @description Subsystem. */
+            area: string;
+            /** @description `sqlite` or `postgres`. */
+            backend: string;
+            /** @description The baseline window. */
+            baseline: components["schemas"]["WindowStat"];
+            /**
+             * Format: double
+             * @description `recent p95 - baseline p95` in milliseconds.
+             */
+            delta_ms: number;
+            /**
+             * Format: double
+             * @description Sort key: how much extra time the recent runs cost, in milliseconds.
+             */
+            extra_ms: number;
+            /** @description Fingerprint. */
+            fingerprint: string;
+            /** @description `latency` (p95 grew) or `errors` (the error rate grew). */
+            kind: string;
+            /**
+             * Format: double
+             * @description `recent p95 / baseline p95` (latency) or the error rate difference (errors).
+             */
+            ratio: number;
+            /** @description The recent window. */
+            recent: components["schemas"]["WindowStat"];
+            /** @description The statement with every value replaced by `?`. */
+            statement: string;
+        };
+        /** @description What a regression check compared. */
+        RegressionReport: {
+            /** @description Start of the baseline window. */
+            baseline_from: string;
+            /** @description End of the baseline window (the start of the recent one). */
+            baseline_to: string;
+            /** @description The regressions, most costly first. */
+            items: components["schemas"]["Regression"][];
+            /**
+             * Format: int64
+             * @description Fewest runs in each window.
+             */
+            min_calls: number;
+            /**
+             * Format: double
+             * @description Smallest p95 growth reported, in milliseconds.
+             */
+            min_delta_ms: number;
+            /**
+             * Format: double
+             * @description Smallest `recent p95 / baseline p95` reported.
+             */
+            min_ratio: number;
+            /** @description Start of the recent window (RFC 3339). */
+            recent_from: string;
+            /** @description End of the recent window. */
+            recent_to: string;
+        };
         /** @description Answer of the removals. */
         Removed: {
             /** @description The removed node or set id. */
@@ -15530,6 +17704,19 @@ export interface components {
             /** @description Oldest first. */
             items: components["schemas"]["RetiredInfo"][];
         };
+        /** @description Body of a "retry now" (optional). */
+        RetryRequest: {
+            /** @description Only these messages (default: every message waiting for a retry backoff). */
+            message_ids?: string[];
+        };
+        /** @description Outcome of a "retry now". */
+        RetryResult: {
+            /**
+             * Format: int64
+             * @description Deliveries that were waiting for a backoff and are ready now.
+             */
+            count: number;
+        };
         /** @description Revenue of one currency in one bucket. */
         RevenuePoint: {
             /** @description Currency. */
@@ -15585,10 +17772,34 @@ export interface components {
              */
             version?: number | null;
         };
+        /** @description Result of a rollup. */
+        RollupResult: {
+            /** @description The day rolled up. */
+            day: string;
+            /** @description Values written. */
+            values: number;
+        };
         /** @description Body of `POST /system/db-logins/{name}/rotate`. */
         RotateBody: {
             /** @description New expiry (RFC 3339); absent keeps the current one. */
             valid_until?: string | null;
+        };
+        /** @description A rotated webhook secret. */
+        RotatedSecret: {
+            /** @description Until when deliveries are also signed with the old secret (RFC 3339; absent with no grace). */
+            previous_expires_at?: string | null;
+            /** @description The new signing secret: shown only here. */
+            push_secret: string;
+            /** @description Subscription. */
+            subscription: string;
+        };
+        /** @description Body of a secret rotation (optional). */
+        RotateSecretRequest: {
+            /**
+             * Format: int64
+             * @description How long the old secret keeps signing too, 0 to 7 days (default 24 hours; `0` drops it at once).
+             */
+            grace_ms?: number | null;
         };
         /**
          * @description `run_as` of a SQL editor body (FB-153): whose claims the statements run
@@ -15982,6 +18193,159 @@ export interface components {
             /** @description A specific version (downloads). */
             version_id?: string | null;
         };
+        /** @description A service level objective over a group of routes. */
+        Slo: {
+            /** @description Multi-window burn-rate alerts on. */
+            alerting: boolean;
+            /** @description Created. */
+            created_at: string;
+            /** @description What it promises. */
+            description: string;
+            /** @description Id. */
+            id: string;
+            /** @description Kind. */
+            kind: components["schemas"]["SloKind"];
+            /** @description Extra labels of its alerts. */
+            labels: {
+                [key: string]: string;
+            };
+            /**
+             * Format: int64
+             * @description Latency SLOs: the threshold.
+             */
+            latency_threshold_ms?: number | null;
+            /** @description Only these methods (empty: all). */
+            methods: string[];
+            /** @description Unique name (the `slo` label). */
+            name: string;
+            /**
+             * Format: double
+             * @description Target share of good requests (0.9 to 0.99999).
+             */
+            objective: number;
+            /** @description Route templates starting with this (`/api/v1/collections`). */
+            route_prefix?: string | null;
+            /** @description Or route templates matching this anchored regular expression. */
+            route_regex?: string | null;
+            /** @description Changed. */
+            updated_at: string;
+            /** @description Rolling window (`30d`). */
+            window: string;
+            /**
+             * Format: int64
+             * @description The same in milliseconds.
+             */
+            window_ms: number;
+        };
+        /** @description One burn-rate alert tier. */
+        SloBurnTier: {
+            /**
+             * Format: double
+             * @description Burn rate both windows must exceed.
+             */
+            burn_rate_threshold: number;
+            /** @description Whether it fires now. */
+            firing: boolean;
+            /** @description Long window. */
+            long_window: string;
+            /** @description Rule id. */
+            rule_id: string;
+            /** @description Severity. */
+            severity: components["schemas"]["AlertSeverity"];
+            /** @description Short window. */
+            short_window: string;
+            /** @description `page_fast`, `page_slow` or `ticket`. */
+            tier: string;
+        };
+        /** @description Error budget of an SLO over its window. */
+        SloErrorBudget: {
+            /**
+             * Format: double
+             * @description Bad events the objective allows over the window: `(1 - objective) * total`.
+             */
+            allowed: number;
+            /**
+             * Format: int64
+             * @description Bad events so far.
+             */
+            consumed: number;
+            /**
+             * Format: double
+             * @description Share left: `1 - consumed / allowed` (below 0 when overspent; 1 with no traffic).
+             */
+            remaining_ratio: number;
+        };
+        /** @description A new SLO or a change (every field replaces). */
+        SloInput: {
+            /** @description Burn-rate alerts (default true). */
+            alerting?: boolean | null;
+            /** @description Description. */
+            description?: string;
+            /** @description Kind. */
+            kind: components["schemas"]["SloKind"];
+            /** @description Extra alert labels. */
+            labels?: {
+                [key: string]: string;
+            };
+            /**
+             * Format: int64
+             * @description Latency threshold in milliseconds (latency SLOs).
+             */
+            latency_threshold_ms?: number | null;
+            /** @description Methods (`GET`, `POST`, …). */
+            methods?: string[];
+            /** @description Unique name (letters, digits, `_`, `-`, `.`; 1-64). */
+            name: string;
+            /**
+             * Format: double
+             * @description Objective, such as 0.999.
+             */
+            objective: number;
+            /** @description Route prefix (one of prefix or regex; neither: every route). */
+            route_prefix?: string | null;
+            /** @description Route regular expression. */
+            route_regex?: string | null;
+            /** @description Window (default `30d`; 1h to 90d). */
+            window?: string | null;
+        };
+        /**
+         * @description SLO kind.
+         * @enum {string}
+         */
+        SloKind: "availability" | "latency";
+        /** @description Where an SLO stands. */
+        SloStatus: {
+            /** @description Burn-rate alert tiers. */
+            alerts: components["schemas"]["SloBurnTier"][];
+            /**
+             * Format: int64
+             * @description Bad requests.
+             */
+            bad: number;
+            /** @description Burn rate per window (`5m`, `30m`, `1h`, `6h`, `3d`): error ratio / (1 - objective). */
+            burn_rates: {
+                [key: string]: number | null;
+            };
+            /** @description The error budget. */
+            error_budget: components["schemas"]["SloErrorBudget"];
+            /**
+             * Format: int64
+             * @description Good requests.
+             */
+            good: number;
+            /**
+             * Format: double
+             * @description `good / total` (`null` without traffic).
+             */
+            sli?: number | null;
+            /** @description The SLO. */
+            slo: components["schemas"]["Slo"];
+            /**
+             * Format: int64
+             * @description Requests in the window.
+             */
+            total: number;
+        };
         SlowQueryLabelSchema: {
             collection: string;
             equality_keys: string[];
@@ -16003,6 +18367,48 @@ export interface components {
             rows: number;
             /** @description SQL text; parameter values are never recorded. */
             sql: string;
+        };
+        /** @description One slow statement. */
+        SlowStatementEntry: {
+            /** @description Subsystem. */
+            area: string;
+            /** @description When it finished (RFC 3339). */
+            at: string;
+            /** @description `sqlite` or `postgres`. */
+            backend: string;
+            /**
+             * Format: double
+             * @description Wall time in milliseconds.
+             */
+            duration_ms: number;
+            /** @description It failed. */
+            error: boolean;
+            /** @description Fingerprint. */
+            fingerprint: string;
+            /**
+             * Format: int64
+             * @description Row id (the paging cursor).
+             */
+            id: number;
+            /**
+             * Format: int64
+             * @description Rows returned or changed.
+             */
+            rows: number;
+            /** @description The statement with every value replaced by `?`. */
+            statement: string;
+            /** @description It ran inside a write transaction. */
+            write: boolean;
+        };
+        /** @description A page of slow statements, newest first. */
+        SlowStatementPage: {
+            /** @description The statements. */
+            items: components["schemas"]["SlowStatementEntry"][];
+            /**
+             * Format: int64
+             * @description Pass as `cursor` for the next page; absent after the last one.
+             */
+            next_cursor?: number | null;
         };
         /** @description A saved acknowledgement state of a subscription. */
         Snapshot: {
@@ -16119,6 +18525,182 @@ export interface components {
         StartPosition: "latest" | "earliest" | {
             /** @description Retained messages published at or after this RFC 3339 time. */
             time: string;
+        };
+        /** @description One statement shape with its history. */
+        StatementDetail: components["schemas"]["StatementStat"] & {
+            /**
+             * @description Buckets, oldest first (the not yet flushed part of the last bucket is
+             *     the final point).
+             */
+            series: components["schemas"]["StatementPoint"][];
+        };
+        /** @description A page of [`StatementStat`]. */
+        StatementList: {
+            /** @description Start of the range (RFC 3339). */
+            from: string;
+            /** @description The statements. */
+            items: components["schemas"]["StatementStat"][];
+            /** @description Page size used. */
+            limit: number;
+            /** @description Rows skipped. */
+            offset: number;
+            /** @description End of the range, exclusive (RFC 3339). */
+            to: string;
+            /** @description How many statement shapes matched. */
+            total: number;
+        };
+        /** @description One time bucket of a statement. */
+        StatementPoint: {
+            /** @description Start of the bucket (RFC 3339). */
+            at: string;
+            /**
+             * Format: int64
+             * @description Runs.
+             */
+            calls: number;
+            /**
+             * Format: int64
+             * @description Failures.
+             */
+            errors: number;
+            /**
+             * Format: double
+             * @description Longest in milliseconds.
+             */
+            max_ms: number;
+            /**
+             * Format: double
+             * @description Mean in milliseconds.
+             */
+            mean_ms: number;
+            /**
+             * Format: double
+             * @description 95th percentile in milliseconds.
+             */
+            p95_ms: number;
+            /**
+             * Format: int64
+             * @description Length of the bucket in seconds.
+             */
+            seconds: number;
+        };
+        /** @description Statistics of one statement fingerprint over a time range. */
+        StatementStat: {
+            /** @description The subsystem the statement belongs to. */
+            area: string;
+            /** @description `sqlite` or `postgres`. */
+            backend: string;
+            /**
+             * Format: int64
+             * @description Times it ran.
+             */
+            calls: number;
+            /**
+             * Format: double
+             * @description `errors / calls`.
+             */
+            error_rate: number;
+            /**
+             * Format: int64
+             * @description Times it failed.
+             */
+            errors: number;
+            /** @description 16 hex digits identifying the statement shape. */
+            fingerprint: string;
+            /**
+             * Format: double
+             * @description Longest run in milliseconds.
+             */
+            max_ms: number;
+            /**
+             * Format: double
+             * @description Mean time in milliseconds.
+             */
+            mean_ms: number;
+            /**
+             * Format: double
+             * @description Shortest run in milliseconds.
+             */
+            min_ms: number;
+            /**
+             * Format: double
+             * @description Median in milliseconds (from the latency sketch: within about 11 %).
+             */
+            p50_ms: number;
+            /**
+             * Format: double
+             * @description 95th percentile in milliseconds.
+             */
+            p95_ms: number;
+            /**
+             * Format: double
+             * @description 99th percentile in milliseconds.
+             */
+            p99_ms: number;
+            /**
+             * Format: int64
+             * @description Rows returned or changed, total.
+             */
+            rows: number;
+            /**
+             * Format: int64
+             * @description Runs at or above the slow threshold.
+             */
+            slow: number;
+            /** @description The statement with every value replaced by `?`. */
+            statement: string;
+            /**
+             * Format: double
+             * @description Total wall time in milliseconds.
+             */
+            total_ms: number;
+            /**
+             * Format: int64
+             * @description Runs inside a write transaction.
+             */
+            writes: number;
+        };
+        /** @description State of the statement statistics. */
+        StatementStatus: {
+            /** @description Statistics are collected. */
+            enabled: boolean;
+            /**
+             * Format: int64
+             * @description Fingerprints held in memory now.
+             */
+            fingerprints_in_memory: number;
+            /**
+             * Format: int64
+             * @description Seconds between flushes.
+             */
+            flush_interval_secs: number;
+            /**
+             * Format: int32
+             * @description Days kept.
+             */
+            retention_days: number;
+            /**
+             * Format: int64
+             * @description Slow statement threshold in milliseconds.
+             */
+            slow_query_ms: number;
+            /**
+             * Format: int64
+             * @description Fingerprints stored.
+             */
+            stored_rows: number;
+            /**
+             * Format: int64
+             * @description Slow statements stored.
+             */
+            stored_slow_statements: number;
+            /**
+             * Format: int32
+             * @description Fingerprints per flush.
+             */
+            top_n: number;
+            /** @description Start of the interval not yet flushed (RFC 3339). */
+            unflushed_since: string;
         };
         /** @description Instance totals. */
         StorageStats: {
@@ -16447,6 +19029,7 @@ export interface components {
              * @description Age of the oldest unacknowledged message in milliseconds.
              */
             oldest_unacked_age_ms?: number | null;
+            push?: components["schemas"]["PushHealth"] | null;
             /**
              * Format: int64
              * @description Deliverable now.
@@ -16489,7 +19072,17 @@ export interface components {
              * @description New attempt limit; `0` removes it.
              */
             max_delivery_attempts?: number | null;
+            /**
+             * Format: int64
+             * @description New auto-pause threshold; `0` turns auto-pause off.
+             */
+            pause_after_failures?: number | null;
             push?: components["schemas"]["PushConfig"] | null;
+            /**
+             * Format: int64
+             * @description Delete the subscription this long from now; `0` removes the expiry.
+             */
+            ttl_ms?: number | null;
         };
         /**
          * @description Subscription lifecycle (set by billing, FB-70).
@@ -16685,6 +19278,25 @@ export interface components {
             /** @description Plain-text body template (max 64 KiB). */
             text: string;
         };
+        /** @description Body of `POST /email/provider/test`. */
+        TestMailInput: {
+            /** @description Recipient of the test message. */
+            to: string;
+        };
+        /** @description Result of a test send. */
+        TestMailResult: {
+            /** @description The `From` address used. */
+            from: string;
+            /** @description The provider's message id, when it returned one. */
+            message_id?: string | null;
+            /** @description Transport that handled it (`resend`, `ses`, ...). */
+            provider: string;
+        };
+        /** @description Body of a test send (optional). */
+        TestSendRequest: {
+            /** @description `data` of the synthetic message (default: a short `forgebase.test` object). */
+            data?: Record<string, never> | null;
+        };
         /**
          * @description How the words of a keyword query combine.
          * @enum {string}
@@ -16729,6 +19341,10 @@ export interface components {
              * @description Dedup window in milliseconds.
              */
             dedup_window_ms: number;
+            /** @description What the topic's events are. */
+            description?: string | null;
+            /** @description Example of message `data`. */
+            example?: Record<string, never> | null;
             /** @description Labels. */
             labels: {
                 [key: string]: string;
@@ -16820,6 +19436,8 @@ export interface components {
         };
         /** @description Body of a topic change; absent fields keep their value. */
         TopicPatch: {
+            /** @description Removes the example. */
+            clear_example?: boolean;
             /** @description Removes the schema. */
             clear_schema?: boolean;
             /**
@@ -16827,6 +19445,10 @@ export interface components {
              * @description New dedup window.
              */
             dedup_window_ms?: number | null;
+            /** @description New description; an empty string removes it. */
+            description?: string | null;
+            /** @description New example of message `data`. */
+            example?: Record<string, never> | null;
             /** @description Replaces the labels. */
             labels?: {
                 [key: string]: string;
@@ -17309,6 +19931,31 @@ export interface components {
              */
             valid_days?: number | null;
         };
+        /** @description A page of usage rows. */
+        UsageReport: {
+            /** @description Whether the billing catalog was available for prices. */
+            cost_available: boolean;
+            /** @description Currency of the cost estimates, when there are any. */
+            currency?: string | null;
+            /** @description Always true. */
+            estimate: boolean;
+            /** @description Start of the period (RFC 3339). */
+            from: string;
+            /** @description Grouping level asked for. */
+            group_by: components["schemas"]["Level"];
+            /** @description The rows. */
+            items: components["schemas"]["UsageRow"][];
+            /** @description Page size. */
+            limit: number;
+            /** @description Rows skipped. */
+            offset: number;
+            /** @description Sort key used. */
+            sort: string;
+            /** @description End of the period, exclusive. */
+            to: string;
+            /** @description Rows matching before paging. */
+            total: number;
+        };
         /** @description A quota check, consumption or reservation. */
         UsageRequest: {
             /** @description Feature key. */
@@ -17338,6 +19985,31 @@ export interface components {
              */
             units?: number;
         };
+        /** @description Usage of one tenant (or tenant group). */
+        UsageRow: {
+            /**
+             * @description False for a metering row listed among environments: the events belong
+             *     to an organization or principal, not to one environment.
+             */
+            attributed: boolean;
+            cost?: components["schemas"]["CostEstimate"] | null;
+            /** @description Id at that level (`shared` for data that belongs to no tenant). */
+            id: string;
+            /** @description The level of this row (`environment`, `project`, `org`, `user`, `realm`, `shared`). */
+            level: string;
+            /** @description The metrics. */
+            metrics: {
+                [key: string]: components["schemas"]["MetricValue"];
+            };
+            /** @description Display name. */
+            name: string;
+            /** @description Organization id, when known. */
+            org?: string | null;
+            /** @description Project id, when known. */
+            project?: string | null;
+            /** @description Realm id, when known. */
+            realm?: string | null;
+        };
         /** @description What one run of the usage consumer did. */
         UsageRun: {
             /**
@@ -17365,6 +20037,18 @@ export interface components {
              * @description Credits not covered by balances.
              */
             shortfall: number;
+        };
+        /** @description Daily values of one scope. */
+        UsageSeries: {
+            /** @description Per metric, `[day, value]` pairs, oldest first. */
+            metrics: {
+                [key: string]: [
+                    string,
+                    number
+                ][];
+            };
+            /** @description The scope (`env:<id>`). */
+            scope: string;
         };
         /** @description Current usage of one feature of a subject. */
         UsageSummary: {
@@ -17660,6 +20344,113 @@ export interface components {
          * @enum {string}
          */
         Visibility: "private" | "authenticated" | "public";
+        /** @description One inbound webhook request (without headers and body). */
+        WebhookDelivery: {
+            /**
+             * @description Provider account it was for, when known (Razorpay key id, WeChat Pay
+             *     merchant id, App Store bundle id, Google Play package name).
+             */
+            account?: string | null;
+            /** @description SHA-256 of the whole body, hex (the event's `payload_hash`). */
+            body_sha256: string;
+            /**
+             * Format: int64
+             * @description Body size as received, in bytes.
+             */
+            body_size: number;
+            /** @description The body is stored (unverified deliveries over the budget are not). */
+            body_stored: boolean;
+            /** @description Only the first `body_max_bytes` are stored. */
+            body_truncated: boolean;
+            /** @description Client address (socket peer, or the trusted `X-Forwarded-For`). */
+            client_addr?: string | null;
+            /** @description Processing detail (`invoice_paid`, `stale`, `too_old`, ...) or the error. */
+            detail?: string | null;
+            /** @description Event id at the provider (verified deliveries). */
+            event_id?: string | null;
+            /** @description Event type. */
+            event_type?: string | null;
+            /** @description Id (`whd_…`). */
+            id: string;
+            /**
+             * Format: int64
+             * @description Verification and processing time in microseconds.
+             */
+            latency_us?: number | null;
+            /** @description Internal objects it touched. */
+            links: components["schemas"]["Links"];
+            /** @description `processing` when verified, else `verification`. */
+            outcome: string;
+            processing?: components["schemas"]["WebhookProcessing"] | null;
+            /** @description Provider named in the path. */
+            provider: string;
+            /** @description Why verification refused it (stable code and a fixed message). */
+            reason?: string | null;
+            /** @description Received. */
+            received_at: string;
+            /**
+             * Format: int64
+             * @description Operator replays.
+             */
+            replays: number;
+            /** @description When a re-verification accepted it. */
+            reverified_at?: string | null;
+            /**
+             * Format: int64
+             * @description Operator re-verifications.
+             */
+            reverify_attempts: number;
+            /** @description Last change. */
+            updated_at: string;
+            /** @description What verification made of it. */
+            verification: components["schemas"]["WebhookVerification"];
+        };
+        /**
+         * @description A delivery with its stored headers and body. Bodies can contain personal
+         *     data (names, emails, addresses): platform administrators only.
+         */
+        WebhookDeliveryDetail: components["schemas"]["WebhookDelivery"] & {
+            /** @description The stored body: text when it is UTF-8, else base64. */
+            body?: string | null;
+            /** @description `utf8` or `base64`. */
+            body_encoding?: string | null;
+            /** @description Allowlisted headers (lower-case names). */
+            headers: Record<string, never>;
+        };
+        /** @description A page of deliveries. */
+        WebhookDeliveryPage: {
+            /** @description Deliveries, newest first. */
+            items: components["schemas"]["WebhookDelivery"][];
+            /**
+             * Format: int64
+             * @description Page size.
+             */
+            limit: number;
+            /**
+             * Format: int64
+             * @description Rows skipped.
+             */
+            offset: number;
+            /**
+             * Format: int64
+             * @description All deliveries matching the filters.
+             */
+            total: number;
+        };
+        /** @description What a replay or re-verification did. */
+        WebhookDeliveryResult: {
+            /** @description The delivery afterwards. */
+            delivery: components["schemas"]["WebhookDelivery"];
+            /** @description Processing detail, or why it does not verify. */
+            detail?: string | null;
+            /**
+             * @description `applied`, `ignored`, `failed`, `already_applied` (the event was
+             *     processed before: nothing changed), `already_ignored` (it was
+             *     ignored before: nothing changed) or `unverified` (the stored delivery
+             *     does not verify with the current secrets: nothing was processed).
+             */
+            result: string;
+        };
         /** @description A webhook event received. */
         WebhookEvent: {
             /**
@@ -17692,6 +20483,54 @@ export interface components {
             event_id: string;
             /** @description `processed`, `ignored`, `duplicate` (already handled) or `failed`. */
             result: string;
+        };
+        /**
+         * @description What processing made of a verified delivery.
+         * @enum {string}
+         */
+        WebhookProcessing: "applied" | "ignored" | "duplicate" | "failed";
+        /**
+         * @description What verification made of a delivery.
+         * @enum {string}
+         */
+        WebhookVerification: "verified" | "signature_invalid" | "timestamp_out_of_tolerance" | "unknown_provider" | "malformed" | "rejected" | "error";
+        /** @description Latency numbers of one window of a regression. */
+        WindowStat: {
+            /**
+             * Format: int64
+             * @description Runs.
+             */
+            calls: number;
+            /**
+             * Format: double
+             * @description `errors / calls`.
+             */
+            error_rate: number;
+            /**
+             * Format: int64
+             * @description Failures.
+             */
+            errors: number;
+            /**
+             * Format: double
+             * @description Mean in milliseconds.
+             */
+            mean_ms: number;
+            /**
+             * Format: double
+             * @description Median in milliseconds.
+             */
+            p50_ms: number;
+            /**
+             * Format: double
+             * @description 95th percentile in milliseconds.
+             */
+            p95_ms: number;
+            /**
+             * Format: double
+             * @description 99th percentile in milliseconds.
+             */
+            p99_ms: number;
         };
         /** @description A worker that registered or claimed jobs. */
         Worker: {
@@ -24819,6 +27658,26 @@ export interface operations {
             };
         };
     };
+    doc_system_capabilities: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Every feature of this server */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Capabilities"];
+                };
+            };
+        };
+    };
     doc_system_config: {
         parameters: {
             query?: never;
@@ -26010,6 +28869,1178 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ErrorEnvelope"];
                 };
+            };
+        };
+    };
+    alerts_list_active: {
+        parameters: {
+            query?: {
+                /** @description info, warning or critical */
+                severity?: string;
+                /** @description pending or firing */
+                state?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Open alerts */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Alert"][];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not signed in */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not a platform administrator */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    alerts_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Alert id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Alert */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AlertDetail"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description alert_not_found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    alerts_history: {
+        parameters: {
+            query?: {
+                /** @description next_before of the previous page */
+                before?: string;
+                /** @description Active at or after (RFC 3339) */
+                from?: string;
+                /** @description 1-500, default 100 */
+                limit?: number;
+                /** @description Only this rule's alerts */
+                rule_id?: string;
+                /** @description pending, firing or resolved */
+                state?: string;
+                /** @description Active before (RFC 3339) */
+                to?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Alerts */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AlertPage"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not a platform administrator */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    alerts_list_deliveries: {
+        parameters: {
+            query?: {
+                /** @description 1-500, default 100 */
+                limit?: number;
+                /** @description Notifier id or name */
+                notifier?: string;
+                /** @description pending, sent or failed */
+                status?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deliveries */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AlertDeliveryPage"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    alerts_list_notifiers: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Notifiers */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AlertNotifier"][];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    alerts_create_notifier: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AlertNotifierInput"];
+            };
+        };
+        responses: {
+            /** @description Created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AlertNotifier"];
+                };
+            };
+            /** @description invalid_notifier */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description notifier_exists */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    alerts_get_notifier: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Notifier id or name */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Notifier */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AlertNotifier"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description notifier_not_found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    alerts_update_notifier: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Notifier id or name */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AlertNotifierInput"];
+            };
+        };
+        responses: {
+            /** @description Notifier */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AlertNotifier"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description notifier_not_found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    alerts_delete_notifier: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Notifier id or name */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description notifier_not_found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    alerts_test_notifier: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Notifier id or name */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The delivery (status sent or failed) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AlertDelivery"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description No such collection, record or index (or not visible to the caller) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description rate_limited */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    alerts_query: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AlertQueryInput"];
+            };
+        };
+        responses: {
+            /** @description Samples */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AlertQueryResult"];
+                };
+            };
+            /** @description Invalid expression */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    alerts_list_rules: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Rules */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AlertRule"][];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not a platform administrator */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    alerts_create_rule: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AlertRuleInput"];
+            };
+        };
+        responses: {
+            /** @description Created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AlertRule"];
+                };
+            };
+            /** @description invalid_alert_rule */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description alert_rule_exists */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    alerts_get_rule: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Rule id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Rule */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AlertRule"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description alert_rule_not_found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    alerts_delete_rule: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Rule id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description No such collection, record or index (or not visible to the caller) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description rule_read_only */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    alerts_update_rule: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Rule id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AlertRulePatch"];
+            };
+        };
+        responses: {
+            /** @description Rule */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AlertRule"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description alert_rule_not_found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description rule_read_only or rule_disabled_by_config */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    alerts_list_silences: {
+        parameters: {
+            query?: {
+                /** @description Include expired silences */
+                all?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Silences */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AlertSilence"][];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    alerts_create_silence: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AlertSilenceInput"];
+            };
+        };
+        responses: {
+            /** @description Created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AlertSilence"];
+                };
+            };
+            /** @description invalid_silence */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    alerts_get_silence: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Silence id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Silence */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AlertSilence"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description silence_not_found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    alerts_update_silence: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Silence id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AlertSilenceInput"];
+            };
+        };
+        responses: {
+            /** @description Silence */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AlertSilence"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description silence_not_found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    alerts_expire_silence: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Silence id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Expired */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AlertSilence"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description silence_not_found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };
@@ -29250,6 +33281,247 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ErrorEnvelope"];
                 };
+            };
+        };
+    };
+    billing_webhook_deliveries: {
+        parameters: {
+            query?: {
+                /** @description Only this provider event id */
+                event_id?: string;
+                /** @description Only this event type */
+                event_type?: string;
+                /** @description Received at or after (RFC 3339) */
+                from?: string;
+                /** @description Page size (1-500, default 50) */
+                limit?: number;
+                /** @description Rows to skip */
+                offset?: number;
+                /** @description applied, ignored, duplicate, failed, signature_invalid, timestamp_out_of_tolerance, unknown_provider, malformed, rejected or error */
+                outcome?: string;
+                /** @description Only this provider */
+                provider?: string;
+                /** @description Received before (RFC 3339) */
+                to?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deliveries */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WebhookDeliveryPage"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not a platform administrator */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    billing_webhook_delivery: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Delivery id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Delivery */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WebhookDeliveryDetail"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not a platform administrator */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No such delivery */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    billing_replay_webhook_delivery: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Delivery id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Replayed */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WebhookDeliveryResult"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not a platform administrator */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No such delivery */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description delivery_not_verified or body_not_stored */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    billing_reverify_webhook_delivery: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Delivery id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Verified again (see result) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WebhookDeliveryResult"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not a platform administrator */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No such delivery */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description delivery_already_verified, reverify_in_progress, not_reverifiable or body_not_stored */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };
@@ -32884,6 +37156,212 @@ export interface operations {
             };
         };
     };
+    mail_provider: {
+        parameters: {
+            query?: {
+                /** @description platform administrators: the realm whose provider to act on, or `*` for the instance's (default: the realm of the request) */
+                realm?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description `{realm, configured, config, created_at, updated_at}` */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    put_mail_provider: {
+        parameters: {
+            query?: {
+                /** @description platform administrators: the realm whose provider to act on, or `*` for the instance's (default: the realm of the request) */
+                realm?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": Record<string, never>;
+            };
+        };
+        responses: {
+            /** @description The stored configuration, secrets masked */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    delete_mail_provider: {
+        parameters: {
+            query?: {
+                /** @description platform administrators: the realm whose provider to act on, or `*` for the instance's (default: the realm of the request) */
+                realm?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Removed */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    test_mail: {
+        parameters: {
+            query?: {
+                /** @description platform administrators: the realm whose provider to act on, or `*` for the instance's (default: the realm of the request) */
+                realm?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TestMailInput"];
+            };
+        };
+        responses: {
+            /** @description Accepted by the provider */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TestMailResult"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
     send: {
         parameters: {
             query?: {
@@ -35587,6 +40065,65 @@ export interface operations {
             };
         };
     };
+    version_module: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Function name */
+                name: string;
+                /** @description Version */
+                version: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The module as deployed */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/wasm": number[];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description No such version, or a JavaScript/TypeScript version (`function_source_not_found`) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     version_source: {
         parameters: {
             query?: never;
@@ -35706,7 +40243,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Columns and rows */
+            /** @description Columns, rows and the engine (`age` or `portable`) */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -35715,7 +40252,7 @@ export interface operations {
                     "application/json": components["schemas"]["CypherResult"];
                 };
             };
-            /** @description Invalid or writing query (`cypher_invalid`, `cypher_read_only`, `cypher_error`, `cypher_timeout`), or no Apache AGE (`cypher_unsupported`) */
+            /** @description Invalid or writing query (`cypher_invalid`, `cypher_read_only`, `cypher_error`, `cypher_timeout`); portable engine: outside its subset (`cypher_unsupported`, naming the construct and position) or over a limit (`cypher_too_complex`) */
             400: {
                 headers: {
                     [name: string]: unknown;
@@ -35765,7 +40302,7 @@ export interface operations {
                     "application/json": components["schemas"]["CypherDropped"];
                 };
             };
-            /** @description No Apache AGE (`cypher_unsupported`) */
+            /** @description Apache AGE is not in use here (`cypher_unsupported`) */
             400: {
                 headers: {
                     [name: string]: unknown;
@@ -37013,6 +41550,1183 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["IndexRecommendations"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    insights_audit_search: {
+        parameters: {
+            query?: {
+                /** @description Events starting with this (login, api_key.) */
+                action?: string;
+                /** @description Exactly this actor */
+                actor?: string;
+                /** @description user, admin, service_account, api_key or anonymous */
+                actor_type?: string;
+                /** @description Collection of the resource concerned */
+                collection?: string;
+                /** @description `next_cursor` of the previous page */
+                cursor?: number;
+                /** @description At or after (RFC 3339 or YYYY-MM-DD) */
+                from?: string;
+                /** @description Client address */
+                ip?: string;
+                /** @description Page size (default 50, at most 1000) */
+                limit?: number;
+                /** @description desc (default) or asc */
+                order?: string;
+                /** @description success or failure */
+                outcome?: string;
+                /** @description Text in the details, event, resource id or user agent */
+                q?: string;
+                /** @description Request id */
+                request_id?: string;
+                /** @description Id of the resource concerned */
+                resource_id?: string;
+                /** @description Kind of the resource concerned */
+                resource_type?: string;
+                /** @description Before */
+                to?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Entries */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuditPageView"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    insights_audit_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Entry id */
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Entry */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuditEntryView"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description No such entry */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    insights_audit_related: {
+        parameters: {
+            query?: {
+                /** @description At most this many of each (default 100, at most 500) */
+                limit?: number;
+                /** @description Seconds either side (default 300, at most 3600) */
+                window_secs?: number;
+            };
+            header?: never;
+            path: {
+                /** @description Entry id */
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Entries */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuditRelatedView"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description No such entry */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    insights_audit_export: {
+        parameters: {
+            query?: {
+                /** @description csv (default) or jsonl */
+                format?: string;
+                /** @description At most this many entries (default 100000, at most 1000000) */
+                max_rows?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The entries as a download */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/csv": unknown;
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    insights_audit_summary: {
+        parameters: {
+            query?: {
+                /** @description At or after */
+                from?: string;
+                /** @description Before */
+                to?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Counts */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuditSummaryView"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    insights_flush: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description What was written */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FlushReport"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    insights_functions_list: {
+        parameters: {
+            query?: {
+                /** @description Start; default one hour before `to` */
+                from?: string;
+                /** @description Only this function */
+                function?: string;
+                /** @description End, exclusive */
+                to?: string;
+                /** @description Only this version */
+                version?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Functions */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FunctionStatList"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    insights_functions_get: {
+        parameters: {
+            query?: {
+                /** @description Start; default 24 hours before `to` */
+                from?: string;
+                /** @description End, exclusive */
+                to?: string;
+            };
+            header?: never;
+            path: {
+                /** @description Function name */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Function */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FunctionDetail"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Nothing in the range */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    insights_invocations_list: {
+        parameters: {
+            query?: {
+                /** @description `next_cursor` of the previous page */
+                cursor?: number;
+                /** @description Only executions that did not end ok */
+                errors?: boolean;
+                /** @description Only this function */
+                function?: string;
+                /** @description Page size (default 50, at most 500) */
+                limit?: number;
+                /** @description At least this long */
+                min_duration_ms?: number;
+                /** @description Executions of one request */
+                request_id?: string;
+                /** @description ok, failed, trap, fuel_exhausted, memory_limit, timeout, ... */
+                status?: string;
+                /** @description http, hook, job or test */
+                trigger?: string;
+                /** @description Only this version */
+                version?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Executions */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InvocationPage"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    insights_invocations_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Execution id */
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Execution */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InvocationDetail"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description No such execution */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    insights_queries_list: {
+        parameters: {
+            query?: {
+                /** @description Only this subsystem (data, jobs, queue, billing, ...) */
+                area?: string;
+                /** @description sqlite or postgres */
+                backend?: string;
+                /** @description Start (RFC 3339 or YYYY-MM-DD); default one hour before `to` */
+                from?: string;
+                /** @description Page size (default 50, at most 200) */
+                limit?: number;
+                /** @description Rows to skip */
+                offset?: number;
+                /** @description Only statements containing this text */
+                q?: string;
+                /** @description total_time (default), calls, mean, max, p50, p95, p99, errors, rows, slow */
+                sort?: string;
+                /** @description End, exclusive; default now */
+                to?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Statements */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StatementList"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    insights_queries_get: {
+        parameters: {
+            query?: {
+                /** @description Start; default 24 hours before `to` */
+                from?: string;
+                /** @description End, exclusive; default now */
+                to?: string;
+            };
+            header?: never;
+            path: {
+                /** @description Fingerprint from the list */
+                fingerprint: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Statement */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StatementDetail"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Nothing in the range */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    insights_queries_regressions: {
+        parameters: {
+            query?: {
+                /** @description Only this subsystem */
+                area?: string;
+                /** @description Baseline window before it, in seconds (default 86400) */
+                baseline?: number;
+                /** @description Runs needed in each window (default 20) */
+                min_calls?: number;
+                /** @description Smallest p95 growth in milliseconds (default 1) */
+                min_delta_ms?: number;
+                /** @description Smallest p95 ratio (default 2) */
+                min_ratio?: number;
+                /** @description End of the recent window; default now */
+                until?: string;
+                /** @description Recent window in seconds (default 3600) */
+                window?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Regressions, most costly first */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RegressionReport"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    insights_slow_queries_list: {
+        parameters: {
+            query?: {
+                /** @description Only this subsystem */
+                area?: string;
+                /** @description `next_cursor` of the previous page */
+                cursor?: number;
+                /** @description Only this statement shape */
+                fingerprint?: string;
+                /** @description Start; default 24 hours before `to` */
+                from?: string;
+                /** @description Page size (default 50, at most 500) */
+                limit?: number;
+                /** @description At least this long */
+                min_ms?: number;
+                /** @description Only statements containing this text */
+                q?: string;
+                /** @description End, exclusive; default now */
+                to?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Slow statements */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SlowStatementPage"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    insights_status: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Status */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StatementStatus"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    insights_usage_list: {
+        parameters: {
+            query?: {
+                /** @description Currency of the estimate (ISO 4217) */
+                currency?: string;
+                /** @description YYYY-MM-DD, or YYYY-MM for a month; default today / this month */
+                date?: string;
+                /** @description Custom range start (at most 400 days) */
+                from?: string;
+                /** @description environment (default), project, org or realm */
+                group_by?: string;
+                /** @description Page size (default 50, at most 500) */
+                limit?: number;
+                /** @description Only these metrics (comma-separated) */
+                metric?: string;
+                /** @description Rows to skip */
+                offset?: number;
+                /** @description Only this organization */
+                org?: string;
+                /** @description day or month */
+                period?: string;
+                /** @description Only this project */
+                project?: string;
+                /** @description Only this realm */
+                realm?: string;
+                /** @description A metric key or `cost` */
+                sort?: string;
+                /** @description Custom range end, exclusive */
+                to?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Usage */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UsageReport"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    insights_usage_metrics: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Metrics */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MetricList"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    insights_usage_rollup: {
+        parameters: {
+            query?: {
+                /** @description YYYY-MM-DD; default today */
+                day?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Done */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RollupResult"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    insights_usage_series: {
+        parameters: {
+            query: {
+                /** @description Start; default 30 days before `to` */
+                from?: string;
+                /** @description env:<environment id> */
+                scope: string;
+                /** @description End, exclusive */
+                to?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Daily values */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UsageSeries"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    insights_usage_top: {
+        parameters: {
+            query: {
+                /** @description Currency of the estimate */
+                currency?: string;
+                /** @description YYYY-MM-DD or YYYY-MM */
+                date?: string;
+                /** @description Custom range start */
+                from?: string;
+                /** @description environment (default), project, org or realm */
+                group_by?: string;
+                /** @description A metric key (storage.bytes, usage.api.requests, ...) or `cost` */
+                metric: string;
+                /** @description How many (default 10, at most 100) */
+                n?: number;
+                /** @description day or month */
+                period?: string;
+                /** @description Custom range end, exclusive */
+                to?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Largest first */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UsageReport"];
                 };
             };
             /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
@@ -43202,6 +48916,53 @@ export interface operations {
             };
         };
     };
+    queues_event_catalog: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Subscribable event types */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EventCatalog"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
     queues_list_snapshots: {
         parameters: {
             query?: never;
@@ -43773,6 +49534,139 @@ export interface operations {
             };
         };
     };
+    queues_list_push_attempts: {
+        parameters: {
+            query?: {
+                /** @description Only records with a lower id (the page's `next_before`) */
+                before?: number;
+                /** @description Page size, default 50, at most 500 */
+                limit?: number;
+                /** @description Only attempts of this message */
+                message_id?: string;
+                /** @description `success` or `failure` */
+                outcome?: string;
+                /** @description Only attempts at or after this RFC 3339 time */
+                since?: string;
+                /** @description `true`: only test sends; `false`: only deliveries */
+                test?: boolean;
+                /** @description Only attempts before this RFC 3339 time */
+                until?: string;
+            };
+            header?: never;
+            path: {
+                /** @description Subscription name */
+                sub: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description A page of attempts */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PushAttemptPage"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description No such collection, record or index (or not visible to the caller) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    queues_get_push_attempt: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Attempt id */
+                id: number;
+                /** @description Subscription name */
+                sub: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The attempt */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PushAttempt"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description `attempt_not_found` */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     queues_dead_letters: {
         parameters: {
             query?: {
@@ -44091,6 +49985,70 @@ export interface operations {
             };
         };
     };
+    queues_pause: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Subscription name */
+                sub: string;
+            };
+            cookie?: never;
+        };
+        /** @description Optional */
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["PauseRequest"] | null;
+            };
+        };
+        responses: {
+            /** @description The subscription */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["QueueSubscription"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description No such collection, record or index (or not visible to the caller) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
     queues_pull: {
         parameters: {
             query?: never;
@@ -44151,6 +50109,322 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ErrorEnvelope"];
                 };
+            };
+        };
+    };
+    queues_redrive: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Subscription name */
+                sub: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RedriveRequest"];
+            };
+        };
+        responses: {
+            /** @description Outcome */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RedriveResult"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description No such collection, record or index (or not visible to the caller) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    queues_resume: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Subscription name */
+                sub: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The subscription */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["QueueSubscription"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description No such collection, record or index (or not visible to the caller) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    queues_retry_now: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Subscription name */
+                sub: string;
+            };
+            cookie?: never;
+        };
+        /** @description Optional */
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["RetryRequest"] | null;
+            };
+        };
+        responses: {
+            /** @description Outcome */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RetryResult"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description No such collection, record or index (or not visible to the caller) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    queues_expire_previous_secret: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Subscription name */
+                sub: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The subscription */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["QueueSubscription"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description No such collection, record or index (or not visible to the caller) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    queues_rotate_secret: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Subscription name */
+                sub: string;
+            };
+            cookie?: never;
+        };
+        /** @description Optional; default grace 24 hours */
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["RotateSecretRequest"] | null;
+            };
+        };
+        responses: {
+            /** @description The new secret */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RotatedSecret"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description No such collection, record or index (or not visible to the caller) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not a webhook subscription (`not_webhook_subscription`) */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };
@@ -44279,6 +50553,84 @@ export interface operations {
             };
             /** @description A push subscription (`push_subscription`) */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    queues_test_push: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Subscription name */
+                sub: string;
+            };
+            cookie?: never;
+        };
+        /** @description Optional; an empty body sends the default test data */
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["TestSendRequest"] | null;
+            };
+        };
+        responses: {
+            /** @description The attempt (its outcome says whether the endpoint accepted it) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PushAttempt"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description No such collection, record or index (or not visible to the caller) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description A pull subscription (`not_push_subscription`) */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Too many test sends (`rate_limited`) */
+            429: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -45617,6 +51969,386 @@ export interface operations {
             };
             /** @description No such collection, record or index (or not visible to the caller) */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    slos_list: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description SLOs */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Slo"][];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    slos_create: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SloInput"];
+            };
+        };
+        responses: {
+            /** @description Created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Slo"];
+                };
+            };
+            /** @description invalid_slo */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description slo_exists */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    slos_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description SLO id or name */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description SLO */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Slo"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description slo_not_found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    slos_update: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description SLO id or name */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SloInput"];
+            };
+        };
+        responses: {
+            /** @description SLO */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Slo"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description slo_not_found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    slos_delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description SLO id or name */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description slo_not_found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    slos_status: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description SLO id or name */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Status */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SloStatus"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description slo_not_found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    slos_list_status: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Statuses */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SloStatus"][];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };

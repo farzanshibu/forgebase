@@ -1,5 +1,7 @@
 import { ApiError, NetworkError, RealtimeError } from "./errors";
 import type { Transport } from "./http";
+import { QueueWebhooksApi } from "./queue-webhooks";
+import type { Schemas } from "./types";
 
 /*
  * Durable topics and queues (`/api/v1/queues`, ADR-0022): `client.queues`.
@@ -14,6 +16,10 @@ export interface Topic {
   dedup_window_ms: number;
   schema?: unknown;
   source?: { collection: string; ops: string[] } | null;
+  /** What the topic's events are (shown in the event catalog). */
+  description?: string | null;
+  /** An example of message `data` (event catalog). */
+  example?: Record<string, unknown> | null;
   labels: Record<string, string>;
   published_total: number;
   published_bytes: number;
@@ -54,8 +60,18 @@ export interface QueueSubscription {
   dead_letter_topic?: string | null;
   ordering: boolean;
   push?: { kind: "webhook" | "function"; endpoint: string } | null;
-  /** Shown once, when a push subscription is created. */
+  /** Shown once, when a push subscription is created (and by `webhooks(sub).rotateSecret`). */
   push_secret?: string;
+  /** End of the grace window of the secret a rotation replaced: until then deliveries carry both signatures. */
+  push_secret_previous_expires_at?: string | null;
+  /** Push: pause delivery after this many consecutive failed attempts (`null`: never). */
+  pause_after_failures?: number | null;
+  /** When push delivery was paused; messages accumulate until `resume`. */
+  paused_at?: string | null;
+  /** Why it was paused (`auto: ...` for the circuit breaker). */
+  paused_reason?: string | null;
+  /** When the subscription deletes itself (set by `ttlMs`). */
+  expires_at?: string | null;
   labels: Record<string, string>;
   created_by: string;
   created_at: string;
@@ -110,6 +126,10 @@ export interface DeadLetter {
   at: string;
 }
 
+/** The event catalog: every topic the caller may read with its description, data schema, example and record event types. */
+export type EventCatalog = Schemas["EventCatalog"];
+export type CatalogTopic = Schemas["CatalogTopic"];
+
 export interface QueueSnapshot {
   name: string;
   subscription: string;
@@ -154,6 +174,50 @@ export interface CreateTopicOptions {
   dedupWindowMs?: number;
   /** JSON Schema (documented subset) that publishes are validated against. */
   schema?: unknown;
+  /** What the topic's events are, at most 1024 characters (shown in `catalog()`). */
+  description?: string;
+  /** An example of message `data` for the catalog; must satisfy `schema` when one is set. */
+  example?: Record<string, unknown>;
+  labels?: Record<string, string>;
+}
+
+/** Changes of `updateTopic`; what is left out stays as it is. */
+export interface UpdateTopicOptions {
+  retentionMs?: number;
+  /** `0` removes the size limit. */
+  retentionBytes?: number;
+  maxMessageBytes?: number;
+  dedupWindowMs?: number;
+  /** Applies to later publishes. */
+  schema?: unknown;
+  /** Removes the schema. */
+  clearSchema?: boolean;
+  /** An empty string removes it. */
+  description?: string;
+  example?: Record<string, unknown>;
+  /** Removes the example. */
+  clearExample?: boolean;
+  /** Replaces the labels. */
+  labels?: Record<string, string>;
+}
+
+/** Changes of `updateSubscription`; what is left out stays as it is. */
+export interface UpdateSubscriptionOptions {
+  ackDeadlineMs?: number;
+  /** `0` removes the limit. */
+  maxDeliveryAttempts?: number;
+  backoffBaseMs?: number;
+  backoffMaxMs?: number;
+  deadLetterTopic?: string;
+  clearDeadLetterTopic?: boolean;
+  push?: { kind: "webhook" | "function"; endpoint: string };
+  /** Turns push off: the subscription becomes a pull subscription. */
+  clearPush?: boolean;
+  /** `0` turns auto-pause off. */
+  pauseAfterFailures?: number;
+  /** Delete the subscription this long from now; `0` removes the expiry. */
+  ttlMs?: number;
+  /** Replaces the labels. */
   labels?: Record<string, string>;
 }
 
@@ -167,6 +231,10 @@ export interface CreateSubscriptionOptions {
   deadLetterTopic?: string;
   ordering?: boolean;
   push?: { kind: "webhook" | "function"; endpoint: string };
+  /** Push: pause delivery after this many consecutive failed attempts, 1 to 1000 (default: never). Resume with `webhooks(sub).resume()`. */
+  pauseAfterFailures?: number;
+  /** Delete the subscription this long after creation, 60 s to 31 days (default: never). */
+  ttlMs?: number;
   /** Where a new subscription starts reading: `"latest"` (default), `"earliest"` or a timestamp. */
   start?: "latest" | "earliest" | { time: string };
   labels?: Record<string, string>;
@@ -278,9 +346,42 @@ export class QueuesApi {
       max_message_bytes: o.maxMessageBytes,
       dedup_window_ms: o.dedupWindowMs,
       schema: o.schema,
+      description: o.description,
+      example: o.example,
       labels: o.labels,
     });
     return this.t.request(`${Q}/topics`, { method: "POST", body });
+  }
+
+  /** Changes a topic: retention, limits, schema, description, example, labels. */
+  updateTopic(name: string, o: UpdateTopicOptions): Promise<Topic> {
+    const body = compact({
+      retention_ms: o.retentionMs,
+      retention_bytes: o.retentionBytes,
+      max_message_bytes: o.maxMessageBytes,
+      dedup_window_ms: o.dedupWindowMs,
+      schema: o.schema,
+      clear_schema: o.clearSchema,
+      description: o.description,
+      example: o.example,
+      clear_example: o.clearExample,
+      labels: o.labels,
+    });
+    return this.t.request(`${Q}/topics/${enc(name)}`, { method: "PATCH", body });
+  }
+
+  /**
+   * The event catalog: every topic the caller may read with its description, data schema, example and, for a
+   * record-source topic, its event types (each with a subscription filter that selects it). `example_source` says where an
+   * example came from: `topic`, `schema` (generated) or `none`.
+   */
+  catalog(): Promise<EventCatalog> {
+    return this.t.request(`${Q}/catalog`);
+  }
+
+  /** Webhook delivery tooling of a push subscription: attempts, test send, redrive, retry, secret rotation, pause, resume. */
+  webhooks(subscription: string): QueueWebhooksApi {
+    return new QueueWebhooksApi(this.t, subscription);
   }
 
   /** Deletes a topic; `force` deletes its subscriptions too (without it a topic with subscriptions is refused: `topic_has_subscriptions`). */
@@ -339,10 +440,30 @@ export class QueuesApi {
       dead_letter_topic: o.deadLetterTopic,
       ordering: o.ordering,
       push: o.push,
+      pause_after_failures: o.pauseAfterFailures,
+      ttl_ms: o.ttlMs,
       start: o.start,
       labels: o.labels,
     });
     return this.t.request(`${Q}/subscriptions`, { method: "POST", body });
+  }
+
+  /** Changes a subscription: ack deadline, backoff, attempt limit, dead-letter topic, push target, auto-pause, expiry, labels. */
+  updateSubscription(name: string, o: UpdateSubscriptionOptions): Promise<QueueSubscription> {
+    const body = compact({
+      ack_deadline_ms: o.ackDeadlineMs,
+      max_delivery_attempts: o.maxDeliveryAttempts,
+      backoff_base_ms: o.backoffBaseMs,
+      backoff_max_ms: o.backoffMaxMs,
+      dead_letter_topic: o.deadLetterTopic,
+      clear_dead_letter_topic: o.clearDeadLetterTopic,
+      push: o.push,
+      clear_push: o.clearPush,
+      pause_after_failures: o.pauseAfterFailures,
+      ttl_ms: o.ttlMs,
+      labels: o.labels,
+    });
+    return this.t.request(`${Q}/subscriptions/${enc(name)}`, { method: "PATCH", body });
   }
 
   async deleteSubscription(name: string): Promise<void> {

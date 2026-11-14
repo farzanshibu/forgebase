@@ -1,5 +1,5 @@
 import { COMMIT_HEADER, CONSISTENCY_HEADER, CommitTokens, READ_AFTER_HEADER, type Consistency } from "./consistency";
-import { errorFromResponse, InvalidResponseError, NetworkError, parseRetryAfter } from "./errors";
+import { errorCodeOf, errorFromResponse, InvalidResponseError, isQuotaCode, NetworkError, parseRetryAfter } from "./errors";
 
 export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 
@@ -27,6 +27,9 @@ export const DEFAULT_RETRY: Required<Omit<RetryOptions, "sleep" | "random">> = {
   maxRetryAfterMs: 60_000,
   statuses: [429, 503],
 };
+
+/** Most conditional-read entries kept per client (least recently used go first). */
+const ETAG_CACHE_SIZE = 256;
 
 const IDEMPOTENT = new Set(["GET", "HEAD", "OPTIONS", "PUT", "DELETE"]);
 
@@ -56,6 +59,18 @@ export interface RequestOptions {
   text?: boolean;
   /** Return the raw `Response` (streams, downloads). Errors are still thrown. */
   raw?: boolean;
+  /**
+   * Resolve with the `Response` instead of throwing for these statuses (`"any"`: every status). Retries still run first, so a
+   * 429 or 503 comes back only after the retry budget is spent. Used for functions that answer 404 or 500 on purpose and for
+   * `304 Not Modified`.
+   */
+  acceptStatus?: number[] | "any";
+  /**
+   * GET only: a conditional read. The client remembers the parsed body and `ETag` of each URL it read this way, sends
+   * `If-None-Match` next time and answers a `304` with the remembered value. Servers that ignore `If-None-Match` simply
+   * answer `200` and the remembered value is replaced.
+   */
+  conditional?: boolean;
   /** Skip credentials (sign-in, sign-up, ...). */
   anonymous?: boolean;
   /** Override the retry policy for this call. */
@@ -86,6 +101,8 @@ export class Transport {
   readonly commitTokens: CommitTokens;
   /** Default consistency of every call. */
   consistency: Consistency;
+  /** Conditional-read cache: URL -> `ETag` and the value read with it. */
+  private readonly etags = new Map<string, { etag: string; value: unknown }>();
 
   constructor(opts: {
     baseUrl: string;
@@ -125,20 +142,50 @@ export class Transport {
   }
 
   async request<T = unknown>(path: string, opts: RequestOptions = {}): Promise<T> {
-    const res = await this.send(path, opts);
+    const cacheKey = opts.conditional && !opts.raw && (opts.method ?? "GET").toUpperCase() === "GET" ? this.url(path, opts.query) : undefined;
+    const known = cacheKey === undefined ? undefined : this.etags.get(cacheKey);
+    let o = opts;
+    if (cacheKey !== undefined) {
+      const accept = opts.acceptStatus === "any" ? "any" : [...(opts.acceptStatus ?? []), 304];
+      o = { ...opts, acceptStatus: accept, headers: known ? { ...opts.headers, "If-None-Match": known.etag } : opts.headers };
+    }
+    const res = await this.send(path, o);
     if (opts.raw) return res as T;
+    if (cacheKey !== undefined && res.status === 304 && known) {
+      void res.body?.cancel().catch(() => undefined);
+      this.etags.delete(cacheKey);
+      this.etags.set(cacheKey, known); // most recently used
+      return known.value as T;
+    }
     if (res.status === 204) return undefined as T;
     const text = await res.text();
-    if (opts.text) return text as T;
-    if (!text) return undefined as T;
-    try {
-      return JSON.parse(text) as T;
-    } catch {
-      throw new InvalidResponseError("response was not valid JSON", res.status);
+    let value: unknown;
+    if (opts.text) value = text;
+    else if (!text) value = undefined;
+    else {
+      try {
+        value = JSON.parse(text);
+      } catch {
+        throw new InvalidResponseError("response was not valid JSON", res.status);
+      }
     }
+    const etag = res.headers.get("etag");
+    if (cacheKey !== undefined && res.ok) {
+      this.etags.delete(cacheKey);
+      if (etag) {
+        this.etags.set(cacheKey, { etag, value });
+        if (this.etags.size > ETAG_CACHE_SIZE) this.etags.delete(this.etags.keys().next().value as string);
+      }
+    }
+    return value as T;
   }
 
-  /** Sends with retries; resolves with a 2xx `Response`, throws a typed error otherwise. */
+  /** Forgets the values remembered by conditional reads. */
+  clearConditionalCache(): void {
+    this.etags.clear();
+  }
+
+  /** Sends with retries; resolves with a 2xx `Response` (or a status listed in `acceptStatus`), throws a typed error otherwise. */
   async send(path: string, opts: RequestOptions = {}): Promise<Response> {
     const method = (opts.method ?? "GET").toUpperCase();
     const cfg = opts.retry === false ? { ...this.retry, maxRetries: 0 } : { ...this.retry, ...stripFns(opts.retry) };
@@ -187,8 +234,10 @@ export class Transport {
         continue;
       }
 
-      const retriable =
+      let retriable =
         cfg.statuses.includes(res.status) || ((res.status === 502 || res.status === 504) && IDEMPOTENT.has(method));
+      // A 429 for an exhausted quota (`quota_exceeded`) is not transient: waiting does not help, so it is never retried.
+      if (retriable && res.status === 429 && attempt < cfg.maxRetries && isQuotaCode(errorCodeOf(await readBody(res.clone())))) retriable = false;
       if (retriable && attempt < cfg.maxRetries) {
         const ra = parseRetryAfter(res.headers.get("retry-after"));
         if (ra === undefined || ra <= cfg.maxRetryAfterMs) {
@@ -198,6 +247,7 @@ export class Transport {
           continue;
         }
       }
+      if (opts.acceptStatus === "any" || opts.acceptStatus?.includes(res.status)) return res;
       throw errorFromResponse(res.status, await readBody(res), res.headers);
     }
   }

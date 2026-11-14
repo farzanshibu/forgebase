@@ -81,6 +81,25 @@ export interface InvokeOptions {
   retry?: RequestOptions["retry"];
 }
 
+export interface InvokeRawOptions extends InvokeOptions {
+  /**
+   * `invoke` only: resolve with `{ status, ok, headers, body }` for every status instead of throwing for 4xx / 5xx, so a
+   * function that answers 404 or 500 on purpose can be called like any other. Retries of 429 / 503 still run first.
+   * A network failure still throws.
+   */
+  raw: true;
+}
+
+/** What `invoke(..., { raw: true })` resolves with. */
+export interface InvokeResult<T = unknown> {
+  status: number;
+  /** `true` for 2xx. */
+  ok: boolean;
+  headers: Headers;
+  /** Parsed JSON for a JSON response, the text for any other, `undefined` when empty. */
+  body: T | string | undefined;
+}
+
 const seg = encodeURIComponent;
 
 const wire = <T extends object>(o: T): T => Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined)) as T;
@@ -219,21 +238,32 @@ export class FunctionsApi {
    * more raises the matching error (`NotFoundError`, `ValidationError`, ...); use `invokeRaw` and the transport's
    * error `body` when you need its exact answer.
    */
-  async invoke<T = unknown>(name: string, input?: InvokeBody, opts: InvokeOptions = {}): Promise<T> {
-    const res = await this.invokeRaw(name, input, opts);
-    if (res.status === 204) return undefined as T;
+  invoke<T = unknown>(name: string, input: InvokeBody, opts: InvokeRawOptions): Promise<InvokeResult<T>>;
+  invoke<T = unknown>(name: string, input?: InvokeBody, opts?: InvokeOptions): Promise<T>;
+  async invoke<T = unknown>(name: string, input?: InvokeBody, opts: InvokeOptions | InvokeRawOptions = {}): Promise<T | InvokeResult<T>> {
+    const raw = "raw" in opts && opts.raw === true;
+    const res = await this.invokeRaw(name, input, { ...opts, ...(raw ? { anyStatus: true } : {}) });
+    if (res.status === 204 || res.status === 304) return raw ? { status: res.status, ok: res.ok, headers: res.headers, body: undefined } : (undefined as T);
     const text = await res.text();
-    if (!text) return undefined as T;
-    if (!isJsonType(res.headers.get("content-type"))) return text as T;
-    try {
-      return JSON.parse(text) as T;
-    } catch {
-      throw new InvalidResponseError("function response was not valid JSON", res.status);
+    let body: T | string | undefined;
+    if (!text) body = undefined;
+    else if (!isJsonType(res.headers.get("content-type"))) body = text;
+    else {
+      try {
+        body = JSON.parse(text) as T;
+      } catch {
+        if (!raw) throw new InvalidResponseError("function response was not valid JSON", res.status);
+        body = text;
+      }
     }
+    return raw ? { status: res.status, ok: res.ok, headers: res.headers, body } : (body as T);
   }
 
-  /** Same as `invoke` but resolves with the 2xx `Response` (headers, binary bodies, streams). */
-  invokeRaw(name: string, input?: InvokeBody, opts: InvokeOptions = {}): Promise<Response> {
+  /**
+   * Same as `invoke` but resolves with the `Response` (headers, binary bodies, streams). Only 2xx unless `anyStatus: true`,
+   * which resolves with the `Response` of any status.
+   */
+  invokeRaw(name: string, input?: InvokeBody, opts: InvokeOptions & { anyStatus?: boolean } = {}): Promise<Response> {
     const sub = (opts.path ?? "").replace(/^\/+/, "");
     const path = `/api/v1/functions/${seg(name)}/invoke${sub ? `/${sub.split("/").map(seg).join("/")}` : ""}`;
     const o: RequestOptions = {
@@ -242,6 +272,7 @@ export class FunctionsApi {
       headers: opts.headers,
       signal: opts.signal,
       retry: opts.retry,
+      ...(opts.anyStatus ? { acceptStatus: "any" as const } : {}),
     };
     if (input !== undefined && input !== null) {
       if (isRawBody(input)) o.rawBody = input;

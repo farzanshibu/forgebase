@@ -21,11 +21,19 @@ const check = args.includes("--check");
 const docPath = resolve(root, flag("--file") ?? "openapi/openapi.json");
 const url = flag("--url");
 
+/** The checked-in format (shared with sdk/rust/openapi): compact, object keys sorted, one trailing newline. */
+const canonical = (v: unknown): unknown =>
+  Array.isArray(v)
+    ? v.map(canonical)
+    : v !== null && typeof v === "object"
+      ? Object.fromEntries(Object.keys(v).sort().map((k) => [k, canonical((v as Record<string, unknown>)[k])]))
+      : v;
+
 if (url) {
   const res = await fetch(`${url.replace(/\/+$/, "")}/api/openapi.json`);
   if (!res.ok) throw new Error(`GET /api/openapi.json -> ${res.status}`);
   const doc: unknown = await res.json();
-  writeFileSync(resolve(root, "openapi/openapi.json"), `${JSON.stringify(doc, null, 2)}\n`);
+  writeFileSync(resolve(root, "openapi/openapi.json"), `${JSON.stringify(canonical(doc))}\n`);
 }
 
 const doc = JSON.parse(readFileSync(url ? resolve(root, "openapi/openapi.json") : docPath, "utf8")) as Parameters<typeof openapiTS>[0];

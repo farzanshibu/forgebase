@@ -69,6 +69,8 @@ export interface CypherResult {
   rows: unknown[][];
   /** More rows matched than `limit`. */
   truncated: boolean;
+  /** The engine that answered: `age` (Apache AGE on the derived graph) or `portable` (SQL over the canonical tables, ADR-0034). */
+  engine: "age" | "portable" | (string & {});
 }
 
 export interface GraphPage<T> {
@@ -342,8 +344,9 @@ export class GraphApi {
   }
 
   /**
-   * Read-only openCypher over the tenant's derived Apache AGE graph (needs `engine:graph_cypher` and PostgreSQL
-   * with AGE). One query with a final `RETURN` (no `RETURN *`); parameters are `$name`.
+   * Read-only openCypher (needs `engine:graph_cypher`): on PostgreSQL with Apache AGE it runs over the tenant's derived graph
+   * (`result.engine === "age"`), elsewhere the portable engine answers from the canonical tables (`"portable"`, ADR-0034;
+   * see `fb.system.capabilities()`). One query with a final `RETURN` (no `RETURN *`); parameters are `$name`.
    *
    * The first query of a tenant builds the graph: that call fails with a `ConflictError` whose code is
    * `graph_materialising` (`body.error.job_id` names the job); retry after it finishes (`stats().cypher.state === "ready"`).

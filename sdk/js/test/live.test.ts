@@ -414,6 +414,163 @@ describe.skipIf(!BIN)("live server", () => {
     });
   });
 
+  describe("operations: capabilities, webhook tooling, alerts, insights, mail provider", () => {
+    it("reads the capabilities and the engine of openCypher", async () => {
+      const caps = await admin.system.capabilities();
+      expect(["sqlite", "postgres"]).toContain(caps.backend);
+      expect(caps.features.length).toBeGreaterThan(0);
+      const f = caps.features[0]!;
+      expect(typeof f.feature).toBe("string");
+      expect(typeof f.engine).toBe("string");
+      expect(typeof f.state).toBe("string");
+      expect(((await admin.system.info()) as { database?: { capabilities?: unknown } }).database?.capabilities).toBeTruthy();
+    });
+
+    it("webhook tooling: test send, attempts, secret rotation, pause, redrive and the catalog", async () => {
+      const q = admin.queues;
+      const topic = await q.createTopic("orders", { description: "Order lifecycle events", example: { order: 1, status: "created" } });
+      expect(topic.description).toBe("Order lifecycle events");
+      const sub = await q.createSubscription("orders-push", "orders", { push: { kind: "webhook", endpoint: "https://hooks.example.test/in" }, pauseAfterFailures: 50 });
+      const secret = sub.push_secret!;
+      expect(secret.startsWith("whsec_")).toBe(true);
+      expect(sub.pause_after_failures).toBe(50);
+      expect((await q.getSubscription("orders-push")).push_secret).toBeFalsy();
+
+      // Loopback targets are refused up front; a `.test` host never resolves, so the test attempt fails and is recorded.
+      await expect(q.createSubscription("orders-local", "orders", { push: { kind: "webhook", endpoint: "https://127.0.0.1:9/hook" } })).rejects.toMatchObject({ status: 400, code: "push_endpoint_blocked" });
+      const w = q.webhooks("orders-push");
+      const a = await w.test({ hello: "world" });
+      expect(a.test).toBe(true);
+      expect(a.subscription).toBe("orders-push");
+      expect(a.message_id.startsWith("test-")).toBe(true);
+      expect(JSON.stringify(a.request_headers)).not.toContain(secret);
+      expect(a.error_class ?? a.status).toBeTruthy();
+
+      const page = await w.attempts({ test: true, limit: 10 });
+      expect(page.items.map((x) => x.id)).toEqual([a.id]);
+      expect((await w.attempt(a.id)).endpoint).toBe("https://hooks.example.test/in");
+      await expect(w.attempt(a.id + 1000)).rejects.toBeInstanceOf(NotFoundError);
+      expect((await w.attempts({ test: false })).items).toEqual([]);
+
+      const rot = await w.rotateSecret({ graceMs: 60_000 });
+      expect(rot.push_secret).not.toBe(secret);
+      expect(rot.previous_expires_at).toBeTruthy();
+      expect((await q.getSubscription("orders-push")).push_secret_previous_expires_at).toBeTruthy();
+      expect((await w.expirePreviousSecret()).push_secret_previous_expires_at).toBeFalsy();
+
+      const paused = await w.pause({ reason: "maintenance" });
+      expect(paused.paused_reason).toBe("maintenance");
+      expect((await w.resume()).paused_at).toBeFalsy();
+      expect((await w.retry()).count).toBe(0);
+      expect((await w.redrive({ all: true })).redriven).toEqual([]);
+      expect((await w.redrive({ ids: [123456] })).not_found).toEqual([123456]);
+
+      await q.createSubscription("orders-pull", "orders");
+      await expect(q.webhooks("orders-pull").test()).rejects.toMatchObject({ status: 409, code: "not_push_subscription" });
+      const entry = (await q.catalog()).topics.find((t) => t.topic === "orders");
+      expect(entry?.example).toEqual({ order: 1, status: "created" });
+      expect(entry?.description).toBe("Order lifecycle events");
+    });
+
+    it("alert rules: built-ins are listed, custom rules go through create, update, get and delete", async () => {
+      const rules = admin.alerts.rules;
+      const builtin = await rules.list();
+      expect(builtin.length).toBeGreaterThan(0);
+      await expect(rules.update(builtin[0]!.id, { expr: "1 > 0" })).rejects.toMatchObject({ status: 409, code: "rule_read_only" });
+      const input = { name: "sdk-high-error-rate", expr: "forgebase_http_requests_total", op: ">", threshold: 1_000_000, for: "1m", severity: "warning", labels: { team: "sdk" } } as const;
+      const rule = await rules.create(input);
+      expect(rule.name).toBe("sdk-high-error-rate");
+      await expect(rules.create(input)).rejects.toMatchObject({ status: 409, code: "alert_rule_exists" });
+      expect((await rules.get(rule.id)).name).toBe("sdk-high-error-rate");
+      expect((await rules.update(rule.id, { enabled: false })).enabled).toBe(false);
+      await expect(rules.create({ name: "bad", expr: "this is (not", op: ">", threshold: 1 })).rejects.toBeInstanceOf(ValidationError);
+      await rules.delete(rule.id);
+      await expect(rules.get(rule.id)).rejects.toBeInstanceOf(NotFoundError);
+      expect(Array.isArray(await admin.alerts.active())).toBe(true);
+      expect((await admin.alerts.history({ limit: 5 })).items.length).toBeLessThanOrEqual(5);
+      await admin.alerts.query("forgebase_http_requests_total");
+      expect(Array.isArray(await admin.slos.list())).toBe(true);
+    });
+
+    it("insights: status, statements, usage and a streamed audit export", async () => {
+      const i = admin.insights;
+      const status = await i.status();
+      expect((status as { enabled?: boolean }).enabled).toBe(true);
+      await i.flush();
+      expect((await i.queries({ limit: 5 })).items.length).toBeLessThanOrEqual(5);
+      await i.regressions();
+      await i.slow();
+      await i.metrics();
+      await i.usage();
+      await i.functions();
+      await i.invocations();
+      // The admin sign-in is an audit event: search it, then stream the same rows as CSV and JSONL.
+      const page = await i.audit({ limit: 50 });
+      expect(page.items.length).toBeGreaterThan(0);
+      const csv: string[] = [];
+      for await (const line of await i.exportAudit({}, { format: "csv", maxRows: 100 })) csv.push(line);
+      expect(csv[0]).toMatch(/id/);
+      expect(csv[0]).toMatch(/event/);
+      const rows: { id: unknown }[] = [];
+      for await (const r of (await i.exportAudit({}, { format: "jsonl", maxRows: 100 })).records<{ id: unknown }>()) rows.push(r);
+      expect(rows.length).toBeGreaterThan(0);
+      expect(rows.length).toBe(csv.length - 1);
+      expect((await i.auditEntry(String(page.items[0]!.id))).id).toBe(page.items[0]!.id);
+      await expect(new ForgeBase(base).insights.status()).rejects.toBeInstanceOf(AuthenticationError);
+    });
+
+    it("mail provider: read it, set the log provider, test it and remove it", async () => {
+      const email = admin.customize.email;
+      const before = await email.provider();
+      expect(before.realm).toBeTruthy();
+      expect(typeof before.configured).toBe("boolean");
+      const set = await email.putProvider({ provider: "log", fromAddress: "noreply@acme.test" });
+      expect(set.configured).toBe(true);
+      expect(set.config).toMatchObject({ provider: "log" });
+      await expect(email.putProvider({ provider: "resend" })).rejects.toBeInstanceOf(ValidationError);
+      expect((await email.testProvider("me@acme.test")).provider).toBe("log");
+      await email.deleteProvider();
+      await expect(email.deleteProvider()).rejects.toBeInstanceOf(NotFoundError);
+    });
+
+    it("billing webhook inspector: lists deliveries (none yet) and refuses an unknown one", async () => {
+      const page = await admin.billing.webhookDeliveries.list({ provider: "stripe", limit: 5 });
+      expect(page.items).toEqual([]);
+      expect(page.total).toBe(0);
+      await expect(admin.billing.webhookDeliveries.get("does-not-exist")).rejects.toBeInstanceOf(NotFoundError);
+    });
+
+    it("functions that answer 404 or 500 on purpose, and a conditional read of a stored object", async () => {
+      const source = [
+        'import { serve } from "forgebase";',
+        "serve((req) => {",
+        "  if (req.url.endsWith('/boom')) return new Response('boom', { status: 500 });",
+        "  return new Response(JSON.stringify({ error: 'no such thing' }), { status: 404, headers: { 'content-type': 'application/json' } });",
+        "});",
+        "",
+      ].join("\n");
+      await admin.functions.deploy({ name: "teapot", source, language: "javascript", access: "public" });
+      await expect(admin.functions.invoke("teapot", undefined, { method: "GET" })).rejects.toBeInstanceOf(NotFoundError);
+      const missing = await admin.functions.invoke<{ error: string }>("teapot", undefined, { method: "GET", raw: true });
+      expect(missing).toMatchObject({ status: 404, ok: false, body: { error: "no such thing" } });
+      const boom = await admin.functions.invoke("teapot", undefined, { method: "GET", path: "boom", raw: true });
+      // The server answers a function's 5xx with its own error envelope; raw mode hands it over instead of throwing.
+      expect(boom).toMatchObject({ status: 500, ok: false });
+      expect(boom.body).toBeTruthy();
+
+      await admin.storage.buckets.create({ name: "etag-demo" });
+      const b = admin.storage.from("etag-demo");
+      await b.put("note.txt", "hello", { contentType: "text/plain" });
+      expect(await b.text("note.txt", { conditional: true })).toBe("hello");
+      expect(await b.text("note.txt", { conditional: true })).toBe("hello"); // answered by a 304
+      const etag = (await b.download("note.txt")).headers.get("etag");
+      expect(etag).toBeTruthy();
+      expect((await b.download("note.txt", { ifNoneMatch: etag! })).status).toBe(304);
+      await b.put("note.txt", "changed", { contentType: "text/plain" });
+      expect(await b.text("note.txt", { conditional: true })).toBe("changed");
+    });
+  });
+
   it("reports server health", async () => {
     expect(await new ForgeBase(base).health()).toBe(true);
     expect(await new ForgeBase("http://127.0.0.1:1", { retry: { maxRetries: 0 } }).health()).toBe(false);

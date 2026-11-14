@@ -261,3 +261,35 @@ describe("sha256Hex", () => {
     expect(await sha256Hex(new Blob([bytes]))).toBe(want);
   });
 });
+
+describe("storage conditional reads", () => {
+  const notModified = () => new Response(null, { status: 304, headers: { etag: '"abc"' } });
+  const file = (body: string, etag: string) => new Response(body, { status: 200, headers: { "content-type": "text/plain", etag } });
+
+  it("download({ ifNoneMatch }) sends the header and hands back the 304 Response", async () => {
+    const { f, s } = setup(notModified(), file("hello", '"def"'));
+    const res = await s.from("b").download("k", { ifNoneMatch: '"abc"' });
+    expect(res.status).toBe(304);
+    expect(f.calls[0]!.headers["If-None-Match"]).toBe('"abc"');
+    const fresh = await s.from("b").download("k", { ifNoneMatch: '"zzz"' });
+    expect(fresh.status).toBe(200);
+    expect(await fresh.text()).toBe("hello");
+  });
+
+  it("without ifNoneMatch a 404 still throws", async () => {
+    const { s } = setup(json(404, errBody("not_found", "no such object")));
+    await expect(s.from("b").download("k")).rejects.toBeInstanceOf(NotFoundError);
+  });
+
+  it("text({ conditional }) and json({ conditional }) answer a 304 from memory and follow changes", async () => {
+    const { f, s } = setup(file("v1", '"a"'), notModified(), file("v2", '"b"'), file('{"n":1}', '"j"'), new Response(null, { status: 304, headers: { etag: '"j"' } }));
+    const bucket = s.from("b");
+    expect(await bucket.text("t", { conditional: true })).toBe("v1");
+    expect(await bucket.text("t", { conditional: true })).toBe("v1");
+    expect(f.calls[1]!.headers["If-None-Match"]).toBe('"a"');
+    expect(await bucket.text("t", { conditional: true })).toBe("v2");
+    expect(await bucket.json<{ n: number }>("j", { conditional: true })).toEqual({ n: 1 });
+    expect(await bucket.json<{ n: number }>("j", { conditional: true })).toEqual({ n: 1 });
+    expect(f.calls[4]!.headers["If-None-Match"]).toBe('"j"');
+  });
+});

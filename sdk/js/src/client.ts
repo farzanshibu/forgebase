@@ -1,4 +1,6 @@
 import { AccessApi } from "./access";
+import { AlertsApi, SlosApi } from "./alerts";
+import { InsightsApi } from "./insights";
 import { CreditsApi } from "./credits";
 import { CustomizeApi } from "./customize";
 import { DocumentsApi } from "./documents";
@@ -83,6 +85,12 @@ export class ForgeBase {
   readonly customize: CustomizeApi;
   /** Server administration: features, config, topology, backups, DB logins, extensions. */
   readonly system: SystemApi;
+  /** Alert rules, alerts, silences and notifiers (`/api/v1/alerts`). Platform administrators. */
+  readonly alerts: AlertsApi;
+  /** Service level objectives and their status (`/api/v1/slos`). Platform administrators. */
+  readonly slos: SlosApi;
+  /** Statement statistics, regressions, usage, function profiles, audit search and export (`/api/v1/insights`). Administrators. */
+  readonly insights: InsightsApi;
   readonly transport: Transport;
   private readonly mgr: AuthManager;
 
@@ -117,6 +125,9 @@ export class ForgeBase {
     this.identity = new IdentityApi(this.transport, this.mgr);
     this.customize = new CustomizeApi(this.transport);
     this.system = new SystemApi(this.transport);
+    this.alerts = new AlertsApi(this.transport);
+    this.slos = new SlosApi(this.transport);
+    this.insights = new InsightsApi(this.transport);
     const mgr = this.mgr;
     this.realtime = new RealtimeClient({
       baseUrl: this.transport.baseUrl,

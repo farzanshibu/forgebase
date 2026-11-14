@@ -105,6 +105,15 @@ export class WebhookVerificationError extends ForgeBaseError {
 
 const QUOTA_CODES = /quota|limit_exceeded|usage_limit/i;
 
+/** `true` for the error codes of an exhausted quota (`quota_exceeded`, ...): waiting does not help, so they are never retried. */
+export const isQuotaCode = (code: unknown): boolean => typeof code === "string" && QUOTA_CODES.test(code);
+
+/** The `error.code` of a parsed error body, when there is one. */
+export const errorCodeOf = (body: unknown): string | undefined => {
+  const code = (body as { error?: { code?: unknown } } | null | undefined)?.error?.code;
+  return typeof code === "string" ? code : undefined;
+};
+
 /** Builds the right error class from a failed response. */
 export function errorFromResponse(status: number, body: unknown, headers: Headers): ApiError {
   const env = (body as { error?: Record<string, unknown> } | null | undefined)?.error;
@@ -120,7 +129,7 @@ export function errorFromResponse(status: number, body: unknown, headers: Header
     retryAfter: ra === undefined ? undefined : ra / 1000,
     body,
   };
-  if (status === 429) return QUOTA_CODES.test(code) ? new QuotaExceededError(init) : new RateLimitError(init);
+  if (status === 429) return isQuotaCode(code) ? new QuotaExceededError(init) : new RateLimitError(init);
   if (status === 401) return new AuthenticationError(init);
   if (status === 403) return new PermissionError(init);
   if (status === 404) return new NotFoundError(init);

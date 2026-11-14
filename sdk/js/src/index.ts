@@ -8,7 +8,7 @@ export { BillingApi, BillingStoreApi } from "./billing";
 export type { HostedPage, StoreCheckoutInput, StoreProduct, StoreProvider, StorePurchase, StoreReceipt } from "./billing";
 export {
   BillingCatalogApi, BillingCouponsApi, BillingCustomersApi, BillingInvoicesApi, BillingOrdersApi, BillingPortalApi, BillingPricesApi,
-  BillingProductsApi, BillingProvidersApi, BillingSettingsApi, BillingSubjectList, BillingSubscriptionsApi, BillingTaxRatesApi,
+  BillingProductsApi, BillingProvidersApi, BillingSettingsApi, BillingWebhookDeliveriesApi, BillingSubjectList, BillingSubscriptionsApi, BillingTaxRatesApi,
 } from "./billing-admin";
 export type {
   BillingCancelInput, BillingChangePlanInput, BillingCheckout, BillingCoupon, BillingCouponInput, BillingCreditNote, BillingCreditNoteInput,
@@ -16,7 +16,7 @@ export type {
   BillingListInvoicesOptions, BillingMaintenanceReport, BillingOrder, BillingOrderInput, BillingOrderPage, BillingPayment,
   BillingPaymentCollection, BillingPaymentMethodInput, BillingPortal, BillingPrice, BillingPriceInput, BillingProduct, BillingProductInput,
   BillingProrationPreview, BillingProvider, BillingProviderInput, BillingRefund, BillingSettings, BillingSettingsInput, BillingStats,
-  BillingStatsOptions, BillingSubjectListOptions, BillingSubscribeInput, BillingSubscription, BillingSubscriptionStatus, BillingTaxRate,
+  BillingStatsOptions, BillingSubjectListOptions, BillingWebhookDeliveriesQuery, BillingWebhookDelivery, BillingWebhookDeliveryDetail, BillingWebhookDeliveryPage, BillingWebhookDeliveryResult, BillingSubscribeInput, BillingSubscription, BillingSubscriptionStatus, BillingTaxRate,
   BillingTaxRateInput, BillingUsageMeter, BillingUsageMeterPage, BillingUsageMetersOptions,
 } from "./billing-admin";
 export { EntitlementsApi } from "./entitlements";
@@ -45,12 +45,12 @@ export type {
   NodeAdded, PromoteCheck, JoinToken, Operation as DatabaseOperation, Placement as TenantPlacement, PlacementPage as TenantPlacementPage,
   RebalancePlan, RetiredData, Snapshot as BackupSnapshot, SnapshotManifest, VerifyReport as BackupVerifyReport, PruneResult as BackupPruneResult,
   DbLogin, DbLoginSecret, ExtensionInfo, AddNodeInput, AddShardInput, UpdateShardInput, PlacementsOptions, CreateSnapshotOptions,
-  Retention as BackupRetention, DbLoginInput,
+  Retention as BackupRetention, DbLoginInput, Capabilities, Capability,
 } from "./system";
 export { KvApi, KvNamespace, kvBytes, kvText } from "./kv";
 export type {
   KvArg, KvBatchResult, KvBin, KvChannel, KvKey, KvListSide, KvMessage, KvNamespaceInfo, KvReply, KvScanOptions, KvScanPage,
-  KvSetOptions, KvStats, KvStreamAddOptions, KvStreamEntry, KvStreamRangeOptions, KvStreamReadOptions, KvSubscribeOptions,
+  KvSetOptions, KvStats, KvStreamAddOptions, KvStreamEntry, KvStreamRangeOptions, KvStreamReadOptions, KvSubscribeOptions, KvGap,
   KvSubscription, KvType, KvValue,
 } from "./kv";
 export { SqlApi, sqlRows } from "./sql";
@@ -72,7 +72,7 @@ export type {
 export { FunctionsApi, FunctionSecretsApi, FunctionKvRulesApi } from "./functions";
 export type {
   FunctionAccess, FunctionDeployed, FunctionDeployInput, FunctionExecutionLog, FunctionHook, FunctionInfo, FunctionKvRule, FunctionLanguage,
-  FunctionLimits, FunctionLogsOptions, FunctionSecretInfo, FunctionVersion, FunctionVersionSource, InvokeBody, InvokeOptions,
+  FunctionLimits, FunctionLogsOptions, FunctionSecretInfo, FunctionVersion, FunctionVersionSource, InvokeBody, InvokeOptions, InvokeRawOptions, InvokeResult,
 } from "./functions";
 export { CreditsApi, CreditRatesApi, CreditStatsApi, CreditUsageCursorApi } from "./credits";
 export type {
@@ -107,7 +107,7 @@ export { AgreementsApi, BrandingApi, CustomizeApi, DomainsApi, EmailApi, PublicC
 export type {
   AcceptItem, Agreement, AgreementAcceptance, AgreementRef, AssetUpload, Branding, BrandingAssetKind, BrandingInput, CustomDomain,
   DomainVerification, DomainVerifyResult, EmailDeliveriesQuery, EmailDelivery, EmailDeliveryStatus, EmailPreview, EmailTemplate,
-  EmailTemplateInput, PublicBranding, RealmScope,
+  EmailTemplateInput, PublicBranding, RealmScope, MailProviderConfig, MailProviderKind, MailProviderState, TestMailResult,
 } from "./customize";
 export { JobFailedError, JobsApi, WorkflowBuilder, isFinalJob, isFinalWorkflow, workflow } from "./jobs";
 export type {
@@ -115,8 +115,25 @@ export type {
   WaitOptions, Workflow, WorkflowDetail, WorkflowSpec, WorkflowStatus, WorkflowStep,
 } from "./jobs";
 export { QueuesApi } from "./queues";
+export { QueueWebhooksApi } from "./queue-webhooks";
 export type {
-  AckResult, CreateSubscriptionOptions, CreateTopicOptions, DeadLetter, Delivery, PublishMessage, PublishOptions, Published, PullOptions,
+  AttemptsQuery, PushAttempt, PushAttemptPage, PushOutcome, Redrive, RedriveResult, RetryResult, RotatedSecret,
+} from "./queue-webhooks";
+export { AlertNotifiersApi, AlertRulesApi, AlertSilencesApi, AlertsApi, SlosApi } from "./alerts";
+export type {
+  Alert, AlertDelivery, AlertDeliveryPage, AlertDetail, AlertHistoryQuery, AlertNotificationsQuery, AlertNotifier, AlertNotifierInput,
+  AlertPage, AlertQueryResult, AlertRule, AlertRuleInput, AlertRulePatch, AlertSeverity, AlertSilence, AlertSilenceInput, AlertState, Slo,
+  SloInput, SloStatus,
+} from "./alerts";
+export { AuditExport, InsightsApi } from "./insights";
+export type {
+  AuditEntry, AuditExportFormat, AuditExportOptions, AuditPage, AuditQuery, AuditRelated, AuditSummary, FlushReport, FunctionDetail,
+  FunctionStatList, InvocationDetail, InvocationPage, InvocationsQuery, MetricList, QueriesQuery, RegressionReport, RegressionsQuery,
+  RollupResult, SlowQueriesQuery, SlowStatementPage, StatementDetail, StatementList, StatementStatus, TimeRange, UsageQuery, UsageReport,
+  UsageSeries,
+} from "./insights";
+export type {
+  AckResult, CatalogTopic, EventCatalog, UpdateSubscriptionOptions, UpdateTopicOptions, CreateSubscriptionOptions, CreateTopicOptions, DeadLetter, Delivery, PublishMessage, PublishOptions, Published, PullOptions,
   QueueMessage, QueueSnapshot, QueueStream, QueueSubscription, ReceivedMessage, SubscriptionMetrics, Topic, TopicMetrics,
   SubscribeOptions as QueueSubscribeOptions,
 } from "./queues";
