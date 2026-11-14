@@ -920,7 +920,7 @@ const OBSERVABILITY: &[SettingDef] = &[
         "observability.otlp.protocol",
         "Export format",
         Enum,
-        "http/protobuf (the default, understood by every collector) or http/json.",
+        "The wire format of the export: http/protobuf (the default, understood by every collector) or http/json.",
     )
     .options(&["http/protobuf", "http/json"])
     .env("FORGEBASE_OTLP_PROTOCOL"),
