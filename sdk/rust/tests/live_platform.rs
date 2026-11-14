@@ -68,6 +68,26 @@ async fn identity_realm_provider_presets_oauth_clients_and_service_accounts() {
             "secrets never leave the server"
         );
     }
+    let ms = RealmProviderConfig::preset(ProviderPreset::Microsoft, "ms-client", "ms-secret").tenant("organizations");
+    assert_eq!(
+        providers.put("eu", "entra", &ms).await.expect("microsoft preset").kind,
+        "microsoft"
+    );
+    let gl = RealmProviderConfig::preset(ProviderPreset::Gitlab, "gl-client", "gl-secret")
+        .base_url("https://gitlab.example.test");
+    assert_eq!(
+        providers.put("eu", "gitlab", &gl).await.expect("gitlab preset").kind,
+        "gitlab"
+    );
+    let bad_tenant =
+        RealmProviderConfig::preset(ProviderPreset::Microsoft, "id", "secret").tenant("contoso.onmicrosoft.com");
+    assert!(
+        providers
+            .put("eu", "entra2", &bad_tenant)
+            .await
+            .expect_err("a tenant domain name is refused")
+            .is_validation()
+    );
     let oidc = RealmProviderConfig::preset(ProviderPreset::Oidc, "oidc-client", "oidc-secret")
         .set("issuer", "https://login.example.test");
     let r = providers.put("eu", "okta", &oidc).await;

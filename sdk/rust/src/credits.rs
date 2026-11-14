@@ -10,7 +10,7 @@ use std::sync::Arc;
 use serde::Serialize;
 use serde_json::{Value, json};
 
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::generated::{
     AuditReport, Balance, BalanceHistory, ConsumptionStats, CreditSummary, CreditsMaintenanceReport, EntryKind,
     Interval, LedgerEntry, LedgerPage, Lot, Posted, Rate, RateBasis, Reversal, UsageChargePage,
@@ -294,7 +294,7 @@ impl CreditsApi {
     pub async fn lots(&self, o: &LotsOptions) -> Result<Vec<Lot>> {
         let r = Req::get("/api/v1/credits/lots").q_opt("subject", o.subject.as_deref());
         let r = if o.all { r.q("all", "true") } else { r };
-        items(self.t.value(r).await?, "lots")
+        self.t.items(r).await
     }
 
     /// One page of ledger entries in `seq` order; pass `next` back as `after` for the following page.
@@ -395,11 +395,6 @@ impl CreditsApi {
     }
 }
 
-fn items<T: serde::de::DeserializeOwned>(v: Value, what: &str) -> Result<Vec<T>> {
-    serde_json::from_value(v.get("items").cloned().unwrap_or_else(|| Value::Array(Vec::new())))
-        .map_err(|e| Error::InvalidResponse(format!("{what}: {e}")))
-}
-
 /// Prices of metered features in credits: `client.credits().rates()`.
 #[derive(Clone)]
 pub struct CreditRatesApi {
@@ -409,7 +404,7 @@ pub struct CreditRatesApi {
 impl CreditRatesApi {
     /// Every price.
     pub async fn list(&self) -> Result<Vec<Rate>> {
-        items(self.t.value(Req::get("/api/v1/credits/rates")).await?, "rates")
+        self.t.items(Req::get("/api/v1/credits/rates")).await
     }
 
     /// Sets the price of a feature (platform administrators).

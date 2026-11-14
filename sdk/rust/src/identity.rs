@@ -15,13 +15,7 @@ use serde_json::{Value, json};
 use crate::auth::{SignInOptions, SignInResult};
 use crate::error::{Error, Result};
 use crate::generated::AuthKeyCreated;
-use crate::http::{Req, Transport, seg};
-
-/// Pulls the `items` array of a list answer into `T`.
-fn items<T: serde::de::DeserializeOwned>(v: &Value, what: &str) -> Result<Vec<T>> {
-    let arr = v.get("items").cloned().unwrap_or_else(|| Value::Array(Vec::new()));
-    serde_json::from_value(arr).map_err(|e| Error::InvalidResponse(format!("{what}: {e}")))
-}
+use crate::http::{Req, Transport, decode_items as items, seg};
 
 fn decode<T: serde::de::DeserializeOwned>(v: Value, what: &str) -> Result<T> {
     serde_json::from_value(v).map_err(|e| Error::InvalidResponse(format!("{what}: {e}")))
@@ -671,10 +665,11 @@ pub struct OidcKeys {
     pub items: Vec<OidcKey>,
 }
 
-/// Login provider kinds the server knows: the OAuth presets and the generic OIDC kind.
+/// Login provider kinds the server knows: the OAuth presets of ADR-0039 and the generic OIDC kind.
 ///
-/// A provider's `kind` is a string on the wire; these are the values ADR-0039 lists. Pass
-/// [`ProviderPreset::as_str`] as `kind` in a [`RealmProviderConfig`].
+/// A provider's `kind` is a string on the wire; pass [`ProviderPreset::as_str`] as `kind` in a
+/// [`RealmProviderConfig`]. The presets decide endpoints, scopes, claim mapping and email trust;
+/// `microsoft`, `gitlab` and `keycloak` take `tenant` / `base_url` (see the `RealmProviderConfig` helpers).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ProviderPreset {
@@ -690,10 +685,24 @@ pub enum ProviderPreset {
     Wechat,
     /// Discord.
     Discord,
-    /// Bitbucket.
-    Bitbucket,
     /// Any OpenID Connect issuer (discovery or explicit endpoints).
     Oidc,
+    /// Microsoft Entra ID (`tenant`: `common`, `organizations`, `consumers` or a tenant GUID).
+    Microsoft,
+    /// GitLab.com or self-hosted GitLab (`base_url`).
+    Gitlab,
+    /// Sign in with Slack.
+    Slack,
+    /// Sign In with LinkedIn (OpenID Connect).
+    Linkedin,
+    /// Twitch.
+    Twitch,
+    /// Bitbucket Cloud.
+    Bitbucket,
+    /// Spotify (never trusts the address as verified).
+    Spotify,
+    /// A Keycloak realm (`base_url` + `tenant` = realm name).
+    Keycloak,
 }
 
 impl ProviderPreset {
@@ -707,8 +716,15 @@ impl ProviderPreset {
             Self::Facebook => "facebook",
             Self::Wechat => "wechat",
             Self::Discord => "discord",
-            Self::Bitbucket => "bitbucket",
             Self::Oidc => "oidc",
+            Self::Microsoft => "microsoft",
+            Self::Gitlab => "gitlab",
+            Self::Slack => "slack",
+            Self::Linkedin => "linkedin",
+            Self::Twitch => "twitch",
+            Self::Bitbucket => "bitbucket",
+            Self::Spotify => "spotify",
+            Self::Keycloak => "keycloak",
         }
     }
 }
@@ -773,6 +789,37 @@ impl RealmProviderConfig {
     #[must_use]
     pub fn set(mut self, key: &str, value: impl Into<Value>) -> Self {
         self.extra.insert(key.to_owned(), value.into());
+        self
+    }
+
+    /// Microsoft: `common` (default), `organizations`, `consumers` or a tenant GUID; Keycloak: the realm name.
+    #[must_use]
+    pub fn tenant(self, tenant: &str) -> Self {
+        self.set("tenant", tenant)
+    }
+
+    /// GitLab and Keycloak: the server's base URL.
+    #[must_use]
+    pub fn base_url(self, url: &str) -> Self {
+        self.set("base_url", url)
+    }
+
+    /// Microsoft multi-tenant (`common`, `organizations`): the tenant GUIDs allowed to sign in.
+    #[must_use]
+    pub fn allowed_tenants(self, tenants: &[&str]) -> Self {
+        self.set("allowed_tenants", json!(tenants))
+    }
+
+    /// Free authorize parameters such as `prompt`, or Slack's `team` (protocol parameters are refused).
+    #[must_use]
+    pub fn authorize_param(mut self, key: &str, value: &str) -> Self {
+        let entry = self
+            .extra
+            .entry("authorize_params".to_owned())
+            .or_insert_with(|| json!({}));
+        if let Value::Object(m) = entry {
+            m.insert(key.to_owned(), json!(value));
+        }
         self
     }
 }

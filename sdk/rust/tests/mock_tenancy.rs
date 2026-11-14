@@ -549,6 +549,15 @@ async fn identity_realms_providers_presets_and_sms() {
         )
     );
     pr.delete("eu", "bb").await.expect("delete provider");
+    let ms = RealmProviderConfig::preset(ProviderPreset::Microsoft, "id", "secret")
+        .tenant("organizations")
+        .allowed_tenants(&["tid-1"])
+        .authorize_param("prompt", "select_account");
+    assert_eq!(
+        serde_json::to_value(&ms).expect("json"),
+        json!({"kind": "microsoft", "client_id": "id", "client_secret": "secret", "tenant": "organizations",
+            "allowed_tenants": ["tid-1"], "authorize_params": {"prompt": "select_account"}})
+    );
     for (preset, name) in [
         (ProviderPreset::Google, "google"),
         (ProviderPreset::Github, "github"),
@@ -558,6 +567,13 @@ async fn identity_realms_providers_presets_and_sms() {
         (ProviderPreset::Discord, "discord"),
         (ProviderPreset::Bitbucket, "bitbucket"),
         (ProviderPreset::Oidc, "oidc"),
+        (ProviderPreset::Microsoft, "microsoft"),
+        (ProviderPreset::Gitlab, "gitlab"),
+        (ProviderPreset::Slack, "slack"),
+        (ProviderPreset::Linkedin, "linkedin"),
+        (ProviderPreset::Twitch, "twitch"),
+        (ProviderPreset::Spotify, "spotify"),
+        (ProviderPreset::Keycloak, "keycloak"),
     ] {
         assert_eq!(preset.as_str(), name);
     }

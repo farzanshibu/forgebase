@@ -353,8 +353,7 @@ impl VectorApi {
 
     /// Collections of the tenant, by name.
     pub async fn list(&self) -> Result<Vec<VectorCollection>> {
-        let v = self.t.value(Req::get(format!("{V}/collections"))).await?;
-        items(&v, "collections")
+        self.t.items(Req::get(format!("{V}/collections"))).await
     }
 
     /// Creates a collection with its vector fields. A taken name is a conflict.
@@ -366,11 +365,6 @@ impl VectorApi {
     pub async fn stats(&self) -> Result<VectorStats> {
         self.t.json(Req::get(format!("{V}/stats"))).await
     }
-}
-
-fn items<T: serde::de::DeserializeOwned>(v: &Value, what: &str) -> Result<Vec<T>> {
-    serde_json::from_value(v.get("items").cloned().unwrap_or_else(|| Value::Array(Vec::new())))
-        .map_err(|e| Error::InvalidResponse(format!("{what}: {e}")))
 }
 
 /// One vector collection: `client.vector().collection("docs")`.
@@ -487,8 +481,7 @@ pub struct VectorFieldsApi {
 impl VectorFieldsApi {
     /// The collection's fields.
     pub async fn list(&self) -> Result<Vec<VectorField>> {
-        let v = self.t.value(Req::get(self.base.clone())).await?;
-        items(&v, "fields")
+        self.t.items(Req::get(self.base.clone())).await
     }
 
     /// Adds a field. Existing items have no vector for it until upserted again.
