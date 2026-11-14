@@ -52,6 +52,8 @@ export default function SettingField({ setting: s, value, error, onChange }: {
     control = <Sel id={id} aria-label={s.label} size="md" className="w-full" value={String(value ?? "")} disabled={locked} options={s.options ?? []} onChange={(v) => onChange(v)} />;
   } else if (s.type === "list" && Array.isArray(value) && (value as unknown[]).some((v) => typeof v === "object" && v !== null)) {
     control = <ObjectList id={id} label={s.label} value={value} describedBy={describedBy} />;
+  } else if (s.type === "list" && locked) {
+    control = <ReadOnlyList id={id} label={s.label} value={value} describedBy={describedBy} />;
   } else if (s.type === "list") {
     control = (
       <Textarea
@@ -84,7 +86,7 @@ export default function SettingField({ setting: s, value, error, onChange }: {
   return (
     <div className="space-y-1.5 py-3 text-sm" data-setting={s.key}>
       <div className="flex flex-wrap items-center gap-2">
-        <label htmlFor={s.type === "bool" || s.secret || s.type === "map" ? undefined : id} className="font-medium">
+        <label htmlFor={s.type === "bool" || s.secret || s.type === "map" || (s.type === "list" && locked) ? undefined : id} className="font-medium">
           {s.label}
         </label>
         <code className="text-xs text-muted-foreground">{s.key}</code>
@@ -103,6 +105,19 @@ export default function SettingField({ setting: s, value, error, onChange }: {
         </p>
       )}
     </div>
+  );
+}
+
+/** A list of words that cannot be edited here (`tls.acme.domains`, `tls.acme.challenges`): one chip each, in order, or "None set". */
+function ReadOnlyList({ id, label, value, describedBy }: { id: string; label: string; value: SettingValue; describedBy: string }) {
+  const items = Array.isArray(value) ? (value as unknown[]).map(String) : typeof value === "string" && value ? [value] : [];
+  if (items.length === 0) return <p id={id} className="text-xs text-muted-foreground" aria-describedby={describedBy}>None set.</p>;
+  return (
+    <ul id={id} aria-label={label} aria-describedby={describedBy} className="flex flex-wrap gap-1.5">
+      {items.map((v, i) => (
+        <li key={`${i}-${v}`} className="rounded border border-border bg-muted/40 px-1.5 font-mono text-xs leading-5">{v}</li>
+      ))}
+    </ul>
   );
 }
 
