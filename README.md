@@ -52,6 +52,7 @@ Status of each work package, and what is still to do, is in
 - [Deployment](docs/deployment.md): binary, Docker, systemd, configuration, upgrades.
 - [Choosing a backend](docs/choosing-a-backend.md) and [capacity planning](docs/capacity-planning.md): SQLite or PostgreSQL, replicas and shards, sizing; [benchmarks](docs/benchmarks.md).
 - [Observability](docs/observability.md): OpenTelemetry tracing, alert rules and notifiers, SLOs.
+- [Operations runbooks](docs/operations/): [disaster recovery and restore drills](docs/operations/disaster-recovery.md), [HA and failover](docs/operations/ha-failover.md), [alerting](docs/operations/alerting-runbook.md), [upgrades](docs/operations/upgrades.md).
 - [SDKs](docs/sdk.md): JavaScript SDK, and the status of the Rust SDK.
 - [Architecture decisions](docs/adr/).
 

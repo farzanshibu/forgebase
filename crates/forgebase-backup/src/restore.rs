@@ -394,6 +394,11 @@ fn items_of(m: &Manifest, replace_key: bool) -> Vec<String> {
     if replace_key {
         items.push(KEY_FILE.to_owned());
     }
+    // The sealed TLS state comes back with the backup that carries it; a
+    // backup without it leaves the target's own alone.
+    if m.includes_tls() && !m.database_only {
+        items.push(crate::backup::TLS_DIR.to_owned());
+    }
     items
 }
 

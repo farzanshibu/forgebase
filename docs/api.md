@@ -250,6 +250,8 @@ Snapshots of the database and storage over HTTP (FB-83). Administrators only.
 | `GET`/`DELETE /system/backups/{id}` | Read or delete one snapshot. `latest` names the newest (also for `verify`). |
 | `POST /system/backups/{id}/verify` | Check the manifest, every file's size and SHA-256, and that no extra files exist. SQLite: open the copied database read-only (integrity, foreign keys, migration state). PostgreSQL: `pg_verifybackup` (bundled) or `pg_restore --list` (external), and the schema version against this build. |
 | `POST /system/backups/prune` | Apply a retention policy (`keep_last`, `max_age_days`). |
+| `POST /system/backups/{id}/drill[?sample=N]` | Restore the snapshot into a scratch directory, start a quiet server on it, check the data and delete the copy (ADR-0041). Runs as the job `system.backup_drill`: answers `202 {job_id, backup_id}`; the job's result is the report. `409 drill_running`, `503 drill_unavailable` (not the `forgebase` command). |
+| `GET /system/backups/{id}/drills` | Recorded drills of a snapshot (`latest` allowed), newest first, each with `outcome`, `rto_seconds`, `rpo_seconds`, `phases` and every check. |
 
 Restore is not an HTTP operation, because it replaces files the running server
 has open. Stop the server and run `forgebase restore <id|latest> --force`

@@ -846,14 +846,32 @@ const KV: &[SettingDef] = &[SettingDef::new(
 )
 .env("FORGEBASE_KV_TENANT_MAX_BYTES")];
 
-const BACKUP: &[SettingDef] = &[SettingDef::new(
+const BACKUP: &[SettingDef] = &[
+    SettingDef::new(
     "backup.source",
     "Cluster backup source",
     Enum,
     "Where a cluster backup copies each database set's data from: primary reads the set's primary; replica reads a healthy replica of the set, so the backup does not load the primary. A single-set backup always reads the primary. Use replica once each set has a replica.",
 )
 .options(&["primary", "replica"])
-.env("FORGEBASE_BACKUP_SOURCE")];
+.env("FORGEBASE_BACKUP_SOURCE"),
+    SettingDef::new(
+        "backup.include_tls",
+        "Back up the sealed certificate state",
+        Enum,
+        "Copies the sealed tls folder (the ACME account and certificate) into every backup, so a restored server keeps its certificate instead of asking the authority for a new one. The default is auto: it does this when Transport Layer Security (TLS) mode is acme, and not otherwise. The folder is sealed with the master key: a backup without the master key cannot read it.",
+    )
+    .options(&["auto", "true", "false"])
+    .env("FORGEBASE_BACKUP_INCLUDE_TLS"),
+    SettingDef::new(
+        "backup.drill_schedule",
+        "Scheduled restore drill",
+        Text,
+        "A cron expression (UTC, five fields, such as 30 4 * * 0 for Sundays at 04:30) that restores the newest snapshot into a scratch folder, starts a quiet server on it and checks the data, then deletes it. Leave empty for no scheduled drill; run one by hand with forgebase backup drill.",
+    )
+    .example("30 4 * * 0")
+    .env("FORGEBASE_BACKUP_DRILL_SCHEDULE"),
+];
 
 const VECTOR: &[SettingDef] = &[SettingDef::new(
     "vector.enabled",

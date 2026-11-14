@@ -16,6 +16,9 @@
 //!   lookup.
 //! * [`transfer`]: export and import of collections and configuration with
 //!   ids preserved.
+//! * [`drill`]: restore drills (ADR-0041): the result and history types, the
+//!   metrics and the job the REST API and `[backup] drill_schedule` run.
+//! * [`stats`]: record and storage counts stored in the manifest, compared by a drill.
 //! * [`extension`]: the admin REST API under `/api/v1/system/backups`.
 //!
 //! **Master key.** `auth/master.key` seals every stored secret. It is *not*
@@ -23,6 +26,7 @@
 //! records its fingerprint and restore refuses a different key.
 
 pub mod backup;
+pub mod drill;
 pub mod error;
 mod fsutil;
 pub mod http;
@@ -31,6 +35,7 @@ pub mod pg;
 pub mod pre_migration;
 pub mod restore;
 pub mod snapshots;
+pub mod stats;
 pub mod topology;
 pub mod transfer;
 pub mod verify;
@@ -56,17 +61,28 @@ pub struct BackupService {
     layout: DataLayout,
     store: SnapshotStore,
     pg: Option<PgSource>,
+    drills: drill::DrillStore,
+    jobs: Option<forgebase_jobs::JobService>,
+    /// Whether this process can run a drill (it is the `forgebase` command).
+    can_drill: bool,
+    /// Snapshots carry the sealed `tls/` directory (`[backup] include_tls`).
+    include_tls: bool,
 }
 
 impl BackupService {
     /// A service for the data directory `layout` backed by `db`.
     pub fn new(db: Database, layout: DataLayout) -> Self {
         let store = SnapshotStore::new(&layout);
+        let drills = drill::DrillStore::new(&layout);
         Self {
             db,
             layout,
             store,
             pg: None,
+            drills,
+            jobs: None,
+            can_drill: false,
+            include_tls: false,
         }
     }
 
@@ -76,6 +92,27 @@ impl BackupService {
     pub fn with_pg(mut self, pg: PgSource) -> Self {
         self.pg = Some(pg);
         self
+    }
+
+    /// Lets the REST API queue restore drills as jobs on `jobs`
+    /// (`can_drill`: a [`drill::DrillRunner`] exists in this process).
+    #[must_use]
+    pub fn with_drills(mut self, jobs: forgebase_jobs::JobService, can_drill: bool) -> Self {
+        self.jobs = Some(jobs);
+        self.can_drill = can_drill;
+        self
+    }
+
+    /// Makes snapshots carry the sealed `tls/` directory (`[backup] include_tls`, ADR-0041).
+    #[must_use]
+    pub fn with_tls(mut self, include: bool) -> Self {
+        self.include_tls = include;
+        self
+    }
+
+    /// The drill history.
+    pub fn drills(&self) -> &drill::DrillStore {
+        &self.drills
     }
 
     /// The snapshot store.
@@ -107,6 +144,7 @@ impl BackupService {
         if opts.pg.is_none() {
             opts.pg.clone_from(&self.pg);
         }
+        opts.include_tls |= self.include_tls;
         self.store.create(&self.db, &self.layout, opts, retention).await
     }
 }

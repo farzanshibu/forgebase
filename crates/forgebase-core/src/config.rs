@@ -147,8 +147,13 @@ tenant_max_bytes = 0        # FORGEBASE_KV_TENANT_MAX_BYTES
 # where each set's data is copied from. "replica" runs pg_basebackup against a
 # healthy replica of the set, so backups do not load the primary; a set
 # without a healthy replica is copied from its primary and the manifest says so.
+# include_tls copies the sealed `tls/` directory (ACME account and certificate)
+# into every backup; unset, it is on with `[tls] mode = "acme"`. drill_schedule
+# (cron, UTC) runs a restore drill of the newest snapshot (ADR-0041); unset, off.
 [backup]
 source = "primary"          # FORGEBASE_BACKUP_SOURCE (primary | replica)
+# include_tls = true        # FORGEBASE_BACKUP_INCLUDE_TLS
+# drill_schedule = "30 4 * * 0"   # FORGEBASE_BACKUP_DRILL_SCHEDULE
 
 [auth]
 # Client address from the last X-Forwarded-For entry. Only behind a reverse
@@ -615,11 +620,65 @@ pub enum BackupSource {
 
 config_choice!(BackupSource { Primary => "primary", Replica => "replica" });
 
-/// `[backup]`: backup settings (FB-179).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+/// Whether backups carry the sealed `tls/` directory, `[backup] include_tls`
+/// (ADR-0041): `true`, `false`, or `auto` (the default: on with
+/// `[tls] mode = "acme"`, off otherwise). A file may write a TOML boolean.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum BackupTls {
+    /// On when the server uses ACME.
+    #[default]
+    Auto,
+    /// Always.
+    On,
+    /// Never.
+    Off,
+}
+
+config_choice!(BackupTls { Auto => "auto", On => "true", Off => "false" });
+
+impl Serialize for BackupTls {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for BackupTls {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Raw {
+            Bool(bool),
+            Text(String),
+        }
+        match Raw::deserialize(d)? {
+            Raw::Bool(true) => Ok(Self::On),
+            Raw::Bool(false) => Ok(Self::Off),
+            Raw::Text(t) => t.parse().map_err(serde::de::Error::custom),
+        }
+    }
+}
+
+/// `[backup]`: backup settings (FB-179, ADR-0041).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct BackupSettings {
     /// `[backup] source`: `primary` or `replica`.
     pub source: BackupSource,
+    /// `[backup] include_tls`: copy the sealed `tls/` directory into backups.
+    pub include_tls: BackupTls,
+    /// `[backup] drill_schedule`: cron expression (UTC) of the scheduled
+    /// restore drill; `None`: no scheduled drill.
+    pub drill_schedule: Option<String>,
+}
+
+impl BackupSettings {
+    /// Whether backups carry `<data_dir>/tls/` under TLS mode `mode`.
+    pub fn includes_tls(&self, mode: tls_config::TlsMode) -> bool {
+        match self.include_tls {
+            BackupTls::On => true,
+            BackupTls::Off => false,
+            BackupTls::Auto => mode == tls_config::TlsMode::Acme,
+        }
+    }
 }
 
 /// Default most realtime connections one principal may hold (FIX-9).
@@ -1422,6 +1481,12 @@ impl Config {
         if let Some(v) = o.backup_source {
             self.backup.source = v;
         }
+        if let Some(v) = o.backup_include_tls {
+            self.backup.include_tls = v;
+        }
+        if let Some(v) = &o.backup_drill_schedule {
+            self.backup.drill_schedule = Some(v.trim().to_owned()).filter(|s| !s.is_empty());
+        }
         if let Some(v) = o.billing_enabled {
             self.billing.enabled = v;
         }
@@ -1523,6 +1588,10 @@ pub struct ConfigOverrides {
     pub kv_tenant_max_bytes: Option<u64>,
     /// `[backup] source` (FB-179).
     pub backup_source: Option<BackupSource>,
+    /// `[backup] include_tls` (ADR-0041).
+    pub backup_include_tls: Option<BackupTls>,
+    /// `[backup] drill_schedule` (ADR-0041); an empty value turns it off.
+    pub backup_drill_schedule: Option<String>,
     /// `[functions] enabled`.
     pub functions_enabled: Option<bool>,
     /// `[vector] enabled`.
@@ -1632,6 +1701,8 @@ impl ConfigOverrides {
                 }
                 "KV_TENANT_MAX_BYTES" => o.kv_tenant_max_bytes = Some(parse_num(&value).map_err(bad)?),
                 "BACKUP_SOURCE" => o.backup_source = Some(value.parse().map_err(bad)?),
+                "BACKUP_INCLUDE_TLS" => o.backup_include_tls = Some(parse_backup_tls(&value).map_err(bad)?),
+                "BACKUP_DRILL_SCHEDULE" => o.backup_drill_schedule = Some(value.clone()),
                 "REALTIME_MAX_CONNECTIONS_PER_PRINCIPAL" => {
                     o.realtime_max_connections_per_principal = Some(parse_num(&value).map_err(bad)?);
                 }
@@ -1822,6 +1893,8 @@ impl ConfigOverrides {
         put(self.realtime_enabled.is_some(), "realtime.enabled");
         put(self.kv_tenant_max_bytes.is_some(), "kv.tenant_max_bytes");
         put(self.backup_source.is_some(), "backup.source");
+        put(self.backup_include_tls.is_some(), "backup.include_tls");
+        put(self.backup_drill_schedule.is_some(), "backup.drill_schedule");
         put(self.functions_enabled.is_some(), "functions.enabled");
         put(self.vector_enabled.is_some(), "vector.enabled");
         put(self.graph_enabled.is_some(), "graph.enabled");
@@ -2025,6 +2098,14 @@ fn layer_config(
     config.apply(cli, cwd);
     sources.record(cli, Source::Flag);
     (config, sources)
+}
+
+/// `true`, `false` or `auto` (and the spellings of [`parse_bool`]).
+fn parse_backup_tls(value: &str) -> Result<BackupTls, String> {
+    if value.trim().eq_ignore_ascii_case("auto") {
+        return Ok(BackupTls::Auto);
+    }
+    parse_bool(value).map(|b| if b { BackupTls::On } else { BackupTls::Off })
 }
 
 fn parse_bool(value: &str) -> Result<bool, String> {
@@ -2285,6 +2366,8 @@ struct FileKv {
 #[serde(deny_unknown_fields)]
 struct FileBackup {
     source: Option<BackupSource>,
+    include_tls: Option<BackupTls>,
+    drill_schedule: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -2397,6 +2480,8 @@ impl From<FileConfig> for ConfigOverrides {
             realtime_enabled: f.realtime.enabled,
             kv_tenant_max_bytes: f.kv.tenant_max_bytes,
             backup_source: f.backup.source,
+            backup_include_tls: f.backup.include_tls,
+            backup_drill_schedule: f.backup.drill_schedule,
             functions_enabled: f.functions.enabled,
             vector_enabled: f.vector.enabled,
             graph_enabled: f.graph.enabled,

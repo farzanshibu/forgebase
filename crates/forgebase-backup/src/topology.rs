@@ -443,6 +443,8 @@ pub async fn create_cluster(
             pg: Some(node.pg.clone()),
             database_only: !s.set.is_control(),
             label: opts.base.label.clone(),
+            // The cluster restore does not install `tls/` (follow-up of ADR-0041).
+            include_tls: false,
             note: Some(format!("cluster backup {name}, set {}", s.set.name)),
             ..opts.base.clone()
         };

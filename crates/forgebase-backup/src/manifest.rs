@@ -43,6 +43,10 @@ pub enum FileKind {
     Postgres,
     /// A `pg_dump` custom-format file.
     Dump,
+    /// A file of the sealed TLS state (`tls/**`, the ACME account and
+    /// certificate; ADR-0041). A build older than this one cannot read a
+    /// manifest that lists one.
+    Tls,
 }
 
 /// How the database was copied.
@@ -132,6 +136,62 @@ pub struct KeyInfo {
     pub fingerprint: Option<String>,
 }
 
+/// A count that was taken while the backup ran: the value lies in
+/// `min..=max`. On SQLite the count is read from the finished copy, so
+/// `min == max`; on PostgreSQL it is read before and after `pg_basebackup`
+/// and a write between them widens the range.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct CountRange {
+    /// Fewest.
+    pub min: u64,
+    /// Most.
+    pub max: u64,
+}
+
+impl CountRange {
+    /// An exact count.
+    pub fn exact(n: u64) -> Self {
+        Self { min: n, max: n }
+    }
+
+    /// The range two counts span.
+    pub fn span(a: u64, b: u64) -> Self {
+        Self {
+            min: a.min(b),
+            max: a.max(b),
+        }
+    }
+
+    /// Whether `n` is in the range.
+    pub fn contains(&self, n: u64) -> bool {
+        (self.min..=self.max).contains(&n)
+    }
+
+    /// `12` or `12..15`.
+    pub fn describe(&self) -> String {
+        if self.min == self.max {
+            self.min.to_string()
+        } else {
+            format!("{}..{}", self.min, self.max)
+        }
+    }
+}
+
+/// What a backup holds, counted when it was taken; a restore drill compares
+/// the restored database with it (ADR-0041). Absent in older backups.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct BackupStats {
+    /// Records of every table-backed collection, by collection name.
+    #[serde(default)]
+    pub collections: std::collections::BTreeMap<String, CountRange>,
+    /// Rows of the storage object table.
+    #[serde(default)]
+    pub storage_objects: CountRange,
+    /// Rows of the storage blob table (distinct blobs).
+    #[serde(default)]
+    pub storage_blobs: CountRange,
+}
+
 /// The manifest.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct Manifest {
@@ -167,6 +227,10 @@ pub struct Manifest {
     /// Why this backup was taken, for managed ones (`pre-migration`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
+    /// Record and object counts at backup time (ADR-0041). Absent in older
+    /// backups and in database-only ones.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stats: Option<BackupStats>,
 }
 
 impl Manifest {
@@ -180,6 +244,11 @@ impl Manifest {
         self.engine
             .as_ref()
             .is_some_and(|e| e.is_postgres() && e.method == Method::Basebackup)
+    }
+
+    /// Whether the sealed `tls/` directory is part of this backup.
+    pub fn includes_tls(&self) -> bool {
+        self.files.iter().any(|f| f.kind == FileKind::Tls)
     }
 
     /// Total bytes of all files.

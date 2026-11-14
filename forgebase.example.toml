@@ -481,3 +481,18 @@ tls_cert_expiry_metric = "forgebase_tls_certificate_expiry_timestamp_seconds"
 # severity = "critical"
 # labels = { team = "payments" }
 # annotations = { summary = "Checkout p95 is {{ $value }} s" }
+
+[backup]
+# Where a cluster backup (forgebase backup --cluster) copies each set from:
+# "primary", or "replica" (a healthy replica, so the primary is not loaded).
+# Env: FORGEBASE_BACKUP_SOURCE
+source = "primary"
+# Whether backups carry the sealed tls/ directory (the ACME account and
+# certificate): true, false or "auto" (on when [tls] mode = "acme").
+# Env: FORGEBASE_BACKUP_INCLUDE_TLS
+# include_tls = "auto"
+# A cron expression (UTC) that restores the newest snapshot into a scratch
+# directory, starts a quiet server on it and checks it (forgebase backup
+# drill, ADR-0041). Off when unset.
+# Env: FORGEBASE_BACKUP_DRILL_SCHEDULE
+# drill_schedule = "30 4 * * 0"
