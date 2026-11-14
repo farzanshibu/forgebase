@@ -10,6 +10,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
+pub mod mock;
+pub mod sample;
+
 use forgebase_sdk::{ForgeBase, SignInOptions};
 
 pub const ADMIN_EMAIL: &str = "sdk-admin@example.com";
