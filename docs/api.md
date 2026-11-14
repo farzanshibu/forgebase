@@ -402,3 +402,36 @@ Administrator-only reads for the dashboard ([ADR-0036](adr/0036-ops-insights.md)
 `/status` and `POST /flush`. Operation ids start with `insights_`. Anonymous callers get `401`; signed-in callers
 without the `engine:read_insights` / `engine:read_audit` permission get `403`. Every list is paged (`limit`,
 `offset` or `cursor`) and bounded; ranges are `from`/`to` (RFC 3339 or `YYYY-MM-DD`, `to` exclusive).
+
+### 11.10 Storage signed URLs (`/api/v1/storage/buckets/{bucket}/sign`)
+
+`POST /api/v1/storage/buckets/{bucket}/sign` with `{"key", "method"?, "expires_in"?, "version_id"?, "download_as"?,
+"content_type"?}` (`method` `GET` by default or `PUT`; `expires_in` 1 to `max_signed_ttl_secs` seconds, default 900;
+`download_as` and `version_id` for downloads, `content_type` for uploads) returns:
+
+```json
+{ "url": "...", "method": "GET", "expires_at": "2026-11-14T12:15:00Z", "mode": "proxy" }
+```
+
+| `mode` | `url` | Served by |
+|---|---|---|
+| `proxy` | Relative: `/api/v1/storage/signed/{bucket}/{key}?v=2&expires=...&sig=...` (prefix it with the server's origin) | ForgeBase: `GET` (with `Range`) and `PUT` without credentials; `403 signature_invalid` / `url_expired` |
+| `native` | Absolute: the storage provider's signed URL (S3 SigV4 pre-signed, GCS V4, Azure service SAS) | The provider, straight from the bucket; its own errors (`403`, `404`) |
+
+`mode` came with native URLs (ADR-0040 addendum); servers from before omit it: read a missing value as `proxy`. Downloads are `native` when
+`[storage] signed_urls` (or the bucket's entry in `[storage.signed_urls_buckets]`) is `native`, or `auto` with a driver
+whose credentials can sign ([deployment.md §3.7](deployment.md#37-object-storage-drivers)); uploads (`PUT`) are always
+`proxy`. Both modes run the same checks before answering (read access to the key, bucket visibility, ACL, bucket rules,
+the version, delete markers: `403`, `404`), and the URL works without credentials until `expires_at`. A native URL:
+
+- names one stored blob, the version current when it was issued (or `version_id`): later overwrites do not change what
+  it serves;
+- lives `expires_in`, capped at the provider's maximum (7 days on S3 and GCS); `expires_at` is the real expiry;
+- carries the object's `Content-Type` and the proxy's `Content-Disposition` (`download_as`, or `attachment` for HTML,
+  SVG and XML) as signed overrides;
+- is not revoked by `POST /api/v1/storage/maintenance/rotate-signing-key`, and its downloads are not seen, metered or
+  limited by ForgeBase; issuing it is recorded in the audit log (`storage.signed_url.native`).
+
+Errors besides those of the checks: `400 invalid_expiry`; `409 native_signing_unavailable` when native mode is set but
+the driver or its credentials cannot sign (the local driver, GCS without a service-account key, Azure without the
+account key, S3 without keys); the message names the driver and the reason.
