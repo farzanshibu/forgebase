@@ -32,6 +32,9 @@ pub struct Options {
     pub update_secrets: bool,
     /// File for secrets the server issues (`NAME=value`).
     pub secrets_out: Option<PathBuf>,
+    /// Value for a function secret whose environment variable is not set (the dev emulator,
+    /// ADR-0038); `None` fails that secret, as `apply` and `deploy` do.
+    pub placeholder_secret: Option<String>,
 }
 
 /// What an apply did.
@@ -107,6 +110,7 @@ pub async fn execute(
             .map(|(id, n)| (n, id))
             .collect(),
         deferred: Vec::new(),
+        placeholder: opts.placeholder_secret.clone(),
     };
     let mut failed: BTreeSet<String> = BTreeSet::new();
     for c in &plan.changes {
@@ -214,6 +218,8 @@ struct Ctx<'a> {
     ids: HashMap<String, String>,
     /// Collections created without some relation fields.
     deferred: Vec<String>,
+    /// Stand-in for a function secret whose variable is not set.
+    placeholder: Option<String>,
 }
 
 fn verb(a: Action) -> &'static str {
@@ -714,8 +720,13 @@ impl Ctx<'_> {
 
     /// Sets one function secret from its environment variable.
     async fn put_secret(&self, function: &str, key: &str, var: &str) -> anyhow::Result<()> {
-        let value = std::env::var(var)
-            .map_err(|_| anyhow!("secret {key} of function {function}: environment variable {var} is not set"))?;
+        let value = match (std::env::var(var), &self.placeholder) {
+            (Ok(v), _) => v,
+            (Err(_), Some(p)) => p.clone(),
+            (Err(_), None) => {
+                bail!("secret {key} of function {function}: environment variable {var} is not set")
+            }
+        };
         self.remote
             .call(
                 "PUT",

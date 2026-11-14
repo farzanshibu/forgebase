@@ -19,6 +19,8 @@
 //! forgebase project pull|plan|apply|drift|validate|schemas   the server's configuration as code (ADR-0037)
 //! forgebase deploy                     build functions and apply the project (plan + apply)
 //! forgebase new <DIR> [--template ..]  scaffold an app project with the project-as-code layout
+//! forgebase gen types --lang ts|rust  typed models of the collections, from a project directory or a server (--check for CI)
+//! forgebase dev [--seed] [--watch]     a local emulator: ephemeral server, project applied, fixtures loaded (also: dev seed, dev reset)
 //! ```
 //!
 //! Configuration precedence: flags > `FORGEBASE_*` environment > config file > defaults.
@@ -28,6 +30,7 @@ mod commands;
 mod convert;
 mod dataops;
 mod db;
+mod dev;
 mod doctor;
 mod dotenv;
 mod functions;
@@ -37,6 +40,8 @@ mod project;
 mod queues;
 #[cfg(test)]
 mod testserver;
+#[path = "gen/mod.rs"]
+mod typegen;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -215,6 +220,10 @@ enum Command {
     Deploy(Box<project::DeployCli>),
     /// Create an app project: the project-as-code layout, samples, seed data, a CI workflow.
     New(Box<project::NewCli>),
+    /// Run a local emulator: a throw-away server with your project applied, seeded and watched (ADR-0038).
+    Dev(Box<dev::DevCli>),
+    /// Generate code from the project: `gen types --lang ts|rust` (ADR-0038).
+    Gen(Box<typegen::GenCli>),
 }
 
 fn main() -> ExitCode {
@@ -287,5 +296,7 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         Command::Project(p) => project::run_project(g, *p).await,
         Command::Deploy(d) => project::run_deploy(g, *d).await,
         Command::New(n) => project::run_new(*n),
+        Command::Dev(d) => dev::run(g, *d).await,
+        Command::Gen(c) => typegen::run(g, *c).await,
     }
 }

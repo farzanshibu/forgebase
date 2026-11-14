@@ -1,4 +1,4 @@
-//! `forgebase functions new|deploy|logs`: scaffold JavaScript/TypeScript
+//! `forgebase functions new|deploy|logs|invoke`: scaffold JavaScript/TypeScript
 //! functions and manage functions (TypeScript, JavaScript or WebAssembly) of
 //! a running server over its REST API (`/api/v1/functions`).
 //!
@@ -15,7 +15,7 @@ use std::future::Future;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, bail};
 use base64::Engine as _;
@@ -78,6 +78,8 @@ pub enum FunctionsCommand {
     Deploy(DeployArgs),
     /// Print a function's recent executions and their log lines.
     Logs(LogsArgs),
+    /// Call an HTTP function and show the result, status, duration, log lines and trace id.
+    Invoke(InvokeArgs),
 }
 
 #[derive(Debug, Args)]
@@ -158,6 +160,28 @@ pub struct LogsArgs {
     pub json: bool,
 }
 
+#[derive(Debug, Args)]
+pub struct InvokeArgs {
+    /// Function name.
+    pub name: String,
+    /// Request body: a JSON document, or `@file` to read it from a file (at most 1 MiB).
+    #[arg(long, value_name = "JSON|@FILE")]
+    pub data: Option<String>,
+    /// HTTP method [default: POST with --data, else GET].
+    #[arg(long, value_name = "METHOD")]
+    pub method: Option<String>,
+    /// Sub-path (and query) after `/invoke`, e.g. `/hello?name=you`.
+    #[arg(long, value_name = "PATH")]
+    pub path: Option<String>,
+    /// Also show where the time went: the host-call timeline of the execution from the server's insights API
+    /// (`/api/v1/insights`), when the server has it; otherwise the logs and the trace id only.
+    #[arg(long)]
+    pub trace: bool,
+    /// Print one JSON object instead of text.
+    #[arg(long)]
+    pub json: bool,
+}
+
 /// A connection target and credential.
 pub(crate) struct Client {
     pub(crate) addr: String,
@@ -186,6 +210,24 @@ impl Client {
             token,
             forbidden: " (the credential lacks manage_functions / read_functions)",
         })
+    }
+
+    /// Sends a request and returns the raw answer, whatever its status (the caller decides what is an error).
+    pub(crate) async fn raw(
+        &self,
+        method: &str,
+        path: &str,
+        headers: &[(&str, &str)],
+        body: Option<&[u8]>,
+    ) -> anyhow::Result<probe::Reply> {
+        probe::request_with(&self.addr, method, path, self.token.as_deref(), headers, body, TIMEOUT)
+            .await
+            .with_context(|| {
+                format!(
+                    "cannot reach the server at {} (is `forgebase serve` running?)",
+                    self.addr
+                )
+            })
     }
 
     /// Sends a request and returns the parsed JSON body (`Null` for an empty one); non-2xx becomes an error carrying the server's message.
@@ -262,6 +304,13 @@ pub async fn run(g: &GlobalArgs, server: ServerArgs, cmd: FunctionsCommand) -> a
                 let _ = tokio::signal::ctrl_c().await;
             };
             logs(&client, a, &mut std::io::stdout(), stop).await?;
+        }
+        FunctionsCommand::Invoke(a) => {
+            return if invoke(&client, a, &mut std::io::stdout()).await? {
+                Ok(ExitCode::SUCCESS)
+            } else {
+                Ok(ExitCode::FAILURE)
+            };
         }
     }
     Ok(ExitCode::SUCCESS)
@@ -518,6 +567,10 @@ fn print_execution(out: &mut impl Write, e: &Value, json: bool) -> anyhow::Resul
             .as_str()
             .map(|r| format!("  request {r}"))
             .unwrap_or_default()
+            + &e["trace_id"]
+                .as_str()
+                .map(|t| format!("  trace {t}"))
+                .unwrap_or_default()
     )?;
     if let Some(err) = e["error"].as_str() {
         writeln!(out, "    error: {err}")?;
@@ -567,21 +620,358 @@ async fn logs(
         bail!("--interval must be at least 0.05 seconds");
     }
     let pause = Duration::from_secs_f64(a.interval);
+    let mut warned: Option<String> = None;
     tokio::pin!(stop);
     loop {
         tokio::select! {
             () = &mut stop => return Ok(()),
             () = tokio::time::sleep(pause) => {}
         }
-        for e in fetch_logs(client, &a.name, FOLLOW_BATCH).await? {
-            let id = e["id"].as_i64().unwrap_or(0);
-            if id > last {
-                last = id;
-                print_execution(out, &e, a.json)?;
+        // A server that restarts (or a dev emulator that reloads) must not end the stream: say so once, keep polling.
+        match fetch_logs(client, &a.name, FOLLOW_BATCH).await {
+            Ok(items) => {
+                if warned.take().is_some() {
+                    eprintln!("logs: the server answers again");
+                }
+                for e in items {
+                    let id = e["id"].as_i64().unwrap_or(0);
+                    if id > last {
+                        last = id;
+                        print_execution(out, &e, a.json)?;
+                    }
+                }
+            }
+            Err(e) => {
+                let msg = format!("{e:#}");
+                if warned.as_deref() != Some(msg.as_str()) {
+                    eprintln!("logs: {msg}; still trying");
+                    warned = Some(msg);
+                }
             }
         }
         out.flush()?;
     }
+}
+
+/// The body of `--data`: a JSON document, or the contents of `@file`.
+fn invoke_body(data: &str) -> anyhow::Result<(Vec<u8>, bool)> {
+    const MAX_BODY: usize = 1 << 20;
+    let bytes = match data.strip_prefix('@') {
+        Some(file) => std::fs::read(file).with_context(|| format!("cannot read {file}"))?,
+        None => data.as_bytes().to_vec(),
+    };
+    if bytes.len() > MAX_BODY {
+        bail!("--data is {} bytes; a function takes at most 1 MiB", bytes.len());
+    }
+    let is_json = serde_json::from_slice::<Value>(&bytes).is_ok();
+    Ok((bytes, is_json))
+}
+
+/// The trace id (32 hex digits) of a W3C `traceparent` value.
+fn trace_of(traceparent: &str) -> Option<String> {
+    let mut parts = traceparent.split('-');
+    let (_version, trace) = (parts.next()?, parts.next()?);
+    (trace.len() == 32 && trace.bytes().all(|b| b.is_ascii_hexdigit())).then(|| trace.to_owned())
+}
+
+fn header<'a>(r: &'a probe::Reply, name: &str) -> Option<&'a str> {
+    r.headers.iter().find(|(k, _)| k == name).map(|(_, v)| v.as_str())
+}
+
+/// The execution log row of one request: the log is written when the run ends, so wait a moment for it.
+async fn find_execution(client: &Client, name: &str, request_id: &str) -> Option<Value> {
+    for attempt in 0..20 {
+        if attempt > 0 {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        let items = fetch_logs(client, name, 50).await.ok()?;
+        if let Some(e) = items
+            .into_iter()
+            .rev()
+            .find(|e| e["request_id"].as_str() == Some(request_id))
+        {
+            return Some(e);
+        }
+    }
+    None
+}
+
+/// What the insights API said about an execution.
+enum Profile {
+    /// The execution's profile.
+    Found(Value),
+    /// The server answered but has no profile for it (profiling is off, or the row is gone).
+    Empty,
+    /// The server has no insights API, or the credential may not read it.
+    Unavailable(String),
+}
+
+async fn fetch_profile(client: &Client, request_id: &str, execution_id: i64) -> Profile {
+    let path = format!(
+        "/api/v1/insights/functions/invocations?request_id={}&limit=20",
+        enc(request_id)
+    );
+    match client.raw("GET", &path, &[], None).await {
+        Err(e) => Profile::Unavailable(format!("{e:#}")),
+        Ok(r) if r.status == 404 || r.status == 405 => Profile::Unavailable(
+            "this server has no /api/v1/insights API (it comes with ops insights); showing the logs and trace id only"
+                .into(),
+        ),
+        Ok(r) if r.status == 401 || r.status == 403 => Profile::Unavailable(format!(
+            "the credential may not read /api/v1/insights (HTTP {}: it needs the engine:read_insights permission or an admin key)",
+            r.status
+        )),
+        Ok(r) if !(200..300).contains(&r.status) => {
+            Profile::Unavailable(format!("/api/v1/insights answered HTTP {}", r.status))
+        }
+        Ok(r) => {
+            let v: Value = serde_json::from_slice(&r.body).unwrap_or(Value::Null);
+            let item = v["items"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .find(|i| i["id"].as_i64() == Some(execution_id));
+            match item.map(|i| &i["profile"]) {
+                Some(p) if p.is_object() => Profile::Found(p.clone()),
+                _ => Profile::Empty,
+            }
+        }
+    }
+}
+
+fn ms(us: Value) -> String {
+    format!("{:.2}", us.as_f64().unwrap_or(0.0) / 1000.0)
+}
+
+fn render_profile(out: &mut impl Write, p: &Value) -> anyhow::Result<()> {
+    let mut facts = Vec::new();
+    if p["cold_start"].as_bool() == Some(true) {
+        facts.push(format!("cold start (prepare {} ms)", ms(p["prepare_us"].clone())));
+    }
+    if let Some(f) = p["fuel_used"].as_u64() {
+        facts.push(format!("fuel {f}/{}", p["fuel_limit"].as_u64().unwrap_or(0)));
+    }
+    if let Some(m) = p["memory_peak_bytes"].as_u64() {
+        facts.push(format!(
+            "peak memory {} KiB of {} KiB",
+            m / 1024,
+            p["memory_limit_bytes"].as_u64().unwrap_or(0) / 1024
+        ));
+    }
+    if !facts.is_empty() {
+        writeln!(out, "  {}", facts.join(", "))?;
+    }
+    let timeline = p["timeline"].as_array().cloned().unwrap_or_default();
+    let total = p["host_calls"].as_u64().unwrap_or(timeline.len() as u64);
+    if total == 0 {
+        writeln!(out, "  host calls: none")?;
+        return Ok(());
+    }
+    writeln!(out, "  host calls ({total}):")?;
+    for c in &timeline {
+        writeln!(
+            out,
+            "    +{:>8} ms  {:<14} {:>8} ms  {}",
+            ms(c["at_us"].clone()),
+            c["op"].as_str().unwrap_or("?"),
+            ms(c["dur_us"].clone()),
+            if c["ok"].as_bool() == Some(false) {
+                "FAILED"
+            } else {
+                "ok"
+            }
+        )?;
+    }
+    let dropped = p["timeline_dropped"].as_u64().unwrap_or(0);
+    if dropped > 0 {
+        writeln!(out, "    ... {dropped} more call(s) not on the timeline")?;
+    }
+    if let Some(host) = p["host"].as_object().filter(|h| !h.is_empty()) {
+        writeln!(out, "  by operation:")?;
+        for (op, st) in host {
+            writeln!(
+                out,
+                "    {:<14} {} call(s), {} ms total, {} ms longest{}",
+                op,
+                st["count"].as_u64().unwrap_or(0),
+                ms(st["total_us"].clone()),
+                ms(st["max_us"].clone()),
+                match st["errors"].as_u64().unwrap_or(0) {
+                    0 => String::new(),
+                    n => format!(", {n} failed"),
+                }
+            )?;
+        }
+    }
+    Ok(())
+}
+
+/// Calls the function; returns whether the HTTP status was a success.
+async fn invoke(client: &Client, a: InvokeArgs, out: &mut impl Write) -> anyhow::Result<bool> {
+    let (body, is_json) = match &a.data {
+        Some(d) => {
+            let (b, j) = invoke_body(d)?;
+            (Some(b), j)
+        }
+        None => (None, true),
+    };
+    let method = a
+        .method
+        .clone()
+        .unwrap_or_else(|| if body.is_some() { "POST" } else { "GET" }.to_owned())
+        .to_ascii_uppercase();
+    if !method.bytes().all(|b| b.is_ascii_uppercase()) {
+        bail!("--method {method:?} is not an HTTP method");
+    }
+    let sub = a.path.clone().unwrap_or_default();
+    let sub = if sub.is_empty() || sub.starts_with('/') || sub.starts_with('?') {
+        sub
+    } else {
+        format!("/{sub}")
+    };
+    let path = format!("/api/v1/functions/{}/invoke{sub}", enc(&a.name));
+    let request_id = format!(
+        "fbcli-{}",
+        forgebase_auth::crypto::random_token(9)
+            .map_err(|e| anyhow::anyhow!("{e}"))?
+            .replace(['-', '_'], "x")
+    );
+    let content_type = if is_json {
+        "application/json"
+    } else {
+        "text/plain; charset=utf-8"
+    };
+    let mut headers = vec![("X-Request-Id", request_id.as_str())];
+    if body.is_some() {
+        headers.push(("Content-Type", content_type));
+    }
+    let started = Instant::now();
+    let reply = client.raw(&method, &path, &headers, body.as_deref()).await?;
+    let duration_ms = started.elapsed().as_secs_f64() * 1000.0;
+    let ok = (200..300).contains(&reply.status);
+
+    // The execution (and its logs) when the function ran at all.
+    let execution = if matches!(reply.status, 401 | 403 | 404 | 405) {
+        None
+    } else {
+        find_execution(client, &a.name, &request_id).await
+    };
+    let trace_id = execution
+        .as_ref()
+        .and_then(|e| e["trace_id"].as_str().map(str::to_owned))
+        .or_else(|| header(&reply, "traceparent").and_then(trace_of));
+    let profile = match (&execution, a.trace) {
+        (Some(e), true) => Some(fetch_profile(client, &request_id, e["id"].as_i64().unwrap_or(0)).await),
+        (None, true) => Some(Profile::Empty),
+        _ => None,
+    };
+    let content_type_of_reply = header(&reply, "content-type").unwrap_or("").to_owned();
+    let parsed: Option<Value> = serde_json::from_slice(&reply.body).ok();
+
+    if a.json {
+        let body_value = match &parsed {
+            Some(v) => v.clone(),
+            None if reply.body.is_empty() => Value::Null,
+            None => json!(String::from_utf8_lossy(&reply.body)),
+        };
+        let (timeline, note) = match &profile {
+            Some(Profile::Found(p)) => (Some(p.clone()), None),
+            Some(Profile::Unavailable(why)) => (None, Some(why.clone())),
+            _ => (None, None),
+        };
+        writeln!(
+            out,
+            "{}",
+            json!({
+                "status": reply.status,
+                "ok": ok,
+                "duration_ms": (duration_ms * 100.0).round() / 100.0,
+                "request_id": request_id,
+                "trace_id": trace_id,
+                "content_type": content_type_of_reply,
+                "body": body_value,
+                "execution": execution,
+                "profile": timeline,
+                "profile_note": note,
+            })
+        )?;
+        return Ok(ok);
+    }
+
+    writeln!(out, "{method} {path}")?;
+    writeln!(out, "status:    {}{}", reply.status, if ok { "" } else { "  (failed)" })?;
+    writeln!(out, "duration:  {duration_ms:.1} ms (round trip)")?;
+    writeln!(out, "request:   {request_id}")?;
+    match &trace_id {
+        Some(t) => writeln!(out, "trace id:  {t}")?,
+        None => writeln!(out, "trace id:  (none: tracing is off for this request)")?,
+    }
+    match &parsed {
+        Some(v) if !reply.body.is_empty() => {
+            writeln!(out, "response:  {content_type_of_reply}")?;
+            for l in serde_json::to_string_pretty(v)?.lines() {
+                writeln!(out, "  {l}")?;
+            }
+        }
+        _ if reply.body.is_empty() => writeln!(out, "response:  (empty)")?,
+        _ => match std::str::from_utf8(&reply.body) {
+            Ok(t) => {
+                writeln!(out, "response:  {content_type_of_reply}")?;
+                for l in t.lines().take(200) {
+                    writeln!(out, "  {l}")?;
+                }
+            }
+            Err(_) => writeln!(out, "response:  {} bytes of {content_type_of_reply}", reply.body.len())?,
+        },
+    }
+    match &execution {
+        Some(e) => {
+            writeln!(
+                out,
+                "execution: #{} v{} {} {} in {} ms, {} fuel",
+                e["id"],
+                e["version"],
+                e["trigger"].as_str().unwrap_or("?"),
+                e["status"].as_str().unwrap_or("?"),
+                e["duration_ms"],
+                e["fuel_used"]
+            )?;
+            if let Some(err) = e["error"].as_str() {
+                writeln!(out, "  error: {err}")?;
+            }
+            let lines = e["logs"].as_array().cloned().unwrap_or_default();
+            if lines.is_empty() {
+                writeln!(out, "logs:      (none)")?;
+            } else {
+                writeln!(out, "logs:")?;
+                for l in &lines {
+                    writeln!(
+                        out,
+                        "  [{}] {}",
+                        l["level"].as_str().unwrap_or("?"),
+                        l["message"].as_str().unwrap_or("")
+                    )?;
+                }
+            }
+        }
+        None if matches!(reply.status, 401 | 403 | 404 | 405) => {
+            writeln!(out, "execution: none (the function did not run)")?;
+        }
+        None => writeln!(out, "execution: not found in the function's log (yet)")?,
+    }
+    match profile {
+        Some(Profile::Found(p)) => {
+            writeln!(out, "trace:")?;
+            render_profile(out, &p)?;
+        }
+        Some(Profile::Empty) => writeln!(
+            out,
+            "trace:     no profile recorded for this execution ([observability] function_profiling may be off)"
+        )?,
+        Some(Profile::Unavailable(why)) => writeln!(out, "trace:     host-call timeline unavailable: {why}")?,
+        None => {}
+    }
+    Ok(ok)
 }
 
 #[cfg(test)]
@@ -906,6 +1296,237 @@ mod tests {
         assert!(
             err.contains("cannot reach the server") && err.contains("forgebase serve"),
             "{err}"
+        );
+    }
+
+    /// A server that runs `hello` (logging one line, under a trace) and optionally serves the insights API.
+    async fn invoke_server(
+        insights: Option<Value>,
+    ) -> (String, std::sync::Arc<std::sync::Mutex<Vec<crate::testserver::Seen>>>) {
+        use crate::testserver::fake_server_with;
+        let rid = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+        fake_server_with(move |seen| {
+            let line = seen.request_line.as_str();
+            if line.contains("/invoke") {
+                let id = seen
+                    .headers
+                    .lines()
+                    .find_map(|l| {
+                        l.strip_prefix("X-Request-Id: ")
+                            .or_else(|| l.strip_prefix("x-request-id: "))
+                    })
+                    .unwrap_or_default()
+                    .to_owned();
+                *rid.lock().unwrap() = id;
+                return (
+                    200,
+                    json!({"message": "hi"}).to_string(),
+                    vec![(
+                        "traceparent".into(),
+                        "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01".into(),
+                    )],
+                );
+            }
+            let id = rid.lock().unwrap().clone();
+            if line.contains("/functions/hello/logs") {
+                let mut e = exec(7, "ok", Some("greeting cave"), None);
+                e["request_id"] = json!(id);
+                e["trace_id"] = json!("4bf92f3577b34da6a3ce929d0e0e4736");
+                return (200, json!({"items": [e]}).to_string(), vec![]);
+            }
+            match &insights {
+                Some(v) if line.contains("/api/v1/insights/functions/invocations") => (200, v.to_string(), vec![]),
+                _ => (
+                    404,
+                    json!({"error": {"code": "not_found", "message": "no such route"}}).to_string(),
+                    vec![],
+                ),
+            }
+        })
+        .await
+    }
+
+    fn invoke_args(trace: bool) -> InvokeArgs {
+        InvokeArgs {
+            name: "hello".into(),
+            data: Some("{\"a\":1}".into()),
+            method: None,
+            path: Some("?name=cave".into()),
+            trace,
+            json: false,
+        }
+    }
+
+    #[tokio::test]
+    async fn invoke_prints_result_logs_and_trace_id_and_degrades_without_insights() {
+        let (addr, seen) = invoke_server(None).await;
+        let mut out = Vec::new();
+        let ok = invoke(&client(&addr, Some("tok")), invoke_args(true), &mut out)
+            .await
+            .unwrap();
+        let out = String::from_utf8(out).unwrap();
+        assert!(ok);
+        assert!(out.contains("POST /api/v1/functions/hello/invoke?name=cave"), "{out}");
+        assert!(out.contains("status:    200"), "{out}");
+        assert!(out.contains("trace id:  4bf92f3577b34da6a3ce929d0e0e4736"), "{out}");
+        assert!(out.contains("\"message\": \"hi\""), "{out}");
+        assert!(out.contains("execution: #7 v2 http ok in 3 ms, 20 fuel"), "{out}");
+        assert!(out.contains("[info] greeting cave"), "{out}");
+        assert!(
+            out.contains("host-call timeline unavailable: this server has no /api/v1/insights API"),
+            "{out}"
+        );
+        let first = seen.lock().unwrap()[0].clone();
+        assert!(first.headers.to_ascii_lowercase().contains("authorization: bearer tok"));
+        assert!(first.headers.to_ascii_lowercase().contains("x-request-id: fbcli-"));
+        assert_eq!(first.body, "{\"a\":1}");
+    }
+
+    #[tokio::test]
+    async fn invoke_trace_prints_the_host_call_timeline_from_insights() {
+        let profile = json!({
+            "cold_start": true, "prepare_us": 900, "fuel_used": 20, "fuel_limit": 1000,
+            "memory_peak_bytes": 131072, "memory_limit_bytes": 1048576, "host_calls": 3,
+            "host": {"db.get": {"count": 2, "total_us": 1500, "max_us": 1000, "errors": 1}, "kv": {"count": 1, "total_us": 200, "max_us": 200, "errors": 0}},
+            "timeline": [
+                {"op": "db.get", "at_us": 120, "dur_us": 1000, "ok": true},
+                {"op": "db.get", "at_us": 1200, "dur_us": 500, "ok": false},
+                {"op": "kv", "at_us": 1800, "dur_us": 200, "ok": true}
+            ],
+            "timeline_dropped": 0
+        });
+        let page = json!({"items": [{"id": 7, "profile": profile}, {"id": 6, "profile": null}]});
+        let (addr, seen) = invoke_server(Some(page)).await;
+        let mut out = Vec::new();
+        invoke(&client(&addr, None), invoke_args(true), &mut out).await.unwrap();
+        let out = String::from_utf8(out).unwrap();
+        assert!(
+            out.contains("trace:\n  cold start (prepare 0.90 ms), fuel 20/1000, peak memory 128 KiB of 1024 KiB"),
+            "{out}"
+        );
+        assert!(out.contains("host calls (3):"), "{out}");
+        assert!(out.contains("+    0.12 ms  db.get             1.00 ms  ok"), "{out}");
+        assert!(
+            out.contains("+    1.20 ms  db.get             0.50 ms  FAILED"),
+            "{out}"
+        );
+        assert!(
+            out.contains("db.get         2 call(s), 1.50 ms total, 1.00 ms longest, 1 failed"),
+            "{out}"
+        );
+        assert!(seen.lock().unwrap().iter().any(|s| {
+            s.request_line
+                .contains("insights/functions/invocations?request_id=fbcli-")
+        }));
+
+        // Without --trace the insights API is not asked.
+        let (addr, seen) = invoke_server(Some(json!({"items": []}))).await;
+        let mut out = Vec::new();
+        invoke(&client(&addr, None), invoke_args(false), &mut out)
+            .await
+            .unwrap();
+        assert!(!seen.lock().unwrap().iter().any(|s| s.request_line.contains("insights")));
+    }
+
+    #[tokio::test]
+    async fn invoke_json_and_failures() {
+        let (addr, _) = invoke_server(None).await;
+        let mut a = invoke_args(false);
+        a.json = true;
+        let mut out = Vec::new();
+        invoke(&client(&addr, None), a, &mut out).await.unwrap();
+        let v: Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["status"], 200);
+        assert_eq!(v["trace_id"], "4bf92f3577b34da6a3ce929d0e0e4736");
+        assert_eq!(v["body"]["message"], "hi");
+        assert_eq!(v["execution"]["logs"][0]["message"], "greeting cave");
+
+        // 404: not found, no execution to look for, a failing exit.
+        let (addr, seen) = fake_server(vec![(
+            404,
+            json!({"error": {"code": "function_not_found", "message": "gone"}}).to_string(),
+        )])
+        .await;
+        let mut out = Vec::new();
+        let ok = invoke(&client(&addr, None), invoke_args(false), &mut out)
+            .await
+            .unwrap();
+        assert!(!ok);
+        let out = String::from_utf8(out).unwrap();
+        assert!(
+            out.contains("status:    404  (failed)") && out.contains("the function did not run"),
+            "{out}"
+        );
+        assert_eq!(
+            seen.lock().unwrap().len(),
+            1,
+            "the logs are not searched for a function that did not run"
+        );
+    }
+
+    #[test]
+    fn data_and_trace_helpers() {
+        assert_eq!(
+            trace_of("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01").as_deref(),
+            Some("4bf92f3577b34da6a3ce929d0e0e4736")
+        );
+        assert_eq!(trace_of("garbage"), None);
+        assert_eq!(trace_of("00-short-00f067aa0ba902b7-01"), None);
+        assert!(invoke_body("{\"a\":1}").unwrap().1);
+        assert!(!invoke_body("plain text").unwrap().1);
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("b.json");
+        std::fs::write(&f, "[1]").unwrap();
+        assert_eq!(invoke_body(&format!("@{}", f.display())).unwrap().0, b"[1]");
+        assert!(invoke_body("@/no/such/file").is_err());
+        std::fs::write(&f, vec![b'a'; (1 << 20) + 1]).unwrap();
+        assert!(
+            invoke_body(&format!("@{}", f.display()))
+                .unwrap_err()
+                .to_string()
+                .contains("at most 1 MiB")
+        );
+    }
+
+    #[tokio::test]
+    async fn follow_keeps_going_when_the_server_hiccups() {
+        let ok = |ids: &[i64]| {
+            json!({"items": ids.iter().rev().map(|i| exec(*i, "ok", None, None)).collect::<Vec<_>>()}).to_string()
+        };
+        let (addr, seen) = fake_server(vec![
+            (200, ok(&[1])),
+            (
+                503,
+                json!({"error": {"code": "unavailable", "message": "restarting"}}).to_string(),
+            ),
+            (200, ok(&[1, 2])),
+        ])
+        .await;
+        let mut a = logs_args("hello", true);
+        a.json = true;
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+        let watch = seen.clone();
+        tokio::spawn(async move {
+            while watch.lock().unwrap().len() < 4 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            let _ = tx.send(());
+        });
+        let mut out = Vec::new();
+        logs(&client(&addr, None), a, &mut out, async {
+            let _ = rx.await;
+        })
+        .await
+        .unwrap();
+        let ids: Vec<i64> = String::from_utf8(out)
+            .unwrap()
+            .lines()
+            .map(|l| serde_json::from_str::<Value>(l).unwrap()["id"].as_i64().unwrap())
+            .collect();
+        assert_eq!(
+            ids,
+            vec![1, 2],
+            "the failed poll neither ended the stream nor repeated lines"
         );
     }
 

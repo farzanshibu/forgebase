@@ -13,20 +13,37 @@ pub(crate) struct Seen {
     pub(crate) body: String,
 }
 
+/// A scripted answer: status, body and extra response headers.
+pub(crate) type Answer = (u16, String, Vec<(String, String)>);
+
 /// Serves `replies` in order (the last repeats) and records each request.
 pub(crate) async fn fake_server(replies: Vec<(u16, String)>) -> (String, Arc<Mutex<Vec<Seen>>>) {
+    let count = Arc::new(Mutex::new(0_usize));
+    fake_server_with(move |_seen| {
+        let mut n = count.lock().unwrap();
+        let (status, body) = replies.get(*n).or(replies.last()).cloned().unwrap();
+        *n += 1;
+        (status, body, Vec::new())
+    })
+    .await
+}
+
+/// Serves whatever `answer` returns for each request (it sees the request first) and records each request.
+pub(crate) async fn fake_server_with(
+    answer: impl Fn(&Seen) -> Answer + Send + Sync + 'static,
+) -> (String, Arc<Mutex<Vec<Seen>>>) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap().to_string();
     let seen = Arc::new(Mutex::new(Vec::new()));
     let log = seen.clone();
     tokio::spawn(async move {
-        let mut n = 0;
         loop {
             let Ok((mut s, _)) = listener.accept().await else {
                 return;
             };
             let mut buf = Vec::new();
             let mut tmp = [0_u8; 4096];
+            let mut this = None;
             loop {
                 let k = s.read(&mut tmp).await.unwrap();
                 buf.extend_from_slice(&tmp[..k]);
@@ -42,11 +59,13 @@ pub(crate) async fn fake_server(replies: Vec<(u16, String)>) -> (String, Arc<Mut
                         .unwrap_or(0);
                     if body.len() >= want {
                         let mut lines = head.lines();
-                        log.lock().unwrap().push(Seen {
+                        let seen = Seen {
                             request_line: lines.next().unwrap().to_owned(),
                             headers: lines.collect::<Vec<_>>().join("\n"),
                             body: body.to_owned(),
-                        });
+                        };
+                        log.lock().unwrap().push(seen.clone());
+                        this = Some(seen);
                         break;
                     }
                 }
@@ -54,10 +73,11 @@ pub(crate) async fn fake_server(replies: Vec<(u16, String)>) -> (String, Arc<Mut
                     break;
                 }
             }
-            let (status, body) = replies.get(n).or(replies.last()).cloned().unwrap();
-            n += 1;
+            let Some(this) = this else { continue };
+            let (status, body, extra) = answer(&this);
+            let extra: String = extra.iter().map(|(k, v)| format!("{k}: {v}\r\n")).collect();
             let head = format!(
-                "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\n{extra}Content-Length: {}\r\nConnection: close\r\n\r\n",
                 body.len()
             );
             let _ = s.write_all(head.as_bytes()).await;

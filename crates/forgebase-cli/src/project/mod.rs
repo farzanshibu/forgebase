@@ -198,7 +198,7 @@ fn connection(c: &ConnArgs) -> anyhow::Result<Connection> {
     })
 }
 
-fn warn(project: &Project) {
+pub(crate) fn warn(project: &Project) {
     for w in &project.warnings {
         eprintln!("warning: {w}");
     }
@@ -227,7 +227,7 @@ fn managed_kinds(project: &Project) -> BTreeSet<Kind> {
 }
 
 /// Reads the server and plans.
-async fn make_plan(project: &Project, remote: &Remote, prune: bool) -> anyhow::Result<Plan> {
+pub(crate) async fn make_plan(project: &Project, remote: &Remote, prune: bool) -> anyhow::Result<Plan> {
     let actual = remote.fetch_all(&managed_kinds(project)).await?;
     let server_collections = remote.collection_names().await?.into_values().collect();
     plan::compute(
@@ -471,6 +471,7 @@ async fn apply_flow(
         allow_destructive: args.allow_destructive,
         update_secrets: args.update_secrets,
         secrets_out: args.secrets_out.clone(),
+        placeholder_secret: None,
     };
     apply::check_secrets_out(project, &opts)?;
     let (plan, approved) = match saved {
@@ -565,7 +566,7 @@ async fn apply_flow(
 }
 
 /// Runs each function's build command (in its directory).
-fn run_builds(project: &Project, out: &mut impl Write) -> anyhow::Result<usize> {
+pub(crate) fn run_builds(project: &Project, out: &mut impl Write) -> anyhow::Result<usize> {
     let mut n = 0;
     for r in &project.resources {
         let model::Extra::Function(f) = &r.extra else { continue };

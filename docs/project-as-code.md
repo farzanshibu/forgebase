@@ -47,6 +47,7 @@ rules need a super-administrator. To create one key:
 | `forgebase project pull [--force]` | Writes the server's state into the project directory. Never writes secrets. | 0 / 1 |
 | `forgebase project schemas` | Rewrites `<dir>/.schemas/*.schema.json`. | 0 / 1 |
 | `forgebase deploy [apply flags] [--skip-build]` | Runs each function's `build` command, then plans and applies. | 0 / 1 |
+| `forgebase dev [--seed] [--watch]` | A local emulator that applies this project to a throw-away server ([dev-workflow.md](dev-workflow.md)). | |
 
 Options of every `project` command and of `deploy`:
 

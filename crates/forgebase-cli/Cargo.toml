@@ -145,5 +145,10 @@ path = "tests/node_e2e.rs"
 name = "project_e2e"
 path = "tests/project_e2e.rs"
 
+# ADR-0038: `forgebase dev`, `gen types`, `functions invoke|logs --follow` against the real binary.
+[[test]]
+name = "dev_e2e"
+path = "tests/dev_e2e.rs"
+
 [lints]
 workspace = true
