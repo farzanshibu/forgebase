@@ -52,6 +52,8 @@ pub struct Reply {
     pub status: u16,
     /// Decoded body (chunked encoding removed).
     pub body: Vec<u8>,
+    /// Response headers, names in lower case.
+    pub headers: Vec<(String, String)>,
 }
 
 /// Largest response the CLI reads (a runaway server must not exhaust memory).
@@ -66,6 +68,19 @@ pub async fn request(
     json_body: Option<&[u8]>,
     timeout: Duration,
 ) -> std::io::Result<Reply> {
+    request_with(addr, method, path, bearer, &[], json_body, timeout).await
+}
+
+/// Like [`request`] with extra request headers (a `Content-Type` among them replaces the JSON default).
+pub async fn request_with(
+    addr: &str,
+    method: &str,
+    path: &str,
+    bearer: Option<&str>,
+    extra_headers: &[(&str, &str)],
+    json_body: Option<&[u8]>,
+    timeout: Duration,
+) -> std::io::Result<Reply> {
     tokio::time::timeout(timeout, async {
         let mut stream = TcpStream::connect(addr).await?;
         let mut head = format!(
@@ -74,8 +89,16 @@ pub async fn request(
         if let Some(t) = bearer {
             head.push_str(&format!("Authorization: Bearer {t}\r\n"));
         }
+        for (k, v) in extra_headers {
+            if !k.contains(['\r', '\n', ':']) && !v.contains(['\r', '\n']) {
+                head.push_str(&format!("{k}: {v}\r\n"));
+            }
+        }
         if let Some(b) = json_body {
-            head.push_str(&format!("Content-Type: application/json\r\nContent-Length: {}\r\n", b.len()));
+            if !extra_headers.iter().any(|(k, _)| k.eq_ignore_ascii_case("content-type")) {
+                head.push_str("Content-Type: application/json\r\n");
+            }
+            head.push_str(&format!("Content-Length: {}\r\n", b.len()));
         } else if method != "GET" {
             head.push_str("Content-Length: 0\r\n");
         }
@@ -109,12 +132,15 @@ fn parse_reply(buf: &[u8]) -> std::io::Result<Reply> {
         .and_then(|l| l.split_whitespace().nth(1))
         .and_then(|s| s.parse::<u16>().ok())
         .ok_or_else(|| bad("not an HTTP response"))?;
-    let chunked = lines.any(|l| {
-        let l = l.to_ascii_lowercase();
-        l.starts_with("transfer-encoding:") && l.contains("chunked")
-    });
+    let headers: Vec<(String, String)> = lines
+        .filter_map(|l| l.split_once(':'))
+        .map(|(k, v)| (k.trim().to_ascii_lowercase(), v.trim().to_owned()))
+        .collect();
+    let chunked = headers
+        .iter()
+        .any(|(k, v)| k == "transfer-encoding" && v.to_ascii_lowercase().contains("chunked"));
     let body = if chunked { dechunk(raw)? } else { raw.to_vec() };
-    Ok(Reply { status, body })
+    Ok(Reply { status, body, headers })
 }
 
 fn dechunk(mut raw: &[u8]) -> std::io::Result<Vec<u8>> {
