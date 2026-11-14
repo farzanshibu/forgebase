@@ -1,6 +1,6 @@
 /** Database Studio for PostgreSQL (FB-155): backend line, top queries, policies, direct logins, extensions, run-as SQL editor, fuzzy search. */
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { screen, waitFor, within } from "@testing-library/react";
+import { cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { renderStudio, seeded } from "../../test/helpers";
 import { confirmDialog, sheet, toast } from "../../test/dataStudioMock";
@@ -352,11 +352,18 @@ describe("indexes and fuzzy search (FB-166)", () => {
     expect(mock.bodies["post /api/v1/indexes"]![0]).toMatchObject({ collection: "products", kind: "trigram", unique: false });
   });
 
-  it("has no trigram kind when pg_trgm is not active", async () => {
-    setup({ features: { trigram: { engine: "portable", state: "portable" } } });
+  it("offers the trigram kind and the Fuzzy switch on every backend, also without pg_trgm (ADR-0034)", async () => {
+    const { mock } = setup({ features: { trigram: { engine: "portable", state: "portable" } } });
     renderStudio("/database/indexes");
     await screen.findByLabelText(/^Keys/);
-    expect(screen.queryByLabelText(/^Kind/)).not.toBeInTheDocument();
+    expect(screen.getByLabelText(/^Kind/)).toBeInTheDocument();
+    await pick(screen.getByLabelText(/^Kind/), "trigram");
+    expect(screen.getByText(/runs on every database/i)).toBeInTheDocument();
+    cleanup();
+    renderStudio("/database/c/products");
+    await screen.findByText("Pen");
+    expect(screen.getByRole("switch", { name: "Fuzzy" })).toBeInTheDocument();
+    expect(mock.problems).toEqual([]);
   });
 
   it("sends search with fuzzy and a threshold, and keeps them in the URL", async () => {
@@ -388,12 +395,12 @@ describe("indexes and fuzzy search (FB-166)", () => {
     expect(fuzzyThresholdError("x")).toBeDefined();
   });
 
-  it("has no Fuzzy switch on SQLite", async () => {
+  it("has the Fuzzy switch and the trigram kind on SQLite too (ADR-0034)", async () => {
     setup({ backend: "sqlite" });
     renderStudio("/database/c/products");
     await screen.findByText("Pen");
     expect(screen.getByLabelText("Search")).toBeInTheDocument();
-    expect(screen.queryByRole("switch", { name: "Fuzzy" })).not.toBeInTheDocument();
+    expect(screen.getByRole("switch", { name: "Fuzzy" })).toBeInTheDocument();
   });
 });
 

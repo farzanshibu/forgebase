@@ -63,6 +63,7 @@ export function ErrorPanel({ error, fields = "list", onRetry, className }: Error
               ))}
             </ul>
           )}
+          {e.position && <p className="mt-1 text-xs">At line {e.position.line}, column {e.position.column} of the query.</p>}
           {serverSaid && <p className="mt-1 text-xs">Server message: {serverSaid}</p>}
           <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-2 text-xs">
             {onRetry && (

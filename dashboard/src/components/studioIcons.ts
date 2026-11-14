@@ -13,6 +13,8 @@ import {
   HierarchySquare01Icon,
   IdentityCardIcon,
   Queue01Icon,
+  Alert02Icon,
+  Analytics01Icon,
   ServerStack01Icon,
   Settings02Icon,
   Shield01Icon,
@@ -36,6 +38,8 @@ export const STUDIO_ICONS: Record<string, IconSvgElement> = {
   queues: Queue01Icon,
   billing: CreditCardIcon,
   system: ServerStack01Icon,
+  alerts: Alert02Icon,
+  insights: Analytics01Icon,
   "system/features": Settings02Icon,
 };
 

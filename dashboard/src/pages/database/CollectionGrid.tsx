@@ -14,7 +14,6 @@ import { Button, ErrorView } from "../../components/ui";
 import { useLoad } from "../../hooks";
 import { notify } from "../../toaster";
 import RecordEditor from "./RecordEditor";
-import { getDatabaseInfo } from "./info";
 import { Icon, IconButton, TableCard } from "./parts";
 import { PER_PAGE, display, fuzzyThresholdError, parseCell, readGridState } from "./values";
 
@@ -55,7 +54,6 @@ export default function CollectionGrid({ collection, collections }: { collection
   const name = collection.name;
   const [params, setParams] = useSearchParams();
   const { filter, sort, page, record, search, fuzzy, threshold } = readGridState(params);
-  const trigram = useLoad(getDatabaseInfo, "database-info").data?.features?.trigram?.state === "active";
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [actionError, setActionError] = useState<unknown>();
   const [bulkField, setBulkField] = useState("");
@@ -129,7 +127,7 @@ export default function CollectionGrid({ collection, collections }: { collection
       <ErrorView error={actionError} />
       <TableCard
         label="Records"
-        toolbar={<FilterForm key={`${filter}|${search}|${fuzzy}|${threshold}`} filter={filter} search={search} fuzzy={fuzzy} threshold={threshold} trigram={trigram} onApply={(a) => setState({ page: "1", filter: a.filter, search: a.search, fuzzy: a.fuzzy ? "1" : "", ft: a.fuzzy ? a.threshold : "" })} />}
+        toolbar={<FilterForm key={`${filter}|${search}|${fuzzy}|${threshold}`} filter={filter} search={search} fuzzy={fuzzy} threshold={threshold} onApply={(a) => setState({ page: "1", filter: a.filter, search: a.search, fuzzy: a.fuzzy ? "1" : "", ft: a.fuzzy ? a.threshold : "" })} />}
         footer={data && items.length > 0 ? <Pager page={page} perPage={PER_PAGE} total={total} hasNext={items.length >= PER_PAGE} onPage={(p) => setState({ page: String(p) })} loading={loading} label="Records pages" /> : undefined}
       >
         {selected.size > 0 && (
@@ -240,13 +238,13 @@ export default function CollectionGrid({ collection, collections }: { collection
 
 
 /** The filter box and its help. Keyed by the applied filter, so a link or "Clear filter" resets what is typed. */
-function FilterForm({ filter, search, fuzzy, threshold, trigram, onApply }: { filter: string; search: string; fuzzy: boolean; threshold: string; trigram: boolean; onApply: (a: { filter: string; search: string; fuzzy: boolean; threshold: string }) => void }) {
+function FilterForm({ filter, search, fuzzy, threshold, onApply }: { filter: string; search: string; fuzzy: boolean; threshold: string; onApply: (a: { filter: string; search: string; fuzzy: boolean; threshold: string }) => void }) {
   const [filterText, setFilterText] = useState(filter);
   const [searchText, setSearchText] = useState(search);
   const [fuzzyOn, setFuzzyOn] = useState(fuzzy);
   const [thresholdText, setThresholdText] = useState(threshold);
   const thresholdError = fuzzyOn ? fuzzyThresholdError(thresholdText) : undefined;
-  const apply = (f: string) => onApply({ filter: f, search: searchText.trim(), fuzzy: fuzzyOn && trigram, threshold: thresholdText.trim() });
+  const apply = (f: string) => onApply({ filter: f, search: searchText.trim(), fuzzy: fuzzyOn, threshold: thresholdText.trim() });
   return (
     <form
       className="w-full space-y-2"
@@ -288,17 +286,15 @@ function FilterForm({ filter, search, fuzzy, threshold, trigram, onApply }: { fi
           </div>
         </details>
       </div>
-      {trigram && (
-        <div className="flex flex-wrap items-center gap-3">
-          <Toggle checked={fuzzyOn} onChange={setFuzzyOn} label="Fuzzy" description="Match near spellings with trigrams. The field needs an index of kind trigram." />
-          {fuzzyOn && (
-            <span className="inline-flex items-center gap-2 text-xs">
-              <Input size="sm" aria-label="Fuzzy threshold" aria-invalid={thresholdError ? true : undefined} className="w-20" inputMode="decimal" placeholder="0.3" value={thresholdText} onChange={(e) => setThresholdText(e.target.value)} />
-              {thresholdError && <span role="alert" className="text-destructive">{thresholdError}</span>}
-            </span>
-          )}
-        </div>
-      )}
+      <div className="flex flex-wrap items-center gap-3">
+        <Toggle checked={fuzzyOn} onChange={setFuzzyOn} label="Fuzzy" description="Match near spellings with trigrams. The field needs an index of kind trigram." />
+        {fuzzyOn && (
+          <span className="inline-flex items-center gap-2 text-xs">
+            <Input size="sm" aria-label="Fuzzy threshold" aria-invalid={thresholdError ? true : undefined} className="w-20" inputMode="decimal" placeholder="0.3" value={thresholdText} onChange={(e) => setThresholdText(e.target.value)} />
+            {thresholdError && <span role="alert" className="text-destructive">{thresholdError}</span>}
+          </span>
+        )}
+      </div>
     </form>
   );
 }

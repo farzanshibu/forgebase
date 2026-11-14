@@ -18,7 +18,9 @@ export type CypherState = "none" | "materialising" | "ready" | "stale" | "failed
 export interface CypherStatus { state: CypherState; graph: string; job_id?: string | null; nodes: number; edges: number; done: number; error?: string | null }
 export interface GraphStats { nodes: number; edges: number; edge_types: { type: string; count: number }[]; cypher?: CypherStatus | null }
 export interface CypherQuery { query: string; params?: Record<string, unknown>; limit?: number; timeout_ms?: number }
-export interface CypherResult { columns: string[]; rows: unknown[][]; truncated: boolean }
+/** `engine` says what answered: `age` (Apache AGE on the derived graph) or `portable` (ForgeBase's engine over the graph tables, ADR-0034). Servers before ADR-0034 omit it. */
+export type CypherEngine = "age" | "portable";
+export interface CypherResult { columns: string[]; rows: unknown[][]; truncated: boolean; engine?: CypherEngine }
 export interface NewNode { id?: string; label?: string; properties?: Props }
 export interface NewEdge { id?: string; type: string; source: string; target: string; directed?: boolean; properties?: Props }
 export interface TraverseQuery {

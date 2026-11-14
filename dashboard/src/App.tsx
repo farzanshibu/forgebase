@@ -27,6 +27,8 @@ const GraphPage = lazy(() => import("./pages/graph/GraphPage"));
 const VectorPage = lazy(() => import("./pages/vector/VectorPage"));
 const SetupPage = lazy(() => import("./pages/setup/SetupPage"));
 const SystemStudio = lazy(() => import("./pages/system/SystemStudio"));
+const AlertsPage = lazy(() => import("./pages/alerts/AlertsPage"));
+const InsightsPage = lazy(() => import("./pages/insights/InsightsPage"));
 // Dev builds only: every shared component on one page (docs/ux/components.md). Vite drops it from production.
 const PatternsPage = import.meta.env.DEV ? lazy(() => import("./components/PatternsPage")) : null;
 
@@ -44,6 +46,8 @@ const PAGES: { path: string; Page: ComponentType }[] = [
   { path: "access", Page: AccessPage },
   { path: "identity", Page: IdentityPage },
   { path: "billing", Page: BillingPage },
+  { path: "alerts", Page: AlertsPage },
+  { path: "insights", Page: InsightsPage },
   { path: "system", Page: SystemStudio },
 ];
 

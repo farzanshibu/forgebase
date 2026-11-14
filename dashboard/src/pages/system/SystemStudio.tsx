@@ -4,18 +4,20 @@ import { RouteTabs } from "../../components/controls";
 import { PageTabsContext } from "../../components/pageTabs";
 import SystemPage from "../SystemPage";
 import BackupsPage from "./BackupsPage";
+import CapabilityMatrix from "./CapabilityMatrix";
 import FeaturesPage from "../setup/FeaturesPage";
 import TopologyPage from "./topology/TopologyPage";
 
 const TABS = [
   { to: "/system", label: "Health", end: true },
+  { to: "/system/capabilities", label: "Capabilities" },
   { to: "/system/features", label: "Features and settings" },
   { to: "/system/topology", label: "Database topology" },
   { to: "/system/backups", label: "Backups" },
 ];
 
 /**
- * System: live health and build information, features and settings, database topology (replicas and shards), and backups.
+ * System: live health and build information, the capability matrix, features and settings, database topology (replicas and shards), and backups.
  * Each page draws its own PageHeader; the section tabs show under it (PageTabsContext), as in the other studios.
  * Platform administrators only.
  */
@@ -25,6 +27,7 @@ export default function SystemStudio() {
       <PageTabsContext.Provider value={<RouteTabs label="System sections" tabs={TABS} />}>
         <Routes>
           <Route index element={<SystemPage />} />
+          <Route path="capabilities" element={<CapabilityMatrix />} />
           <Route path="features" element={<FeaturesPage />} />
           <Route path="topology" element={<TopologyPage />} />
           <Route path="backups" element={<BackupsPage />} />

@@ -44,24 +44,46 @@ const run = async () => userEvent.click(await screen.findByRole("button", { name
 const lastBody = (mock: MockApi) => mock.bodies["post /api/v1/graph/cypher"]?.at(-1) as Record<string, unknown>;
 
 describe("openCypher tab: where it shows", () => {
-  it("is a tab only when the stats carry a cypher block", async () => {
+  it("is a tab where Apache AGE runs, with its derived-graph status", async () => {
     setup();
     renderStudio("/graph");
     expect(await screen.findByRole("tab", { name: "openCypher" }, T)).toHaveAttribute("href", "/graph/cypher");
   });
 
-  it("is hidden, and says why, on a server without Apache AGE", async () => {
+  it("is a tab on a server without Apache AGE too: the built-in engine answers (ADR-0034)", async () => {
     const { mock } = setup({ cypher: undefined });
     renderStudio("/graph");
     await screen.findByRole("link", { name: "4 nodes" }, T);
-    expect(screen.queryByRole("tab", { name: "openCypher" })).not.toBeInTheDocument();
+    expect(await screen.findByRole("tab", { name: "openCypher" }, T)).toHaveAttribute("href", "/graph/cypher");
     expect(mock.problems).toEqual([]);
   });
 
-  it("explains it when the page is opened directly without AGE", async () => {
+  it("opens straight onto the query form without a derived-graph strip when the built-in engine runs", async () => {
     setup({ cypher: undefined });
     renderStudio("/graph/cypher");
-    expect(await screen.findByText(/openCypher is not available on this server/, {}, T)).toBeInTheDocument();
+    expect(await screen.findByLabelText("Query", {}, T)).toBeInTheDocument();
+    expect(screen.queryByLabelText("Derived graph status")).not.toBeInTheDocument();
+    expect(screen.queryByText(/openCypher is not available on this server/)).not.toBeInTheDocument();
+  });
+});
+
+describe("openCypher tab: which engine answered", () => {
+  it.each([["portable", /built-in engine/], ["age", /Apache AGE on the derived copy/]] as const)("shows the %s engine badge on the results", async (engine, words) => {
+    setup({ cypher: engine === "age" ? { ...READY } : undefined, answer: () => ({ status: 200, body: { ...RESULT, engine } }) });
+    renderStudio("/graph/cypher");
+    await run0();
+    await screen.findByRole("table", { name: "Query results" }, T);
+    const badge = screen.getByText(`engine: ${engine}`);
+    expect(badge).toBeInTheDocument();
+    expect(badge).toHaveAttribute("title", expect.stringMatching(words));
+  });
+
+  it("draws no badge when an older server does not say", async () => {
+    setup();
+    renderStudio("/graph/cypher");
+    await run0();
+    await screen.findByRole("table", { name: "Query results" }, T);
+    expect(screen.queryByText(/^engine:/)).not.toBeInTheDocument();
   });
 });
 
@@ -226,7 +248,8 @@ describe("openCypher tab: drop the derived graph", () => {
 
 describe("openCypher tab: every error code, in the server's words with a hint", () => {
   const codes: [number, string, string, RegExp][] = [
-    [400, "cypher_unsupported", "no Apache AGE here", /needs PostgreSQL with Apache AGE/],
+    [400, "cypher_unsupported", "WITH is not supported by the portable openCypher engine", /outside the subset/],
+    [400, "cypher_too_complex", "a path may have at most 10 hops", /at most 10 hops in a variable-length path/],
     [400, "cypher_invalid", "syntax error near RETRN", /final RETURN/],
     [400, "cypher_read_only", "write clauses are not allowed", /Cypher here only reads; write through the REST graph API/],
     [400, "cypher_error", "label Foo does not exist", /Check the labels, properties and parameters/],
@@ -252,5 +275,42 @@ describe("openCypher tab: every error code, in the server's words with a hint", 
     renderStudio("/graph/cypher");
     await run0();
     expect(await screen.findByRole("alert", {}, T)).toHaveTextContent(/lacks the permission engine:graph_cypher/);
+  });
+});
+
+describe("openCypher tab: errors that name a position", () => {
+  it("shows the line and column of a construct the built-in engine does not support, with a caret under it", async () => {
+    setup({
+      cypher: undefined,
+      answer: () => envelope(400, "cypher_unsupported", "WITH is not supported by the portable openCypher engine (line 2, column 8)"),
+    });
+    renderStudio("/graph/cypher");
+    await screen.findByLabelText("Query", {}, T);
+    fireEvent.change(screen.getByLabelText("Query"), { target: { value: "MATCH (n)\nRETURN n WITH n" } });
+    await run();
+    const alert = await screen.findByRole("alert", {}, T);
+    expect(alert).toHaveTextContent("At line 2, column 8 of the query.");
+    expect(alert).toHaveTextContent(/does not support/);
+    const place = screen.getByLabelText("Where the query stops");
+    expect(place).toHaveTextContent("Line 2, column 8");
+    expect(place).toHaveTextContent("RETURN n WITH n");
+    expect(place.querySelector("code")?.textContent).toBe("RETURN n WITH n\n       ^");
+  });
+
+  it("shows it for cypher_too_complex too, and from details when the server sends them", async () => {
+    setup({ answer: () => envelope(400, "cypher_too_complex", "a path may have at most 10 hops", { line: 1, column: 20 }) });
+    renderStudio("/graph/cypher");
+    await run0();
+    expect(await screen.findByRole("alert", {}, T)).toHaveTextContent("At line 1, column 20 of the query.");
+    expect(screen.getByLabelText("Where the query stops")).toHaveTextContent("Line 1, column 20");
+  });
+
+  it("shows no position for an error without one", async () => {
+    setup({ answer: () => envelope(400, "cypher_invalid", "syntax error") });
+    renderStudio("/graph/cypher");
+    await run0();
+    await screen.findByRole("alert", {}, T);
+    expect(screen.queryByLabelText("Where the query stops")).not.toBeInTheDocument();
+    expect(screen.queryByText(/At line/)).not.toBeInTheDocument();
   });
 });

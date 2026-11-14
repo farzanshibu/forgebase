@@ -4,8 +4,6 @@ import { RouteTabs } from "../../components/controls";
 import { PageHeader } from "../../components/PageHeader";
 import { UseFromCodeButton } from "../../components/UseFromCode";
 import { Button } from "../../components/ui";
-import { graphStats } from "../../api";
-import { useLoad } from "../../hooks";
 import CypherTab from "./CypherTab";
 import EdgeBrowser from "./EdgeBrowser";
 import GraphExplorer from "./GraphExplorer";
@@ -21,13 +19,12 @@ const TABS = [
   { to: "/graph/query", label: "Query runner", end: false },
 ];
 
-/** The openCypher tab exists only where the server reports a derived graph (PostgreSQL with Apache AGE). */
+/** The openCypher tab is on every server: Apache AGE where it is installed, ForgeBase's portable engine elsewhere (ADR-0034). */
 const CYPHER_TAB = { to: "/graph/cypher", label: "openCypher", end: false };
 
 function Section() {
   const nav = useNavigate();
   const { pathname } = useLocation();
-  const stats = useLoad(graphStats, "graph-stats-tabs");
   // On the Edges tab the header's action makes an edge; everywhere else it makes a node.
   const onEdges = /\/graph\/edges\/?$/.test(pathname);
   return (
@@ -39,7 +36,7 @@ function Section() {
           ? <Button tone="primary" onClick={() => nav("/graph/edges?new=1")}>New edge</Button>
           : <Button tone="primary" onClick={() => nav("/graph/nodes?new=1")}>New node</Button>}
       />
-      <RouteTabs label="Graph sections" tabs={stats.data?.cypher ? [...TABS, CYPHER_TAB] : TABS} className="mt-4" />
+      <RouteTabs label="Graph sections" tabs={[...TABS, CYPHER_TAB]} className="mt-4" />
       <div className="mt-6"><Outlet /></div>
     </div>
   );

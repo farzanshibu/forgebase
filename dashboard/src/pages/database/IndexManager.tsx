@@ -3,7 +3,6 @@ import { analyzeIndexes, createIndex, dropIndex, indexRecommendations, indexStat
 import type { IndexDefinition, IndexStats } from "../../api";
 import { useLoad } from "../../hooks";
 import { Check, Sel } from "../../components/controls";
-import { getDatabaseInfo } from "./info";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
 import { EmptyState } from "../../components/EmptyState";
 import { FormField } from "../../components/FormField";
@@ -28,9 +27,8 @@ export default function IndexManager({ collection }: { collection?: string }) {
   const [unique, setUnique] = useState(false);
   const [indexName, setIndexName] = useState("");
   const [kind, setKind] = useState("btree");
-  // A trigram index needs pg_trgm: the kind appears only when the server reports that feature active (FB-166).
-  const trigram = useLoad(getDatabaseInfo, "database-info").data?.features?.trigram?.state === "active";
-  const isTrigram = trigram && kind === "trigram";
+  // The trigram kind is offered on every backend (ADR-0034): pg_trgm where it is active, ForgeBase's portable engine elsewhere.
+  const isTrigram = kind === "trigram";
 
   async function act(fn: () => Promise<unknown>) {
     setProblem(undefined);
@@ -133,11 +131,9 @@ export default function IndexManager({ collection }: { collection?: string }) {
               {!collection && <FormField label="Collection" required>{(p) => <Input {...p} size="sm" className="font-mono" value={coll} onChange={(e) => setColl(e.target.value)} />}</FormField>}
               <FormField label="Keys" required help="Comma separated; put - before a field to sort it descending.">{(p) => <Input {...p} size="sm" className="font-mono" value={keys} onChange={(e) => setKeys(e.target.value)} placeholder="price, -created" />}</FormField>
               <FormField label="Name" help="Optional. ForgeBase names it from the keys.">{(p) => <Input {...p} size="sm" className="font-mono" value={indexName} onChange={(e) => setIndexName(e.target.value)} />}</FormField>
-              {trigram && (
-                <FormField label="Kind" help={isTrigram ? "Trigram: makes fuzzy search and contains (~) filters on text fields fast." : "Btree: the usual sorted index."}>
-                  {(p) => <Sel {...p} value={kind} onChange={setKind} options={[{ value: "btree", label: "btree" }, { value: "trigram", label: "trigram (fuzzy search)" }]} />}
-                </FormField>
-              )}
+              <FormField label="Kind" help={isTrigram ? "Trigram: makes fuzzy search and contains (~) filters on text fields fast. It runs on every database: on pg_trgm where PostgreSQL has it, on ForgeBase's own engine elsewhere." : "Btree: the usual sorted index."}>
+                {(p) => <Sel {...p} value={kind} onChange={setKind} options={[{ value: "btree", label: "btree" }, { value: "trigram", label: "trigram (fuzzy search)" }]} />}
+              </FormField>
             </div>
             <div className="flex flex-wrap items-center justify-between gap-3">
               <Check checked={unique && !isTrigram} disabled={isTrigram} onChange={setUnique} label="Unique" description="Reject a second record with the same keys." />

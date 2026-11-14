@@ -3,14 +3,16 @@ import type { HealthResponse, ReadyResponse, SystemInfo } from "../api";
 import { formatBytes, formatUptime } from "../format";
 import { usePolling } from "../hooks";
 import { Badge as PanelBadge } from "panelui-web/badge";
-import { Card as PanelCard } from "panelui-web/card";
 import { Link } from "react-router-dom";
 import { ArrowRight01Icon, Database01Icon, Link01Icon, Pulse01Icon, PuzzleIcon, ServerStack01Icon } from "@hugeicons/core-free-icons";
-import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
+import { HugeiconsIcon } from "@hugeicons/react";
 import { CopyIcon, Dot, When, type Tone } from "./jobs/ops";
 import { PageHeader } from "../components/PageHeader";
 import { SkeletonCards } from "../components/Skeleton";
 import { Button } from "../components/ui";
+import { Card, Row } from "./system/cards";
+import TlsCard from "./system/TlsCard";
+import TracingCard from "./system/TracingCard";
 import { BACKEND_NAME, SQLITE_NOTICE, showSqliteNotice, type DatabaseFeature, type DatabaseInfo } from "./database/info";
 
 const REFRESH_MS = 5000;
@@ -40,34 +42,6 @@ function Badge({ tone, children }: { tone: "ok" | "bad" | "muted"; children: Rea
     <PanelBadge variant={tone === "ok" ? "success" : tone === "bad" ? "destructive" : "secondary"} dot={tone !== "muted"}>
       {children}
     </PanelBadge>
-  );
-}
-
-function Card({ title, icon, children }: { title: string; icon?: IconSvgElement; children: React.ReactNode }) {
-  return (
-    <PanelCard as="section" size="sm" className="rounded-xl">
-      <PanelCard.Header className="pb-2">
-        <PanelCard.Title as="h2" className="flex items-center gap-2 text-sm font-medium text-foreground">
-          {icon && (
-            <span className="flex size-6 items-center justify-center rounded-md bg-primary/10 text-primary" aria-hidden="true">
-              <HugeiconsIcon icon={icon} size={14} strokeWidth={1.8} />
-            </span>
-          )}
-          {title}
-        </PanelCard.Title>
-      </PanelCard.Header>
-      <PanelCard.Content>{children}</PanelCard.Content>
-    </PanelCard>
-  );
-}
-
-/** One label and value; `mono` for versions and ids. */
-function Row({ label, value, mono = false }: { label: string; value: React.ReactNode; mono?: boolean }) {
-  return (
-    <div className="flex items-center justify-between gap-4 border-b border-border/60 py-2 text-sm last:border-b-0">
-      <dt className="shrink-0 text-muted-foreground">{label}</dt>
-      <dd className={`min-w-0 truncate text-right tabular-nums text-foreground ${mono ? "font-mono text-xs" : ""}`}>{value}</dd>
-    </div>
   );
 }
 
@@ -268,6 +242,8 @@ export default function SystemPage() {
                   </dl>
                 </Card>
                 <DatabaseCard info={data.info.value} />
+                <TlsCard tls={data.info.value.tls} />
+                <TracingCard />
               </>
             ) : (
               <Card title="Server" icon={ServerStack01Icon}>
