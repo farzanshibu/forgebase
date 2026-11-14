@@ -47,14 +47,14 @@ describe("alerts", () => {
   });
 
   it("silences: list (all), create, get, replace, expire", async () => {
-    const s = { id: "s1", matchers: [{ name: "alertname", value: "x", is_regex: false }] };
+    const s = { id: "s1", matchers: [{ label: "alertname", op: "=", value: "x" }] };
     const { fb, calls } = client(json(200, [s]), json(201, s), json(200, s), json(200, s), json(200, s));
     const si = fb.alerts.silences;
     await si.list();
     await si.list({ all: true });
-    await si.create({ matchers: s.matchers as never, duration: "1h", comment: "deploy" });
+    await si.create({ matchers: s.matchers, duration: "1h", comment: "deploy" });
     await si.get("s1");
-    await si.update("s1", { matchers: s.matchers as never, duration: "2h" });
+    await si.update("s1", { matchers: s.matchers, duration: "2h" });
     await si.expire("s1");
     expect(calls.map(line)).toEqual([
       "GET /api/v1/alerts/silences",

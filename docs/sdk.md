@@ -9,7 +9,7 @@ does not repeat it.
 
 | SDK | Location | Status |
 |---|---|---|
-| JavaScript / TypeScript (`@forgebase/sdk`) | [`sdk/js`](../sdk/js) | Version 0.1.0. Covers auth, collections and records, storage, KV, functions, vector, graph, SQL, realtime, queues, jobs, billing, entitlements, credits, webhook verification, and the organization, access, identity, customization and system administration APIs. |
+| JavaScript / TypeScript (`@forgebase/sdk`) | [`sdk/js`](../sdk/js) | Version 0.1.0. Covers auth, collections and records, storage, KV, functions, vector, graph, SQL, realtime, queues and their webhook tooling, jobs, billing (with the provider webhook inspector), entitlements, credits, webhook verification, alerts and SLOs, operations insights (with streamed audit export), and the organization, access, identity, customization (including the mail provider) and system administration APIs (including capabilities). |
 | Rust (`forgebase-sdk`) | [`sdk/rust`](../sdk/rust) | Version 0.1.0 (FB-82), its own Cargo workspace. The same surface as the JavaScript SDK: auth, records, documents, KV, storage, realtime, functions, jobs, queues, billing and entitlements (with their admin sides), credits, vector, graph, SQL, indexes, and the access, organization, identity, customization and system administration APIs; plus queue webhook tooling, the billing webhook inspector, alerts and SLOs, operations insights and webhook verification. See [§3.4](#34-rust-sdk) and [sdk/rust/README.md](../sdk/rust/README.md). |
 | Dart / Flutter (`forgebase`) | [`sdk/dart`](../sdk/dart) | Version 0.1.0 (requested after the 2026-11-10 skip). Pure Dart, so it runs in Flutter and on servers. Covers auth, records, realtime, storage, KV, functions, queues, jobs, entitlements and store billing. See [§8](#8-dart--flutter-sdk) and [sdk/dart/README.md](../sdk/dart/README.md). |
 | Kotlin (Android and JVM, `dev.forgebase:forgebase`) | [`sdk/kotlin`](../sdk/kotlin) | Version 0.1.0, a pure Kotlin/JVM Gradle library (Android needs no plugin). Covers auth with a pluggable token store and Custom Tabs sign-in, records, storage (multipart and resumable), realtime with resume, functions, KV, queues, jobs, entitlements, billing customer and store verification, vector, graph, SQL reads and webhook verification. Administration APIs are left to the JS and Rust SDKs. See [sdk/kotlin/README.md](../sdk/kotlin/README.md). |
@@ -40,26 +40,31 @@ browsers, Deno and Bun provide. It ships ESM, CJS and type declarations.
 | Collections and records | `fb.collection<T>(name)` | Create, read, update with optimistic concurrency, replace, delete, list with filter, sort, expand and fields, and iterators over pages. See [§3](#3-collections-and-records). |
 | Realtime | `fb.realtime` | One connection for every subscription. WebSocket with SSE fallback. Automatic resume from the last cursor. Channels, presence and publish. See [sdk/js/README.md#realtime](../sdk/js/README.md#realtime). |
 | Entitlements and quotas | `fb.entitlements` | See [sdk/js/README.md#entitlements-and-quotas](../sdk/js/README.md#entitlements-and-quotas). |
-| Queues and pub/sub | `fb.queues` | Topics, subscriptions, publish (attributes, ordering key, dedup id), pull, ack, nack, deadlines, streaming pull with automatic reconnect, seek and snapshots, dead letters. See [§3.1](#31-queues). |
+| Queues and pub/sub | `fb.queues` | Topics (with description and example), subscriptions (`pauseAfterFailures`, `ttlMs`), publish (attributes, ordering key, dedup id), pull, ack, nack, deadlines, streaming pull with automatic reconnect, seek and snapshots, dead letters, patches and the event catalog. See [§3.1](#31-queues). |
+| Webhook tooling | `fb.queues.webhooks(subscription)` | Attempt log, test send, redrive, retry now, signing-secret rotation and expire-previous, pause and resume of a push subscription (ADR-0031). See [§3.1](#31-queues). |
 | Jobs and long tasks | `fb.jobs` | Enqueue, progress, wait, workflows. See [sdk/js/README.md#jobs-and-long-tasks](../sdk/js/README.md#jobs-and-long-tasks). |
-| Storage | `fb.storage` | Buckets, objects, multipart and resumable uploads, signed URLs, versions, ACLs. See [sdk/js/README.md#storage](../sdk/js/README.md#storage). |
+| Storage | `fb.storage` | Buckets, objects, multipart and resumable uploads, signed URLs, versions, ACLs, conditional reads (`If-None-Match` to a 304). See [sdk/js/README.md#storage](../sdk/js/README.md#storage). |
 | Documents | `fb.documents` | Document form of the record operations with merge patch. |
-| Key-value | `fb.kv.ns(name)` | Strings, hashes, lists, sets, sorted sets, streams, TTLs, pub/sub, batch and raw commands. See [sdk/js/README.md#key-value-store](../sdk/js/README.md#key-value-store). |
+| Key-value | `fb.kv.ns(name)` | Strings, hashes, lists, sets, sorted sets, streams, TTLs, pub/sub (`onGap` reports messages lost while reconnecting), batch and raw commands. See [sdk/js/README.md#key-value-store](../sdk/js/README.md#key-value-store). |
 | SQL and indexes | `fb.sql`, `fb.indexes` | Parameterised SQL, batch, explain, tables; collection indexes, recommendations and the slow-query log. |
-| Graph | `fb.graph` | Nodes, edges, neighbours, traversal, shortest path, read-only openCypher. |
+| Graph | `fb.graph` | Nodes, edges, neighbours, traversal, shortest path, read-only openCypher (the result's `engine` is `age` or `portable`). |
 | Vector search | `fb.vector` | Collections, fields, upsert, similarity and hybrid search, recall, rebuild. |
-| Functions | `fb.functions` | Deploy, invoke (JSON or raw `Response`), versions, rollback, logs, secrets, KV rules. |
+| Functions | `fb.functions` | Deploy, invoke (JSON, `{ raw: true }` for the status, headers and body of any answer, or a raw `Response`), versions, rollback, logs, secrets, KV rules. |
 | Credits | `fb.credits` | Balance, ledger, top-ups, grants, spend, refunds, reversals, rates, usage, stats. |
-| Billing | `fb.billing` | Customers, subscriptions, orders, invoices, portal, catalog, providers, settings and store purchases. |
+| Billing | `fb.billing` | Customers, subscriptions, orders, invoices, portal, catalog, providers, settings and store purchases; `fb.billing.webhookDeliveries` is the provider webhook inspector (list, get, replay, reverify). |
 | Organizations and access | `fb.orgs`, `fb.access` | Orgs, projects, teams, members, invitations, roles; permission checks, ACLs, collection and resource rules. |
-| Identity and customization | `fb.identity`, `fb.customize` | API keys, tokens, service accounts, OAuth clients, realms, user administration; domains, branding, email, agreements. |
-| System | `fb.system` | Features, config, database topology, backups, DB logins, extensions ([§3.2](#32-backups-and-operational-endpoints)). |
+| Identity and customization | `fb.identity`, `fb.customize` | API keys, tokens, service accounts, OAuth clients, realms, user administration; domains, branding, email (templates, deliveries, mail provider get / put / delete / test), agreements. |
+| System | `fb.system` | Capabilities (the engine behind each feature), features, config, database topology, backups, DB logins, extensions ([§3.2](#32-backups-and-operational-endpoints)). |
+| Alerts and SLOs | `fb.alerts`, `fb.slos` | Rules, active alerts, history, expression queries, silences, notifiers with a test send, notification deliveries; SLO CRUD and status (ADR-0035). Platform administrators. |
+| Insights | `fb.insights` | Statement statistics, regressions, slow queries, usage with estimated cost, function profiles and invocations, audit search, related entries, summary and a streamed CSV / JSONL export (ADR-0036). See [§3.5](#35-insights-and-audit-export). |
 | Webhook verification | `verifyWebhookSignature`, `constructWebhookEvent` | Verifies push-subscription webhooks on any Web Crypto runtime ([§3.3](#33-verifying-push-webhooks)). |
-| Raw requests | `fb.request(path, options)` | For routes the SDK does not wrap yet. |
+| Raw requests | `fb.request(path, options)` | For routes the SDK does not wrap yet; `acceptStatus` and `conditional` are options of every call. |
 
 ### 2.3 Retries and errors
 
-- `429` and `503` are retried for every method. `502`, `504` and network errors
+- `429` and `503` are retried for every method, except a `429` for an exhausted
+  quota (`quota_exceeded`): waiting does not help, so it throws `QuotaExceededError`
+  at once, as in the Dart, Swift and Kotlin SDKs. `502`, `504` and network errors
   are retried only for idempotent methods. A `Retry-After` header is honoured.
 - Every failure is a `ForgeBaseError` with `status`, `code`, `message`,
   `requestId`, `details` and `retryAfter`. Subclasses include `ValidationError`,
@@ -122,6 +127,28 @@ q.publish("orders", &NewMessage::new(json!({"id": 1})).attr("kind", "rush").dedu
 for m in q.pull("billing", &PullOptions { max_messages: Some(10), wait_ms: Some(2000), ..Default::default() }).await? {
     q.ack("billing", &[m.ack_id]).await?;
 }
+```
+
+Webhook tooling of a push subscription is `fb.queues.webhooks(subscription)`
+([ADR-0031](adr/0031-webhook-tooling.md)); the Rust SDK has the same handle as
+`queues().webhooks(sub)`:
+
+```ts
+await fb.queues.createTopic("orders", { description: "Order lifecycle events", example: { order: 1 } });
+await fb.queues.createSubscription("orders-push", "orders", {
+  push: { kind: "webhook", endpoint: "https://hooks.example.com/in" },
+  pauseAfterFailures: 50, ttlMs: 7 * 86_400_000,
+});
+
+const w = fb.queues.webhooks("orders-push");
+const attempt = await w.test({ hello: "world" });                    // signed test event, recorded as an attempt
+const { items } = await w.attempts({ outcome: "failure", limit: 20 }); // newest first; `next_before` continues
+await w.redrive({ ids: [12] });                                      // or { all: true }; each dead letter once
+await w.retry();                                                     // waiting deliveries are ready now
+const { push_secret } = await w.rotateSecret({ graceMs: 3_600_000 }); // both signatures during the grace window
+await w.expirePreviousSecret();
+await w.pause({ reason: "deploying" }); await w.resume();
+const { topics } = await fb.queues.catalog();                        // description, schema, example per topic
 ```
 
 A repeated `dedupId` inside the topic's dedup window is stored once; the
@@ -208,6 +235,30 @@ with `scripts/generate_models.py` ([sdk/rust/README.md](../sdk/rust/README.md#ge
 adds the live tests (vector, graph and openCypher, SQL, webhook tooling, alerts and SLOs, insights,
 capabilities, identity, customization, billing admin, backups and indexes).
 
+### 3.5 Insights and audit export
+
+`fb.insights` ([ADR-0036](adr/0036-ops-insights.md)) reads statement
+statistics, regressions, the slow-statement log, usage with an estimated cost,
+function profiles and the audit trail. Rust has the same surface as
+`client.insights()`.
+
+```ts
+const { items } = await fb.insights.queries({ sort: "p95", limit: 10 });
+await fb.insights.regressions({ minRatio: 2 });
+await fb.insights.usage({ period: "month", groupBy: "org", sort: "cost" });
+const page = await fb.insights.audit({ actorType: "admin", outcome: "failure" });
+
+// Streamed export (oldest first, pages of 1000, never buffered whole).
+const csv = await fb.insights.exportAudit({ from: "2026-03-01" }, { format: "csv" });
+for await (const line of csv) console.log(line);                       // or csv.stream / csv.text()
+for await (const row of (await fb.insights.exportAudit({}, { format: "jsonl" })).records()) handle(row);
+```
+
+KV pub/sub is the one place the SDKs cannot promise delivery: the engine stores
+nothing, so `fb.kv.ns(n).subscribe` loses what is published while its stream is
+down. Pass `onGap` to learn when, or use queues or realtime, which replay from a
+cursor.
+
 ## 4. Types
 
 The SDK's route types are generated from the server's OpenAPI document. The
@@ -216,7 +267,7 @@ checked-in copy is `sdk/js/openapi/openapi.json`, and the generated file is
 
 ```sh
 npm run generate                                 # from the checked-in document
-npm run generate -- --url http://127.0.0.1:8090  # refresh the document from a running server
+npm run generate -- --url http://127.0.0.1:8090  # refresh the document from a running server (compact, sorted keys: the bytes sdk/rust/openapi uses)
 npm run generate:check                           # CI: fails when the generated file is stale
 ```
 
@@ -257,10 +308,13 @@ In short:
 - Passkeys are wrapped as option and verify calls; the browser credential APIs
   stay with the caller. OIDC protocol endpoints are left to OIDC libraries.
 - Request bodies cannot be `ReadableStream`s (use the multipart or resumable
-  upload helpers), and a non-2xx answer from a function is always raised as a
-  typed error.
-- Webhook-endpoint tooling on the server (attempt log, test send, redrive,
-  secret rotation, health, event catalog) is not wrapped yet.
+  upload helpers). A non-2xx answer from a function is raised as a typed error
+  unless the call passes `raw: true`.
+- Conditional reads (`If-None-Match` to a 304 answered from memory) work for
+  storage objects; records and most JSON routes send an `ETag` but always answer
+  `200`.
+- KV pub/sub has no cursor or replay: messages published while `subscribe` is
+  reconnecting are lost (`onGap` reports the span).
 
 ## 7. Versioning
 

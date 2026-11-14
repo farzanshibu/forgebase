@@ -1,7 +1,7 @@
 {
   "name": "@forgebase/sdk",
   "version": "0.1.0",
-  "description": "TypeScript SDK for ForgeBase: auth, records, storage, KV, functions, vector, graph, SQL, realtime, queues, jobs, billing, webhook verification and admin APIs.",
+  "description": "TypeScript SDK for ForgeBase: auth, records, storage, KV, functions, vector, graph, SQL, realtime, queues and webhook tooling, jobs, billing, alerts and SLOs, insights, webhook verification and admin APIs.",
   "license": "MIT OR Apache-2.0",
   "type": "module",
   "sideEffects": false,

@@ -1,7 +1,8 @@
 # @forgebase/sdk
 
 TypeScript SDK for [ForgeBase](../../README.md): auth, collections and records, storage, key-value, functions, vector search, graph, SQL, realtime,
-queues, jobs, billing, entitlements, credits, webhook verification, and the organization, identity and system administration APIs.
+queues and webhook tooling, jobs, billing (with the provider webhook inspector), entitlements, credits, webhook verification, alerts and SLOs, operations
+insights, and the organization, identity, customization and system administration APIs.
 
 - Zero runtime dependencies. Needs `fetch` (Node 20+, browsers, Deno, Bun); `WebSocket` is optional (SSE is the fallback).
 - Tree-shakeable (`sideEffects: false`): every area is its own module on the client; the webhook helpers are also at `@forgebase/sdk/webhooks`.
@@ -143,6 +144,37 @@ stream.unsubscribe();
 // Manual pull
 for (const m of await fb.queues.pull("billing", { maxMessages: 10, waitMs: 2000 })) await fb.queues.ack("billing", [m.ack_id]);
 await fb.queues.seek("billing", { time: new Date(Date.now() - 3_600_000) }); // replay the last hour
+```
+
+### Webhook tooling
+
+`fb.queues.webhooks(subscription)` is the delivery tooling of a push subscription (ADR-0031): the attempt log, test sends, dead-letter
+redrive, retry now, signing-secret rotation, pause and resume. Reads need `engine:queue_read`, the rest `engine:queue_admin`; a pull
+subscription answers `409 not_push_subscription` (`ConflictError`). (`fb.webhooks` is not a client property: the verification helpers live in
+`@forgebase/sdk/webhooks`.)
+
+```ts
+await fb.queues.createTopic("orders", { description: "Order lifecycle events", example: { order: 1, status: "created" } });
+await fb.queues.createSubscription("orders-push", "orders", {
+  push: { kind: "webhook", endpoint: "https://hooks.example.com/in" },
+  pauseAfterFailures: 50,       // circuit breaker: pause after 50 consecutive failed attempts (1-1000)
+  ttlMs: 7 * 86_400_000,        // delete the subscription after a week (60 s - 31 days)
+});                              // `push_secret` is on the result, once
+
+const w = fb.queues.webhooks("orders-push");
+const attempt = await w.test({ hello: "world" });            // signed `forgebase.test` event; not a message, rate limited
+const { items, next_before } = await w.attempts({ outcome: "failure", since: new Date(Date.now() - 3_600_000), limit: 50 });
+await w.attempt(items[0].id);                                // status, latency, error class, masked request headers, response body
+await w.redrive({ ids: [12, 13] });                          // or { all: true, since, filter, limit }: dead letters again, once each
+await w.retry();                                             // deliveries waiting for a backoff are ready now (or retry(["msg-id"]))
+const { push_secret } = await w.rotateSecret({ graceMs: 3_600_000 });  // old and new both sign during the grace window
+await w.expirePreviousSecret();
+await w.pause({ reason: "deploying the receiver" });          // messages accumulate, none is dead-lettered
+await w.resume();
+
+const { topics } = await fb.queues.catalog();                // every readable topic: description, schema, example, record event types
+await fb.queues.updateTopic("orders", { description: "Orders", clearExample: true });
+await fb.queues.updateSubscription("orders-push", { pauseAfterFailures: 0, ttlMs: 0 });
 ```
 
 ## Webhook verification
@@ -350,6 +382,21 @@ Bodies are `Blob`, `ArrayBuffer`, typed arrays or strings. `ReadableStream` bodi
 `uploads.upload` or `uploads.resume` for large data. Administration: `buckets.setAcl`, `buckets.usage`, `storage.stats()`,
 `storage.reconcile()`, `storage.rotateSigningKey()`. `sha256Hex(bytes)` computes the optional `checksumSha256`.
 
+### Conditional reads
+
+Objects carry an `ETag` (`"<sha256>"`) and the server answers `If-None-Match` with `304`:
+
+```ts
+const b = fb.storage.from("assets");
+const res = await b.download("logo.svg", { ifNoneMatch: etag });          // res.status === 304 when unchanged (no body)
+const css = await b.text("site.css", { conditional: true });               // the client remembers the text and ETag per key,
+const again = await b.text("site.css", { conditional: true });            // so this read is a 304 answered from memory
+```
+
+`conditional` also works on any `GET` through the escape hatch (`fb.request(path, { conditional: true })`); a server that ignores
+`If-None-Match` (records and most other routes answer `200` with the record version as `ETag`) just returns the fresh body. `fb.transport.clearConditionalCache()`
+forgets everything remembered.
+
 ## Documents
 
 `fb.documents.collection<T>(name)`: the document form of the record operations, with merge patch and `If-Match` versions.
@@ -392,8 +439,21 @@ await fb.kv.flush("cache");                          // deletes every key, retur
 ```
 
 Bytes that are not valid UTF-8 come back as `{ base64 }`; decode with `kvBytes` / `kvText`. `get`, `expire` and `persist` throw
-`NotFoundError` for a missing key. Pub/sub messages are not stored: a subscriber only sees what is published while its stream is open
-(pass `{ reconnect: false }` if a silent gap on reconnect matters). `streamRead` does not block; poll with the last id you saw.
+`NotFoundError` for a missing key. `streamRead` does not block; poll with the last id you saw.
+
+**Pub/sub can lose messages.** The engine stores nothing and has no cursor or replay: a subscriber sees only what is published while its
+stream is open. `subscribe` reconnects after a dropped stream, and everything published during the gap is gone. Pass `onGap` to learn when
+that may have happened, and re-read the state you mirror (or use `fb.queues` / `fb.realtime`, which replay from a cursor, when delivery matters):
+
+```ts
+cache.subscribe("news", handle, {
+  onGap: (gap) => {
+    // { reason: "reconnect", from, to }: the stream was down between `from` and `to`
+    // { reason: "lagged", missed }: the server dropped `missed` messages for a slow reader
+    void resync();
+  },
+});
+```
 
 ## SQL, indexes and slow queries
 
@@ -438,8 +498,9 @@ const r = await fb.graph.cypher("MATCH (u:User {id: $id})-[:FOLLOWS]->(f) RETURN
 await fb.graph.dropCypher();    // drops the derived openCypher graph only
 ```
 
-openCypher is read-only and needs PostgreSQL with Apache AGE and the `engine:graph_cypher` permission. The first query of a tenant builds
-the graph and fails with a `ConflictError` (code `graph_materialising`, `err.body.error.job_id`); retry once
+openCypher is read-only and needs the `engine:graph_cypher` permission. Every result says which engine answered: `r.engine` is `"age"` (Apache
+AGE on PostgreSQL) or `"portable"` (SQL over the canonical tables, ADR-0034; `fb.system.capabilities()` lists what runs where). On AGE the first
+query of a tenant builds the graph and fails with a `ConflictError` (code `graph_materialising`, `err.body.error.job_id`); retry once
 `(await fb.graph.stats()).cypher?.state === "ready"`.
 
 ## Vector search
@@ -499,9 +560,16 @@ await fb.functions.kvRules.set("hello", [{ namespace: "app.*", access: "read" }]
 const dts = await fb.functions.types();           // TypeScript declarations of the "forgebase" module
 ```
 
+```ts
+// A function that answers 404 or 500 on purpose: ask for the raw result instead of a typed error.
+const r = await fb.functions.invoke<{ error: string }>("lookup", undefined, { method: "GET", path: "users/9", raw: true });
+if (r.status === 404) console.log(r.body, r.headers.get("x-trace"));   // { status, ok, headers, body }; body is parsed JSON, else text
+```
+
 `invoke` sends JSON by default (a string, `Blob`, `ArrayBuffer`, typed array, `FormData`, `URLSearchParams` or stream goes out as is) and
 parses a JSON answer. A source that does not compile throws `ValidationError` (`function_compile_failed`; `err.details` has `line`,
-`column`, `message`). A function that answers with an error status raises the matching typed error (its JSON body is on `err.body`). `invoke`
+`column`, `message`). A function that answers with an error status raises the matching typed error (its JSON body is on `err.body`) unless you pass `raw: true`
+(`invokeRaw(..., { anyStatus: true })` does the same for a `Response`). Retries of 429 / 503 still run first. `invoke`
 defaults to `POST`; pass `retry: false` for non-idempotent functions called with another verb.
 
 ## Credits
@@ -583,7 +651,20 @@ keep the wire shape.
 | `catalog.coupons`, `catalog.taxRates` | `list`, `put`, `archive` |
 | `providers`, `settings` | `list`/`get`, `put`, `delete` (providers) |
 | `store` | `verify`, `checkout`, `purchases`, `products`, `putProduct`, `deleteProduct` |
+| `webhookDeliveries` | `list`, `get`, `replay`, `reverify` (the provider webhook inspector) |
 | top level | `stats`, `usageMeters`, `dunning`, `maintenance` |
+
+### Provider webhook inspector
+
+`fb.billing.webhookDeliveries` (platform administrators) records every request a payment provider sent to `/api/v1/billing/webhooks/{provider}`
+with how its signature verified, what was done with it and the stored body:
+
+```ts
+const { items, total } = await fb.billing.webhookDeliveries.list({ provider: "stripe", outcome: "rejected", from: new Date(Date.now() - 86_400_000), limit: 20 });
+const d = await fb.billing.webhookDeliveries.get(items[0].id);       // stored headers and body, links to the records it touched
+await fb.billing.webhookDeliveries.reverify(d.id);                    // verify the stored signature again after fixing a wrong secret
+const { result, detail } = await fb.billing.webhookDeliveries.replay(d.id);   // process the stored body again; applied events are skipped
+```
 
 ## Organizations and teams
 
@@ -689,6 +770,11 @@ await fb.customize.email.send({ template: "invitation", to: "new@acme.test", var
 const failed = await fb.customize.email.deliveries({ status: "failed", limit: 20 });
 await fb.customize.email.retry(failed[0].id);
 
+await fb.customize.email.putProvider({ provider: "resend", fromAddress: "no-reply@acme.test", settings: { api_key: "re_…" } });   // platform admins
+const mail = await fb.customize.email.provider();                  // { realm, configured, config } with secrets masked (********)
+await fb.customize.email.testProvider("me@acme.test");             // one message now; a failure is ConflictError `mail_test_failed`
+await fb.customize.email.deleteProvider();                         // back to the instance's provider ({ realm: "*" } is the instance's own)
+
 await fb.customize.agreements.publish({ kind: "terms", title: "Terms of Service", body: "…" });
 const todo = await fb.customize.agreements.pending();              // [{ kind, version, title }]
 await fb.customize.agreements.accept(todo.map(({ kind, version }) => ({ kind, version })));
@@ -703,6 +789,7 @@ fb.customize.hosted.assetUrl("logo");  fb.customize.hosted.themeUrl();  fb.custo
 `fb.system` (administrators only): features and config, database topology, backups, DB logins, extensions.
 
 ```ts
+const caps = await fb.system.capabilities();   // { backend, features: [{ feature, engine, state, accelerated, mode, reason, limits }] } (ADR-0034)
 const { features } = await fb.system.features();
 await fb.system.updateConfig({ "storage.max_object_bytes": 104857600 });   // applies after restart
 
@@ -718,11 +805,75 @@ const { password } = await fb.system.dbLogins.create({ name: "etl", readonly: tr
 Topology-changing database calls take a typed `confirm` value (node, shard or tenant name, or the plan id) and run as operations you can poll
 or cancel. `database.agent.*` is for the `forgebase node` agent and is untyped.
 
+## Alerts and SLOs
+
+`fb.alerts` and `fb.slos` (platform administrators; `[alerts] enabled = false` makes them `404 feature_disabled`). Inputs and results are the server's
+wire models (snake_case); rules, silences and notifiers are addressed by id or name.
+
+```ts
+const rule = await fb.alerts.rules.create({ name: "high-error-rate", expr: "forgebase_http_requests_total", op: ">", threshold: 1_000_000, for: "5m", severity: "warning" });
+await fb.alerts.rules.update(rule.id, { enabled: false });            // built-in rules can only be switched on or off (409 rule_read_only otherwise)
+await fb.alerts.query("forgebase_http_requests_total");               // try an expression before saving it
+
+const firing = await fb.alerts.active({ state: "firing" });
+const { items, next_before } = await fb.alerts.history({ ruleId: rule.id, from: new Date(Date.now() - 86_400_000) });
+const detail = await fb.alerts.get(items[0].id);
+
+const silence = await fb.alerts.silences.create({ matchers: [{ label: "severity", op: "=", value: "warning" }], duration: "1h", comment: "deploy" });
+await fb.alerts.silences.expire(silence.id);
+
+const hook = await fb.alerts.notifiers.create({ name: "pager", kind: "webhook", url: "https://alerts.example.com/hook" });
+await fb.alerts.notifiers.test(hook.id);                               // a test notification; the delivery says whether it worked
+await fb.alerts.notifications({ notifier: "pager", status: "failed" }); // what was sent
+
+const slo = await fb.slos.create({ name: "api-availability", kind: "availability", objective: 0.999, window: "7d", route_prefix: "/api/v1" });
+const status = await fb.slos.status(slo.id);                            // compliance, error budget, burn rates; fb.slos.statuses() for all
+```
+
+## Insights
+
+`fb.insights` (administrators: `engine:read_insights`, audit needs `engine:read_audit`) reads statement statistics, query regressions, the slow-statement
+log, per-tenant usage with an estimated cost, function profiles and the audit trail (ADR-0036). Ranges are `from` / `to` (a `Date`, RFC 3339 or
+`YYYY-MM-DD`; `to` is exclusive).
+
+```ts
+await fb.insights.status();
+await fb.insights.flush();                                              // write the in-memory statistics now
+const { items } = await fb.insights.queries({ sort: "p95", area: "data", limit: 10 });
+await fb.insights.query(items[0].fingerprint);                          // one shape with its time series
+await fb.insights.regressions({ window: 3600, baseline: 86_400, minRatio: 2 });
+await fb.insights.slow({ minMs: 200, limit: 20 });                      // `next_cursor` continues
+
+await fb.insights.usage({ period: "month", groupBy: "org", sort: "cost", currency: "USD" });
+await fb.insights.top("usage.api.requests", { n: 5 });
+await fb.insights.series("env:abc123", { from: "2026-03-01" });
+await fb.insights.metrics();
+await fb.insights.rollup({ day: "2026-03-01" });                        // recompute one day
+
+await fb.insights.functions({ function: "hello" });
+await fb.insights.invocations({ function: "hello", errors: true, minDurationMs: 100 });
+await fb.insights.invocation(id);
+
+const page = await fb.insights.audit({ actorType: "admin", action: "login", outcome: "failure", from: "2026-03-01" });
+await fb.insights.auditEntry(page.items[0].id);
+await fb.insights.auditRelated(page.items[0].id, { windowSecs: 600 });  // the same request, and the same actor around it
+await fb.insights.auditSummary({ from: "2026-03-01" });
+
+// Streamed export: oldest first, in pages of 1000, never buffered whole.
+const csv = await fb.insights.exportAudit({ from: "2026-03-01" }, { format: "csv", maxRows: 500_000 });
+for await (const line of csv) process.stdout.write(`${line}\n`);       // lines; or csv.stream (a ReadableStream of bytes), csv.text()
+for await (const entry of (await fb.insights.exportAudit({}, { format: "jsonl" })).records()) handle(entry);
+```
+
+A CSV record can span lines when a field contains a line break; feed `stream` or `text()` to a CSV parser if your data has such fields. An export that breaks half
+way is not resumed: start again with `from` after the last row you saw.
+
 ## Retries
 
 `429` and `503` are retried for every method (the server refused before doing work), `502`/`504` and network errors only for
 idempotent methods (GET, PUT, DELETE). A `Retry-After` header (seconds or HTTP date) is honoured; otherwise the delay is an
-exponential backoff with full jitter. A `Retry-After` longer than `maxRetryAfterMs` fails immediately instead of sleeping.
+exponential backoff with full jitter. A `Retry-After` longer than `maxRetryAfterMs` fails immediately instead of sleeping. A `429` for an exhausted
+quota (code `quota_exceeded` and the other quota codes) is **never** retried: waiting does not help, so it is thrown at once as `QuotaExceededError`.
 
 ```ts
 new ForgeBase(url, { retry: { maxRetries: 5, baseDelayMs: 200, maxDelayMs: 5000, maxRetryAfterMs: 30_000 } });
@@ -753,13 +904,13 @@ try { await posts.create({}); }
 catch (e) { if (e instanceof ValidationError) console.log(e.fields.title?.message, e.requestId); }
 ```
 
-## Generated types
+### Generated types
 
 `src/generated/openapi.ts` is produced from `openapi/openapi.json` (a copy of `GET /api/openapi.json`):
 
 ```sh
 npm run generate                                   # from the checked-in document
-npm run generate -- --url http://127.0.0.1:8080    # refresh the document from a running server first
+npm run generate -- --url http://127.0.0.1:8080    # refresh the document from a running server first (compact, sorted keys: the same bytes as sdk/rust/openapi)
 npm run generate:check                             # CI: fails when the generated file is stale
 ```
 
@@ -779,13 +930,13 @@ FB_LIVE_BIN=$PWD/../../target/debug/forgebase npm run test:live
 ## Known limitations
 
 - The OpenAPI document does not describe `/api/auth/*` (except OAuth and WebAuthn), nor most of the policy, orgs, realm and customization bodies, and it
-  omits query parameters everywhere; those types are hand-written from the server handlers (snake_case, like the wire). Compare with the live
+  omits query parameters on many routes; those types are hand-written from the server handlers (snake_case, like the wire). Compare with the live
   `GET /api/openapi.json` after a server upgrade.
 - Passkeys (WebAuthn) are wrapped as option/verify calls only: the browser credential APIs and the `PublicKeyCredential` serialisation are yours.
-- `Transport` throws on every non-2xx status, so a function answering 404/500 on purpose surfaces as a typed error (JSON body on `err.body`), and
-  conditional reads (`If-None-Match` to a 304) are not supported.
+- `Transport` throws on non-2xx statuses by default. A function that answers 404/500 on purpose is read with `invoke(..., { raw: true })`; other routes
+  take `acceptStatus` through `fb.transport.send` / `fb.request`. Conditional reads (`If-None-Match` to a 304 answered from memory) work where the server
+  honours it: storage objects (`ETag` is the SHA-256). Records and most JSON routes send an `ETag` but always answer `200`.
+- `kv.subscribe` can miss messages: KV pub/sub stores nothing and has no cursor, so what is published while the stream is down is lost. `onGap` reports it.
 - `ReadableStream` request bodies are not supported (Node needs `duplex: "half"`); use the multipart/resumable upload helpers for large files.
-- Webhook-endpoint tooling (attempt log, test send, redrive, secret rotation, endpoint health, event catalog) and the billing webhook inspector
-  arrive with the server endpoints; `fb.queues` and the verification helpers above cover receiving webhooks today.
 - OIDC protocol endpoints (`authorize`, `token`, `userinfo`, ...) are left to OIDC libraries; `fb.identity.oidc` only builds discovery URLs.
 - The server declares duplicate `operationId`s (`list`, `stats`, ...); the generator renames the repeated ones.
