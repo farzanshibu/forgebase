@@ -1346,6 +1346,7 @@ dependencies = [
  "forgebase-data",
  "forgebase-db",
  "forgebase-jobs",
+ "forgebase-observability",
  "forgebase-pgengine",
  "metrics",
  "serde",

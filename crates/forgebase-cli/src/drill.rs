@@ -150,6 +150,11 @@ fn scratch_config(live: &Config, scratch: &Path, engine: &forgebase_backup::mani
 /// the one a restore would need, so it is the one to fail on, not an older
 /// good one.
 fn target_dir(store: &SnapshotStore, spec: &str) -> anyhow::Result<PathBuf> {
+    // A snapshot of this data directory wins over a directory of the same name
+    // in the working directory (the drill API passes snapshot ids).
+    if let Some(dir) = store.path_of(spec).ok().filter(|p| p.is_dir()) {
+        return Ok(dir);
+    }
     if spec == "latest" {
         let newest = std::fs::read_dir(store.dir())
             .into_iter()
@@ -856,4 +861,87 @@ fn count_files(dir: &Path) -> usize {
             _ => 0,
         })
         .sum()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use forgebase_backup::manifest::EngineInfo;
+    use forgebase_core::config::tls_config::TlsMode;
+
+    #[test]
+    fn the_scratch_server_cannot_reach_what_the_live_one_does() {
+        let mut live = Config::defaults(Path::new("/srv/live"));
+        live.server.host = "0.0.0.0".into();
+        live.server.port = 8090;
+        live.server.public_url = Some("https://example.com".into());
+        live.resp.enabled = true;
+        live.tls.mode = TlsMode::Acme;
+        live.mcp.enabled = true;
+        live.storage.driver = forgebase_core::StorageDriverKind::S3;
+        live.backup.drill_schedule = Some("0 3 * * *".into());
+        live.database.postgres.mode = forgebase_core::config::PostgresMode::External;
+        let c = scratch_config(&live, Path::new("/tmp/scratch"), &EngineInfo::sqlite());
+        assert_eq!(c.data_dir, Path::new("/tmp/scratch"));
+        assert_eq!((c.server.host.as_str(), c.server.port), ("127.0.0.1", 0));
+        assert!(c.server.public_url.is_none() && !c.resp.enabled && !c.mcp.enabled);
+        assert_eq!(c.tls.mode, TlsMode::Off);
+        assert_eq!(c.storage.driver, forgebase_core::StorageDriverKind::Local);
+        assert!(c.database.postgres.url.is_none() && c.backup.drill_schedule.is_none());
+        assert_eq!(c.database.backend, forgebase_core::config::DatabaseBackend::Sqlite);
+        assert_eq!(c.database.postgres.mode, forgebase_core::config::PostgresMode::Managed);
+    }
+
+    #[test]
+    fn durations_read_naturally() {
+        assert_eq!(human_duration(0), "0s");
+        assert_eq!(human_duration(59), "59s");
+        assert_eq!(human_duration(125), "2m 5s");
+        assert_eq!(human_duration(7_980), "2h 13m");
+        assert_eq!(human_duration(200_000), "2d 7h");
+    }
+
+    #[test]
+    fn latest_is_the_newest_directory_even_when_its_manifest_is_damaged() {
+        let tmp = tempfile::tempdir().unwrap();
+        let layout = DataLayout::new(tmp.path());
+        let store = SnapshotStore::new(&layout);
+        for id in [
+            "20261101T000000Z",
+            "20261102T000000Z",
+            "20261103T000000Z.partial",
+            ".hidden",
+        ] {
+            std::fs::create_dir_all(store.dir().join(id)).unwrap();
+        }
+        // Neither has a manifest: `SnapshotStore::resolve` would find nothing; the drill drills the newest.
+        let newest = target_dir(&store, "latest").unwrap();
+        assert_eq!(newest.file_name().unwrap(), "20261102T000000Z");
+        // A snapshot id wins over a same-named directory elsewhere; a plain directory is taken as it is.
+        assert_eq!(
+            target_dir(&store, "20261101T000000Z").unwrap(),
+            store.dir().join("20261101T000000Z")
+        );
+        let other = tmp.path().join("copied-backup");
+        std::fs::create_dir_all(&other).unwrap();
+        assert_eq!(target_dir(&store, other.to_str().unwrap()).unwrap(), other);
+        assert!(target_dir(&store, "no-such-thing").is_err());
+    }
+
+    #[test]
+    fn a_scratch_directory_is_private_and_marked() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("drill-x");
+        make_scratch(&dir, "x").unwrap();
+        assert_eq!(std::fs::read_to_string(dir.join(MARKER)).unwrap(), "x");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777, 0o700);
+        }
+        assert_eq!(count_files(&dir), 1);
+        // Only old marked directories are swept.
+        sweep_stale(tmp.path());
+        assert!(dir.exists(), "a fresh scratch directory is left alone");
+    }
 }

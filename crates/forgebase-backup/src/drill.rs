@@ -329,10 +329,17 @@ impl DrillRunner {
 /// job whose result says `failed` (retrying would only repeat it); the
 /// metrics and the history carry the verdict.
 pub fn register_jobs(registry: JobRegistry, runner: DrillRunner, store: DrillStore) -> JobRegistry {
+    // One drill at a time: each needs the disk of a whole restore.
+    let one_at_a_time = std::sync::Arc::new(tokio::sync::Semaphore::new(1));
     registry.register(DRILL_JOB, move |ctx: JobContext| {
         let runner = runner.clone();
         let store = store.clone();
+        let one_at_a_time = one_at_a_time.clone();
         async move {
+            let _turn = one_at_a_time
+                .acquire_owned()
+                .await
+                .map_err(|e| HandlerError::fatal(e.to_string()))?;
             let payload = ctx.payload().clone();
             let backup = payload
                 .get("backup_id")

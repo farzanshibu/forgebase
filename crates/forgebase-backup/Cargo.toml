@@ -29,6 +29,7 @@ utoipa.workspace = true
 
 [dev-dependencies]
 forgebase-db = { workspace = true, features = ["testing"] }
+forgebase-observability.workspace = true
 forgebase-pgengine.workspace = true
 sqlx.workspace = true
 tempfile.workspace = true

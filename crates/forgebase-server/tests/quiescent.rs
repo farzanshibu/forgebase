@@ -23,6 +23,10 @@ fn config(dir: &Path) -> Config {
     cfg.server.port = 0;
     cfg.server.shutdown_timeout_secs = 5;
     cfg.queue.poll_interval_ms = 50;
+    // `FORGEBASE_TEST_BACKEND=postgres` (with `FORGEBASE_PG_ENGINE_DIR`) runs it on the bundled engine.
+    if std::env::var("FORGEBASE_TEST_BACKEND").as_deref() == Ok("postgres") {
+        cfg.database.backend = forgebase_core::config::DatabaseBackend::Postgres;
+    }
     cfg
 }
 

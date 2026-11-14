@@ -636,3 +636,44 @@ fn the_api_runs_a_drill_and_keeps_the_history() {
     );
     assert!(m.contains("forgebase_backup_last_drill_ok 1"), "{m}");
 }
+
+/// `[backup] drill_schedule`: the server runs the drill on its own schedule and
+/// records it, trigger `schedule`.
+#[test]
+fn a_scheduled_drill_runs_on_its_own() {
+    let tmp = tempdir();
+    let (app, _) = project(tmp.path());
+    ok(&run(&app, &["backup"]));
+    let port = free_port();
+    let mut child = forgebase(&app)
+        // Every 20 seconds (six fields: seconds first).
+        .env("FORGEBASE_BACKUP_DRILL_SCHEDULE", "*/20 * * * * *")
+        .args(common::backend_args(&app, &["serve", "--port", &port.to_string()]))
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let addr = format!("127.0.0.1:{port}");
+    let started = wait_healthy(&addr, startup_timeout());
+    let hist = app.join("forgebase-data/backups/drills");
+    let deadline = std::time::Instant::now() + Duration::from_secs(180);
+    let mut found = None;
+    while started && std::time::Instant::now() < deadline {
+        if let Ok(rd) = std::fs::read_dir(&hist)
+            && let Some(f) = rd.flatten().next()
+        {
+            // Wait for the file to be complete.
+            if let Ok(v) = serde_json::from_slice::<Value>(&std::fs::read(f.path()).unwrap_or_default()) {
+                found = Some(v);
+                break;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    assert!(started, "server did not become healthy");
+    let report = found.expect("the schedule ran a drill");
+    assert_eq!(report["trigger"], "schedule", "{report:#}");
+    assert_eq!(report["outcome"], "passed", "{report:#}");
+}

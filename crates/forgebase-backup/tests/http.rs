@@ -19,18 +19,25 @@ use tower::ServiceExt;
 struct Api {
     app: Router,
     layout: forgebase_core::DataLayout,
+    jobs: forgebase_jobs::JobService,
     _dir: tempfile::TempDir,
 }
 
 impl Api {
     async fn new(ctx: AccessContext) -> Self {
+        Self::build(ctx, false).await
+    }
+
+    /// With the drill API wired to a job service (`can_drill`: the process may run drills).
+    async fn build(ctx: AccessContext, can_drill: bool) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let inst = common::open(&dir.path().join("data")).await;
         inst.seed(3).await;
         let state = AppState::with_authorizer(inst.db.clone(), inst.layout.clone(), Arc::new(DefaultAuthorizer))
             .await
             .unwrap();
-        let svc = BackupService::new(inst.db.clone(), inst.layout.clone());
+        let jobs = forgebase_jobs::JobService::new(state.data().clone());
+        let svc = BackupService::new(inst.db.clone(), inst.layout.clone()).with_drills(jobs.clone(), can_drill);
         let app = forgebase_api::router(
             state,
             RouterOptions {
@@ -48,6 +55,7 @@ impl Api {
         Self {
             app,
             layout: inst.layout,
+            jobs,
             _dir: dir,
         }
     }
@@ -189,10 +197,140 @@ async fn openapi_documents_every_backup_route() {
         ("delete", "/api/v1/system/backups/{id}"),
         ("post", "/api/v1/system/backups/{id}/verify"),
         ("post", "/api/v1/system/backups/prune"),
+        ("post", "/api/v1/system/backups/{id}/drill"),
+        ("get", "/api/v1/system/backups/{id}/drills"),
     ] {
         assert!(
             doc["paths"][path][method].is_object(),
             "{method} {path} is not documented"
         );
     }
+}
+
+fn drill_report(id: &str, backup_id: &str, outcome: &str) -> Json {
+    json!({
+        "id": id, "backup_id": backup_id, "backup_created": "2026-11-14T00:00:00Z", "engine": "sqlite",
+        "schema_version": 66, "started_at": "2026-11-14T01:00:00Z", "finished_at": "2026-11-14T01:00:31Z",
+        "outcome": outcome, "rto_seconds": 31.5, "rpo_seconds": 3600,
+        "phases": {"restore_ms": 10000, "start_ms": 6000, "checks_ms": 15500},
+        "counts": {"collections": 2, "records": 8, "records_sampled": 8, "storage_objects": 0, "blobs_sampled": 0},
+        "checks": [{"name": "restore", "status": "ok", "detail": "restored"}],
+        "problems": [], "trigger": "api"
+    })
+}
+
+/// The drill endpoints: administrators only, the history of a snapshot with
+/// its RTO and RPO, and the refusals of the start call.
+#[tokio::test]
+async fn the_drill_api_lists_history_and_refuses_what_it_cannot_do() {
+    // Not an administrator.
+    let anon = Api::new(AccessContext::anonymous()).await;
+    let (s, _) = anon
+        .call(Method::POST, "/api/v1/system/backups/latest/drill", None)
+        .await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+    let user = Api::new(AccessContext::user("users", "u1")).await;
+    for (m, uri) in [
+        (Method::POST, "/api/v1/system/backups/x/drill"),
+        (Method::GET, "/api/v1/system/backups/x/drills"),
+    ] {
+        let (s, e) = user.call(m, uri, None).await;
+        assert_eq!(s, StatusCode::FORBIDDEN, "{uri}");
+        assert_eq!(e["error"]["code"], "forbidden");
+    }
+
+    // A process that is not the forgebase command cannot run one.
+    let off = Api::new(AccessContext::admin("root")).await;
+    let (s, e) = off
+        .call(Method::POST, "/api/v1/system/backups/latest/drill", None)
+        .await;
+    assert_eq!(s, StatusCode::SERVICE_UNAVAILABLE, "{e}");
+    assert_eq!(e["error"]["code"], "drill_unavailable");
+
+    // One that can: 404, 400, 202 and 409.
+    let api = Api::build(AccessContext::admin("root"), true).await;
+    let (s, e) = api.call(Method::POST, "/api/v1/system/backups/nope/drill", None).await;
+    assert_eq!(s, StatusCode::NOT_FOUND, "{e}");
+    let (s, m) = api
+        .call(Method::POST, "/api/v1/system/backups", Some(json!({"label": "x"})))
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{m}");
+    let id = m["id"].as_str().unwrap().to_owned();
+    let (s, e) = api
+        .call(
+            Method::POST,
+            &format!("/api/v1/system/backups/{id}/drill?sample=0"),
+            None,
+        )
+        .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{e}");
+    let (s, e) = api
+        .call(
+            Method::POST,
+            &format!("/api/v1/system/backups/{id}/drill?sample=many"),
+            None,
+        )
+        .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{e}");
+
+    let (s, started) = api
+        .call(Method::POST, "/api/v1/system/backups/latest/drill?sample=3", None)
+        .await;
+    assert_eq!(s, StatusCode::ACCEPTED, "{started}");
+    assert_eq!(started["backup_id"], json!(id), "`latest` is resolved to the snapshot");
+    // It is a job of the reserved kind, with the request's settings.
+    let job = api
+        .jobs
+        .get(&AccessContext::system(), started["job_id"].as_str().unwrap())
+        .await
+        .unwrap();
+    assert_eq!(job.kind, forgebase_backup::drill::DRILL_JOB);
+    assert_eq!(job.payload["backup_id"], json!(id));
+    assert_eq!(job.payload["trigger"], "api");
+    assert_eq!(job.payload["sample"], 3);
+    // One at a time.
+    let (s, e) = api
+        .call(Method::POST, &format!("/api/v1/system/backups/{id}/drill"), None)
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{e}");
+    assert_eq!(e["error"]["code"], "drill_running");
+
+    // History: empty, then what the store holds, newest first, for that snapshot only.
+    let (s, h) = api
+        .call(Method::GET, &format!("/api/v1/system/backups/{id}/drills"), None)
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(h["items"], json!([]));
+    let store = forgebase_backup::drill::DrillStore::new(&api.layout);
+    for (rid, backup, outcome, finished) in [
+        ("20261114T010000-0001", id.as_str(), "passed", "2026-11-14T01:00:31Z"),
+        ("20261115T010000-0001", id.as_str(), "failed", "2026-11-15T01:00:31Z"),
+        ("20261116T010000-0001", "another", "passed", "2026-11-16T01:00:31Z"),
+    ] {
+        let mut r = drill_report(rid, backup, outcome);
+        r["started_at"] = json!(finished);
+        r["finished_at"] = json!(finished);
+        store.record(&serde_json::from_value(r).unwrap()).unwrap();
+    }
+    let (s, h) = api
+        .call(Method::GET, &format!("/api/v1/system/backups/{id}/drills"), None)
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    let items = h["items"].as_array().unwrap();
+    assert_eq!(items.len(), 2, "{h}");
+    assert_eq!(items[0]["outcome"], "failed");
+    assert_eq!(items[1]["outcome"], "passed");
+    assert_eq!(items[1]["rto_seconds"], 31.5);
+    assert_eq!(items[1]["rpo_seconds"], 3600);
+    let (s, latest) = api
+        .call(Method::GET, "/api/v1/system/backups/latest/drills", None)
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(latest["backup_id"], json!(id));
+    // The history outlives the snapshot.
+    let (s, h) = api
+        .call(Method::GET, "/api/v1/system/backups/another/drills", None)
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(h["items"].as_array().unwrap().len(), 1);
 }

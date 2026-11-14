@@ -56,7 +56,8 @@ logical `pg_dump` backup of an external PostgreSQL server (the drill does not ow
 into; the manual procedure is in the disaster-recovery runbook), a cluster backup with replicas or shards (follow-up),
 and a database-only pre-migration snapshot (no storage or key to test).
 
-`latest` means the newest snapshot **directory**, not the newest with a readable manifest: a damaged newest backup is
+A snapshot id of this data directory wins over a directory of the same name in the working directory (the API
+passes ids). `latest` means the newest snapshot **directory**, not the newest with a readable manifest: a damaged newest backup is
 the one a restore would use, so it is the one the drill must fail on. A directory path without a manifest is
 accepted and fails with `MANIFEST.json is missing`.
 
@@ -141,7 +142,7 @@ as it refuses any manifest it cannot read. Backups made without `include_tls` st
 ## Consequences
 
 - No migration, **no new dependency** (`forgebase-backup` gains `forgebase-jobs`, already a workspace crate, and
-  `metrics`, already used by 12 crates; both MIT or Apache-2.0).
+  `metrics`, already used by other crates; both MIT or Apache-2.0).
 - `BackupSettings` is no longer `Copy` (it holds the schedule string). `BackupOptions` gains `include_tls`
   (default `false`); struct literals without `..Default::default()` need it.
 - A drill costs as much disk as the backup and about the time a real restore takes. It is meant for a schedule of
