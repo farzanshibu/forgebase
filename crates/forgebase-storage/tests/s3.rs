@@ -5,6 +5,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 mod common;
+mod support;
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
@@ -145,12 +146,19 @@ async fn serve(
         .map(|n| (n.clone(), headers.get(n).cloned().unwrap_or_default()))
         .collect();
     let payload = headers.get("x-amz-content-sha256").cloned().unwrap_or_default();
+    // The region is part of the credential scope the client signed with.
+    let region = auth
+        .split("Credential=")
+        .nth(1)
+        .and_then(|c| c.split('/').nth(2))
+        .unwrap_or("us-east-1")
+        .to_owned();
     let expected = sign(
         &Credentials {
             access_key: ACCESS.into(),
             secret_key: SECRET.into(),
             session_token: None,
-            region: "us-east-1".into(),
+            region,
             service: "s3".into(),
         },
         &SignInput {
@@ -487,4 +495,31 @@ async fn the_storage_service_runs_on_the_s3_driver() {
             .any(|k| k.ends_with("blobs/ab/orphan") || k.contains("staging/"))
     );
     assert!(mock.store.lock().unwrap().bad_signatures.is_empty());
+}
+
+#[tokio::test]
+async fn conformance_on_the_s3_driver() {
+    let mock = Mock::start(3).await;
+    let d = mock.driver(100_000, 100_000, "fb");
+    support::conformance::run(&d, "s3", 350_000).await;
+    assert!(mock.store.lock().unwrap().bad_signatures.is_empty());
+    assert!(mock.store.lock().unwrap().uploads.is_empty(), "failed uploads are aborted");
+}
+
+/// Google Cloud Storage through its S3 interoperability API (HMAC keys): the
+/// signing region is `auto`, the endpoint is typed with a trailing slash and
+/// the prefix with stray slashes.
+#[tokio::test]
+async fn gcs_interoperability_settings_work_on_the_s3_driver() {
+    let mock = Mock::start(2).await;
+    let mut cfg = S3Config::new(format!("http://{}/", mock.addr), "blobs-bucket", ACCESS, SECRET);
+    cfg.region = "auto".into();
+    cfg.prefix = "/fb/".into();
+    cfg.part_size = 100_000;
+    cfg.read_chunk = 100_000;
+    let client = HttpsClient::new(&TlsSettings::new()).unwrap().with_max_body(1 << 20);
+    let d = S3Driver::with_clock(cfg, Arc::new(client), Arc::new(|| NOW)).unwrap();
+    support::conformance::run(&d, "s3", 250_000).await;
+    assert!(mock.store.lock().unwrap().bad_signatures.is_empty());
+    assert!(mock.keys().iter().all(|k| k.starts_with("fb/")), "{:?}", mock.keys());
 }
