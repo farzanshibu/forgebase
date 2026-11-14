@@ -5,6 +5,8 @@ import type { FeatureSetting, ServerFeature, SettingValue } from "../../api";
 import SettingField from "./SettingField";
 import { featureIcon } from "./featureIcons";
 import { groupSettings, settingsAnchor } from "./settingUtil";
+import StorageDriverGuide from "./StorageDriverGuide";
+import { driverOf } from "./storageDrivers";
 
 const settingCount = (groups: { rows: unknown[] }[]) => {
   const n = groups.reduce((sum, g) => sum + g.rows.length, 0);
@@ -39,11 +41,17 @@ export default function SettingsSections({ features, valueOf, errorOf, onEdit }:
                   {f.id === "database" && (g.title === "Read replicas" || g.title === "Sharding" || g.title === "Servers declared in the config file") && (
                     <p className="pt-1 text-xs text-muted-foreground">These settings change how replicas and shards behave. Add, promote and move the servers themselves in <Link to="/system/topology" className="text-primary hover:underline">System › Database topology</Link>.</p>
                   )}
+                  {f.id === "storage" && g.rows[0] && driverOf(g.rows[0].key) && (
+                    <p className="pt-1 text-xs text-muted-foreground">Used when the storage driver is <code className="font-mono">{driverOf(g.rows[0].key)}</code>{String(valueOf(f.settings.find((x) => x.key === "storage.driver") ?? g.rows[0])) === driverOf(g.rows[0].key) ? "." : ": it is not the selected driver, so these are not used now."}</p>
+                  )}
                   {g.rows.map((s) => (
                     <SettingField key={s.key} setting={s} value={valueOf(s)} error={errorOf(s.key)} onChange={(v, e) => onEdit(s, v, e)} />
                   ))}
                 </section>
               ))}
+              {f.id === "storage" && f.settings.some((x) => x.key === "storage.driver") && (
+                <StorageDriverGuide feature={f} driver={valueOf(f.settings.find((x) => x.key === "storage.driver")!)} />
+              )}
             </Card.Content>
           </Card>
         );

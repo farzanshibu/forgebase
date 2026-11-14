@@ -1,4 +1,5 @@
 import type { FeatureSetting, ServerFeature, SettingValue } from "../../api";
+import { driverOf as driverGroup } from "./storageDrivers";
 
 /** Why a setting cannot be edited here, or null when it can. */
 export function readOnlyReason(s: FeatureSetting): string | null {
@@ -29,9 +30,12 @@ const GROUP_TITLES: Record<string, string> = {
   replicas: "Read replicas",
   sharding: "Sharding",
   nodes: "Servers declared in the config file",
+  s3: "Amazon S3 and compatible",
+  gcs: "Google Cloud Storage",
+  azure: "Azure Blob Storage",
 };
 
-const GROUP_RANK = ["", "postgres", "postgres.extensions", "replicas", "sharding", "nodes"];
+const GROUP_RANK = ["", "postgres", "postgres.extensions", "replicas", "sharding", "nodes", "s3", "gcs", "azure"];
 const groupRank = (g: string) => { const i = GROUP_RANK.indexOf(g); return i < 0 ? GROUP_RANK.length : i; };
 
 /**
@@ -44,7 +48,8 @@ export function groupSettings(f: ServerFeature): { title: string | null; rows: F
     if (s.key === enabledKey(f)) continue;
     const rest = s.key.startsWith(`${f.id}.`) ? s.key.slice(f.id.length + 1).split(".") : [s.key];
     // `database.nodes` (a list of tables, FB-175) sits under the feature but is its own group: it belongs with replicas and shards.
-    const g = s.key === "database.nodes" ? "nodes" : rest.slice(0, -1).join(".");
+    // The storage settings of one driver (`storage.gcs_bucket`) sit in a group named for it; the ones every driver shares stay in the first.
+    const g = s.key === "database.nodes" ? "nodes" : f.id === "storage" && driverGroup(s.key) ? driverGroup(s.key)! : rest.slice(0, -1).join(".");
     groups.set(g, [...(groups.get(g) ?? []), s]);
   }
   return [...groups.entries()]

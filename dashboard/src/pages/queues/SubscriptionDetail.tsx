@@ -3,20 +3,18 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { createQueueSnapshot, queueDeadLetters, deleteQueueSnapshot, deleteQueueSubscription, getQueueSubscription, listQueueSnapshots, seekQueueSubscription, queueSubscriptionMetrics } from "../../api";
 import { Button, ErrorView } from "../../components/ui";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
-import { EmptyState } from "../../components/EmptyState";
-import { HelpTip } from "../../components/HelpTip";
 import { PageHeader } from "../../components/PageHeader";
 import { SkeletonLines } from "../../components/Skeleton";
 import { UseFromCodeButton } from "../../components/UseFromCode";
 import { notify } from "../../toaster";
 import Tenant from "../jobs/Tenant";
+import AttemptLog from "./AttemptLog";
+import DeadLetters from "./DeadLetters";
+import PushTools from "./PushTools";
 import QueueRules from "./QueueRules";
 import { useLoad } from "../../hooks";
-import { when } from "../functions/util";
-import { duration, pretty } from "./util";
-import { Code, CopyId, Facts, Section, StatGrid, When } from "../jobs/ops";
-import { ArrowDown01Icon } from "@hugeicons/core-free-icons";
-import { HugeiconsIcon } from "@hugeicons/react";
+import { duration } from "./util";
+import { Facts, Section, StatGrid } from "../jobs/ops";
 import { Input } from "panelui-web/input";
 import { Sel } from "../../components/controls";
 
@@ -32,7 +30,6 @@ export default function SubscriptionDetail() {
   const [time, setTime] = useState("");
   const [snapName, setSnapName] = useState("");
   const [snapPick, setSnapPick] = useState("");
-  const [open, setOpen] = useState<number>();
   const uid = useId();
 
   const refresh = () => { info.reload(); metrics.reload(); dead.reload(); snaps.reload(); };
@@ -108,51 +105,16 @@ export default function SubscriptionDetail() {
           <Facts
             label="Subscription settings"
             items={[
-              ["Topic", s.topic], ["Owner", s.created_by], ["Tenant", s.tenant ?? "Instance"], ["Delivery", s.push ? `push to ${s.push.kind} ${s.push.endpoint}` : "pull"], ["Ack deadline", duration(s.ack_deadline_ms)],
+              ["Topic", s.topic], ["Owner", s.created_by], ["Tenant", s.tenant ?? "Instance"], ["Delivery", s.push ? `push to ${s.push.kind} ${s.push.endpoint}` : "pull"], ...(s.push ? [["Delivery state", s.paused_at ? `paused${s.paused_reason ? `: ${s.paused_reason}` : ""}` : "delivering"] as const] : []), ["Ack deadline", duration(s.ack_deadline_ms)],
               ["Max attempts", s.max_delivery_attempts ?? "unlimited"], ["Backoff", `${duration(s.backoff_base_ms)} up to ${duration(s.backoff_max_ms)}`],
               ["Dead-letter topic", s.dead_letter_topic ?? "none"], ["Ordering", s.ordering ? "per ordering key" : "off"], ["Filter", s.filter ? JSON.stringify(s.filter) : "none"],
             ]}
           />
         </Section>
       )}
-      <Section title={<span className="inline-flex items-center gap-1">Dead letters <HelpTip term="dead_letter" /></span>} count={dead.data?.length} description="Messages that failed too many times. Look at the data and the attempt history to find the cause.">
-        <ErrorView error={dead.error} />
-        {dead.data && dead.data.length === 0 && <EmptyState compact title="No dead letters" why="A message lands here after it fails too many times, so you can look at it instead of losing it." />}
-        {dead.data && dead.data.length > 0 && (
-          <ul aria-label="Dead letters" className="divide-y divide-border rounded-lg border border-border text-sm">
-            {dead.data.map((d) => (
-              <li key={d.id} className="px-3 py-2.5">
-                <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
-                  <span className="min-w-0 max-w-72"><CopyId id={d.message_id} noun="message" /></span>
-                  <span className="font-medium text-destructive">{d.reason}</span>
-                  <span className="tabular-nums text-muted-foreground">{d.attempts} attempt(s)</span>
-                  {d.dead_letter_topic && <span className="text-muted-foreground">forwarded to <Link className="hover:underline" to={`/queues/t/${encodeURIComponent(d.dead_letter_topic)}`}>{d.dead_letter_topic}</Link></span>}
-                  <span className="ml-auto flex items-center gap-2">
-                    <When iso={d.at} className="text-xs text-muted-foreground" />
-                    <button type="button" aria-expanded={open === d.id} className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-primary hover:bg-muted" aria-label={`${open === d.id ? "Hide" : "Show"} dead letter ${d.id}`} onClick={() => setOpen(open === d.id ? undefined : d.id)}>
-                      {open === d.id ? "Hide" : "Show"}
-                      <HugeiconsIcon icon={ArrowDown01Icon} size={14} strokeWidth={1.8} aria-hidden="true" className={`transition-transform ${open === d.id ? "rotate-180" : ""}`} />
-                    </button>
-                  </span>
-                </div>
-                {open === d.id && (
-                  <div className="mt-3 grid gap-3 lg:grid-cols-2">
-                    <Code label={`Dead letter ${d.id} data`}>{pretty(d.data)}</Code>
-                    <ol aria-label={`Dead letter ${d.id} history`} className="space-y-1.5 text-xs">
-                      {d.history.map((h) => (
-                        <li key={h.attempt} className="flex flex-wrap gap-x-2">
-                          <span className="font-medium">attempt {h.attempt}</span>
-                          <span className="text-muted-foreground">at {when(h.at)}: {h.outcome ?? "?"}{h.error ? ` (${h.error})` : ""}{h.consumer ? ` by ${h.consumer}` : ""}</span>
-                        </li>
-                      ))}
-                    </ol>
-                  </div>
-                )}
-              </li>
-            ))}
-          </ul>
-        )}
-      </Section>
+      {s?.push && <PushTools sub={s} metrics={m} onChanged={refresh} />}
+      {s?.push && <AttemptLog sub={sub} onChanged={refresh} />}
+      <DeadLetters sub={sub} items={dead.data} error={dead.error} onChanged={refresh} />
       <Section title="Replay" description="Seeking puts messages back so they are delivered again, as far back as the topic's retention reaches. Save a snapshot before a risky deploy to come back to it.">
         <div className="grid gap-4 text-sm md:grid-cols-3">
           <form onSubmit={(e) => { e.preventDefault(); void replay({ time: new Date(time).toISOString() }); }} className="rounded-lg border border-border p-3">

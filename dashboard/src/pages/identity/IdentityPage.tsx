@@ -15,6 +15,7 @@ import ClientsPage from "./ClientsPage";
 import ConsentsPage from "./ConsentsPage";
 import DomainsPage from "./DomainsPage";
 import EmailPage from "./EmailPage";
+import EmailProviderPage from "./EmailProviderPage";
 import ProvidersPage from "./ProvidersPage";
 import RealmsPage from "./RealmsPage";
 import { RealmCtx } from "./util";
@@ -27,6 +28,7 @@ const TABS = [
   { to: "/identity/branding", label: "Branding", end: false },
   { to: "/identity/domains", label: "Custom domains", end: false },
   { to: "/identity/email", label: "Email templates", end: false },
+  { to: "/identity/email-provider", label: "Email provider", end: false },
   { to: "/identity/legal", label: "Legal agreements", end: false },
 ];
 
@@ -50,7 +52,7 @@ export default function IdentityPage() {
           </div>
         }
       />
-      <RouteTabs label="Identity sections" tabs={platform ? TABS : TABS.filter((t) => t.to !== "/identity/clients")} className="mt-4" />
+      <RouteTabs label="Identity sections" tabs={platform ? TABS : TABS.filter((t) => t.to !== "/identity/clients" && t.to !== "/identity/email-provider")} className="mt-4" />
       <div className="mt-6">
         <ErrorView error={realms.error} onRetry={realms.reload} />
         {realms.loading && !realms.error && <SkeletonTable rows={3} columns={5} label="Loading realms" />}
@@ -64,6 +66,7 @@ export default function IdentityPage() {
               <Route path="branding" element={<BrandingPage />} />
               <Route path="domains" element={<DomainsPage />} />
               <Route path="email" element={<EmailPage />} />
+              <Route path="email-provider" element={<PlatformOnly what="Email provider"><EmailProviderPage /></PlatformOnly>} />
               <Route path="legal" element={<AgreementsPage />} />
               <Route path="*" element={<EmptyState title="No such page in Identity" why="Pick a section from the tabs above." />} />
             </Routes>

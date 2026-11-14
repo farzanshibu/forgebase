@@ -136,17 +136,18 @@ function DeliveryLog({ realm }: { realm: string }) {
       toolbar={<Filter label="Status">{(id) => <Sel placeholder="All statuses" id={id} aria-label="Delivery status" value={status} onChange={(v) => setStatus(v as DeliveryStatus | "")} options={[{ value: "", label: "All statuses" }, ...DELIVERY_STATUSES.map((s) => ({ value: s, label: s }))]} className="w-40" />}</Filter>}
     >
       <ActionError error={l.error} />
-      {l.loading && !l.error && <SkeletonTable rows={3} columns={5} label="Loading deliveries" />}
+      {l.loading && !l.error && <SkeletonTable rows={3} columns={6} label="Loading deliveries" />}
       {l.data?.length === 0 && <EmptyState compact title="No deliveries" why="Sent emails and their results appear here." />}
       {l.data && l.data.length > 0 && (
         <Table framed aria-label="Deliveries">
-          <Table.Header><Table.Row><Th>To</Th><Th>Subject</Th><Th>Status</Th><Th align="end">Tries</Th><Th>Created</Th><Th><span className="sr-only">Actions</span></Th></Table.Row></Table.Header>
+          <Table.Header><Table.Row><Th>To</Th><Th>Subject</Th><Th>Status</Th><Th>Provider message id</Th><Th align="end">Tries</Th><Th>Created</Th><Th><span className="sr-only">Actions</span></Th></Table.Row></Table.Header>
           <Table.Body>
             {l.data.map((d) => (
               <Table.Row key={d.id} className="align-top">
                 <Table.Cell className="font-mono text-xs">{d.to}</Table.Cell>
                 <Table.Cell>{d.subject}{d.last_error && <span className="block text-xs text-destructive">{d.last_error}</span>}</Table.Cell>
                 <Table.Cell data-status={d.status}><Badge status={d.status} /></Table.Cell>
+                <Table.Cell className="max-w-48 truncate font-mono text-xs" title={d.provider_message_id ?? undefined}>{d.provider_message_id ? <>{d.provider_message_id}{d.provider && <span className="block text-muted-foreground">{d.provider}</span>}</> : <span className="text-muted-foreground">—</span>}</Table.Cell>
                 <Table.Cell align="end">{d.attempts}</Table.Cell>
                 <Table.Cell className="whitespace-nowrap text-xs text-muted-foreground">{fmtTime(d.created_at)}</Table.Cell>
                 <Table.Cell className="text-right">{(d.status === "failed" || d.status === "retrying") && <Button aria-label={`Retry ${d.to}`} onClick={() => void run(() => retryDelivery(d.id))}>Retry</Button>}</Table.Cell>

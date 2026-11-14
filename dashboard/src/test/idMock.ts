@@ -1,5 +1,5 @@
 /** In-memory fakes of the identity provider, realm identity and customize REST for Identity Studio tests. The FIX-4 realm routes are checked against the OpenAPI fixture (documented route and status). */
-import type { Agreement, Acceptance, AdminConsent, Branding, ClientApp, Delivery, Domain, EmailTemplate, OidcKeyInfo, RealmIdentity, SmsConfig, SocialProvider } from "../api";
+import type { Agreement, Acceptance, AdminConsent, Branding, ClientApp, Delivery, Domain, EmailTemplate, MailProviderConfig, OidcKeyInfo, RealmIdentity, SmsConfig, SocialProvider } from "../api";
 import { envelope, type MockApi, type MockReply, type MockRequest } from "./mockApi";
 import { hasResponse, matchRoute, responseSchemaName, validateBody } from "./contract";
 
@@ -22,6 +22,12 @@ export interface IdState {
   deliveries: Delivery[];
   agreements: Agreement[];
   acceptances: Acceptance[];
+  /** Mail provider configurations by realm (`*` is the instance), secrets already masked; the plain secrets are in `mailSecrets` (`realm/field`). */
+  mail: Record<string, MailProviderConfig>;
+  mailSecrets: Record<string, string>;
+  /** What the next mail test send answers. */
+  mailTest: "ok" | "fail";
+  mailTests: { realm: string | null; to: string }[];
   secrets: string[];
   keyRotations: string[];
   verifyResult: { verified: boolean; reason: string | null };
@@ -31,6 +37,9 @@ const cfg = (over: Partial<RealmIdentity["config"]> = {}): RealmIdentity["config
   signup: true, methods: { password: true, magic_link: true, email_otp: true, oauth: true, passkey: true, phone: false, ldap: false },
   require_verified_email: null, phone: { signup: true }, ldap: null, turnstile: null, ...over,
 });
+
+const SMS_SECRETS = ["auth_token", "bearer_token", "api_secret", "api_key", "secret_access_key", "session_token"] as const;
+const MAIL_SECRETS = ["password", "api_key", "server_token", "secret_access_key", "session_token"] as const;
 
 export function installIdentity(mock: MockApi): IdState {
   const st: IdState = {
@@ -65,10 +74,11 @@ export function installIdentity(mock: MockApi): IdState {
     ],
     deliveries: [
       { id: "del1", realm: "default", template: "welcome", to: "a@example.com", subject: "Welcome", status: "failed", attempts: 3, last_error: "smtp 550 mailbox full", provider: "smtp", job_id: null, created_at: MS, updated_at: MS, sent_at: null },
-      { id: "del2", realm: "default", template: "welcome", to: "b@example.com", subject: "Welcome", status: "sent", attempts: 1, last_error: null, provider: "smtp", job_id: null, created_at: MS, updated_at: MS, sent_at: MS },
+      { id: "del2", realm: "default", template: "welcome", to: "b@example.com", subject: "Welcome", status: "sent", attempts: 1, last_error: null, provider: "resend", provider_message_id: "re_9f3a2c", job_id: null, created_at: MS, updated_at: MS, sent_at: MS },
     ],
     agreements: [{ id: "ag1", realm: "default", kind: "terms", version: 1, title: "Terms of service", body: "Be kind.", url: null, published_at: MS, published_by: "admin" }],
     acceptances: [{ id: "ac1", realm: "default", principal: "user:users/u1", kind: "terms", version: 1, accepted_at: MS, ip: "10.0.0.1", user_agent: null }],
+    mail: {}, mailSecrets: {}, mailTest: "ok", mailTests: [],
     secrets: [], keyRotations: [], verifyResult: { verified: false, reason: "TXT record not found" },
   };
   const ok = (body: unknown, status = 200) => ({ status, body });
@@ -164,18 +174,17 @@ export function installIdentity(mock: MockApi): IdState {
     const c = st.sms[realm];
     if (!c) return { realm, configured: false, config: null };
     const v = { ...c };
-    if (v.auth_token !== undefined) v.auth_token = st.smsSecrets[`${realm}/auth_token`] ? "********" : null;
-    if (v.bearer_token !== undefined) v.bearer_token = st.smsSecrets[`${realm}/bearer_token`] ? "********" : null;
+    for (const k of SMS_SECRETS) if ((v as Record<string, unknown>)[k] !== undefined) (v as Record<string, unknown>)[k] = st.smsSecrets[`${realm}/${k}`] ? "********" : null;
     return { realm, configured: true, config: v, created_at: ISO, updated_at: "2026-11-09T11:00:00Z" };
   };
   route("GET", `${A}/realms/{realm}/sms`, ({ params }) => (known(params.realm) ? ok(smsView(params.realm!)) : envelope(404, "not_found", "no such realm")));
   route("PUT", `${A}/realms/{realm}/sms`, ({ params, body }) => {
     const b = body as SmsConfig;
-    if (!["dev", "twilio", "webhook"].includes(b.provider)) return envelope(400, "invalid_input", "sms configuration: unknown provider");
+    if (!["dev", "twilio", "webhook", "vonage", "messagebird", "bird", "sns", "plivo"].includes(b.provider)) return envelope(400, "invalid_input", "sms configuration: unknown provider");
     if (b.provider === "webhook" && !b.url) return envelope(400, "invalid_input", "sms configuration: missing url");
     const r = params.realm!;
-    for (const k of ["auth_token", "bearer_token"] as const) {
-      const v = b[k];
+    for (const k of SMS_SECRETS) {
+      const v = b[k] as string | null | undefined;
       if (v === "") delete st.smsSecrets[`${r}/${k}`];
       else if (v && v !== "********") st.smsSecrets[`${r}/${k}`] = v;
     }
@@ -280,6 +289,46 @@ export function installIdentity(mock: MockApi): IdState {
     const d = st.deliveries.find((x) => x.id === params.id)!;
     d.status = "queued"; d.last_error = null;
     return ok(d);
+  });
+
+  // Mail providers (ADR-0039 section 1): plain handlers, the OpenAPI fixture predates them.
+  const mailRealm = (q: URLSearchParams) => q.get("realm") ?? "default";
+  const mailView = (realm: string) => {
+    const c = st.mail[realm];
+    if (!c) return { realm, configured: false, config: null };
+    const v: Record<string, unknown> = { ...c };
+    for (const k of MAIL_SECRETS) if (k in v) v[k] = st.mailSecrets[`${realm}/${k}`] ? "********" : null;
+    return { realm, configured: true, config: v, created_at: MS, updated_at: MS + Object.keys(st.mail).length + st.mailTests.length };
+  };
+  mock.on("GET", `${C}/email/provider`, ({ query }) => ok(mailView(mailRealm(query))));
+  mock.on("PUT", `${C}/email/provider`, ({ query, body }) => {
+    const realm = mailRealm(query);
+    const b = body as MailProviderConfig & Record<string, unknown>;
+    if (!["log", "smtp", "resend", "postmark", "sendgrid", "mailgun", "ses"].includes(b.provider)) return envelope(400, "invalid_mail_config", "mail configuration: unknown provider");
+    const same = st.mail[realm]?.provider === b.provider;
+    const next: Record<string, unknown> = { ...b };
+    for (const k of MAIL_SECRETS) {
+      const v = b[k] as string | null | undefined;
+      const key = `${realm}/${k}`;
+      if (v === undefined || v === null || v === "********") { if (!same || !(v === "********" || v === undefined || v === null)) delete st.mailSecrets[key]; }
+      else if (v === "") delete st.mailSecrets[key];
+      else st.mailSecrets[key] = v;
+      if (st.mailSecrets[key]) next[k] = "********"; else delete next[k];
+    }
+    if (b.provider === "mailgun" && !b.domain) return envelope(400, "invalid_mail_config", "mailgun `domain` is a sending domain such as mg.example.com");
+    st.mail[realm] = next as unknown as MailProviderConfig;
+    return ok(mailView(realm));
+  });
+  mock.on("DELETE", `${C}/email/provider`, ({ query }) => {
+    const realm = mailRealm(query);
+    if (!st.mail[realm]) return envelope(404, "not_found", "mail provider configuration not found");
+    delete st.mail[realm];
+    return { status: 204 };
+  });
+  mock.on("POST", `${C}/email/provider/test`, ({ query, body }) => {
+    st.mailTests.push({ realm: query.get("realm"), to: (body as { to: string }).to });
+    if (st.mailTest === "fail") return envelope(409, "mail_test_failed", "the resend provider did not accept the test message: resend refused the credentials");
+    return ok({ provider: st.mail[mailRealm(query)]?.provider ?? "log", message_id: "re_abc123", from: "ForgeBase <no-reply@example.com>" });
   });
 
   mock.on("GET", `${C}/agreements`, () => ok({ items: [...st.agreements].sort((a, b) => b.version - a.version) }));

@@ -264,6 +264,37 @@ export const putStoreProduct = (provider: string, productId: string, price: stri
 export const deleteStoreProduct = (provider: string, productId: string) => send<void>("DELETE", `${B}/store-products/${enc(provider)}/${enc(productId)}`);
 export const listStorePurchases = (subject?: string, signal?: AbortSignal) => list<StorePurchase>(`${B}/store-purchases${qs({ subject })}`, signal);
 export const runBillingMaintenance = () => send<MaintenanceReport>("POST", `${B}/maintenance`);
+
+// Webhook inspector (ADR-0032): every inbound request to `webhooks/{provider}`, verified or not.
+export const WEBHOOK_OUTCOMES = ["applied", "ignored", "duplicate", "failed", "signature_invalid", "timestamp_out_of_tolerance", "unknown_provider", "malformed", "rejected", "error"] as const;
+export type WebhookOutcome = (typeof WEBHOOK_OUTCOMES)[number];
+export interface WebhookLinks {
+  webhook_event_id?: string | null; customer_id?: string | null; subscription_id?: string | null; order_id?: string | null; invoice_id?: string | null;
+  payment_id?: string | null; refund_id?: string | null; store_purchase_id?: string | null;
+}
+export interface WebhookDelivery {
+  id: string; provider: string; account?: string | null; received_at: string; client_addr?: string | null; body_size: number; body_stored: boolean; body_truncated: boolean;
+  body_sha256: string; verification: string; reason?: string | null; event_id?: string | null; event_type?: string | null; processing?: string | null;
+  /** `processing` of a verified delivery, else `verification`. */
+  outcome: string; detail?: string | null; links: WebhookLinks; latency_us?: number | null; replays: number; reverify_attempts: number; reverified_at?: string | null; updated_at: string;
+}
+export interface WebhookDeliveryDetail extends WebhookDelivery {
+  /** Allowlisted headers, lower-case names. */
+  headers: Record<string, unknown>;
+  body?: string | null;
+  body_encoding?: "utf8" | "base64" | null;
+}
+export interface WebhookDeliveryPage { items: WebhookDelivery[]; total: number; limit: number; offset: number }
+export interface WebhookDeliveryFilter { provider?: string; outcome?: string; event_type?: string; event_id?: string; from?: string; to?: string; limit?: number; offset?: number }
+/** `applied`, `ignored`, `failed` (processed now), `already_applied`, `already_ignored` (handled before: nothing changed) or `unverified` (does not verify with the current secrets). */
+export type ReplayResultKind = "applied" | "ignored" | "failed" | "already_applied" | "already_ignored" | "unverified";
+export interface WebhookDeliveryResult { result: ReplayResultKind | string; detail?: string | null; delivery: WebhookDelivery }
+export const listWebhookDeliveries = (f: WebhookDeliveryFilter = {}, signal?: AbortSignal) => request<WebhookDeliveryPage>(`${B}/webhook-deliveries${qs({ limit: 50, ...f })}`, { signal });
+export const getWebhookDelivery = (id: string, signal?: AbortSignal) => request<WebhookDeliveryDetail>(`${B}/webhook-deliveries/${enc(id)}`, { signal });
+/** Processes a verified delivery again through the normal path; the event dedup decides. 409 `delivery_not_verified`, `body_not_stored`. */
+export const replayWebhookDelivery = (id: string) => send<WebhookDeliveryResult>("POST", `${B}/webhook-deliveries/${enc(id)}/replay`, {});
+/** Verifies a refused delivery again with the current secrets and processes it if it now verifies. 409 `delivery_already_verified`, `reverify_in_progress`, `body_not_stored`, `not_reverifiable`. */
+export const reverifyWebhookDelivery = (id: string) => send<WebhookDeliveryResult>("POST", `${B}/webhook-deliveries/${enc(id)}/reverify`, {});
 export const listWebhookEvents = (limit = 100, signal?: AbortSignal) => list<WebhookEvent>(`${B}/webhook-events${qs({ limit })}`, signal);
 
 // Catalog.

@@ -18,6 +18,7 @@ import { notify } from "../../toaster";
 import { validate } from "../../validate";
 import Tenant from "../jobs/Tenant";
 import QueueRules from "./QueueRules";
+import TopicCatalogEntry from "./TopicCatalogEntry";
 import { bytes, duration, parseAttrs, parseJson, pretty } from "./util";
 import { CardBody, HEAD_ROW, TableCard } from "../../components/TableCard";
 import { Code, CopyId, NUM, Section, StatGrid, When } from "../jobs/ops";
@@ -99,6 +100,7 @@ export default function TopicDetail() {
       )}
       <Messages topic={topic} version={m?.published_total ?? 0} />
       <Subscriptions subs={subs} />
+      {t && <TopicCatalogEntry key={`${t.name}:${t.updated_at}`} topic={t} onSaved={info.reload} />}
       <PublishPanel topic={topic} onDone={() => metrics.reload()} />
       <NewSubscription topic={topic} tenant={t?.tenant ?? undefined} open={adding} onOpenChange={setAdding} onCreated={subs.reload} />
       <QueueRules kind="queue_topic" name={topic} />

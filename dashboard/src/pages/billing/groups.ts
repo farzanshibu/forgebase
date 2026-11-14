@@ -1,5 +1,5 @@
 /**
- * Billing's 13 pages in four groups (audit A-23). The primary tab row shows the groups, a second row the pages of the
+ * Billing's 14 pages in four groups (audit A-23). The primary tab row shows the groups, a second row the pages of the
  * active group. Every page keeps its own route (`/billing/<page>`).
  *
  * Usage:
@@ -28,7 +28,7 @@ export const GROUPS: BillingGroup[] = [
     id: "money", label: "Money",
     pages: [{ to: "/billing", label: "Revenue", end: true }, { to: "/billing/invoices", label: "Invoices" }, { to: "/billing/payments", label: "Payments" }, { to: "/billing/credits", label: "Credits" }, { to: "/billing/dunning", label: "Dunning" }],
   },
-  { id: "settings", label: "Settings", pages: [{ to: "/billing/settings", label: "Providers and settings" }] },
+  { id: "settings", label: "Settings", pages: [{ to: "/billing/settings", label: "Providers and settings" }, { to: "/billing/webhooks", label: "Webhook deliveries" }] },
 ];
 
 /** The group a route belongs to; Revenue (`/billing`) is in Money. */

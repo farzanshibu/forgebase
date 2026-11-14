@@ -22,6 +22,7 @@ import { Disabled } from "./shared";
 import Stores from "./Stores";
 import Subscriptions from "./Subscriptions";
 import Usage from "./Usage";
+import Webhooks from "./Webhooks";
 
 /** The pages of the active group, as a compact segmented control under the group tabs. */
 function PageTabs({ label, pages }: { label: string; pages: readonly Page[] }) {
@@ -85,6 +86,7 @@ export default function BillingPage() {
                 <Route path="dunning" element={<Dunning />} />
                 <Route path="credits" element={<Credits />} />
                 <Route path="settings" element={<Settings />} />
+                <Route path="webhooks" element={<Webhooks />} />
                 <Route path="*" element={<EmptyState title="No such page in Billing" why="Pick a section from the tabs above." />} />
               </Routes>
             </div>
