@@ -1299,6 +1299,237 @@ mod tests {
         );
     }
 
+    /// A server that runs `hello` (logging one line, under a trace) and optionally serves the insights API.
+    async fn invoke_server(
+        insights: Option<Value>,
+    ) -> (String, std::sync::Arc<std::sync::Mutex<Vec<crate::testserver::Seen>>>) {
+        use crate::testserver::fake_server_with;
+        let rid = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+        fake_server_with(move |seen| {
+            let line = seen.request_line.as_str();
+            if line.contains("/invoke") {
+                let id = seen
+                    .headers
+                    .lines()
+                    .find_map(|l| {
+                        l.strip_prefix("X-Request-Id: ")
+                            .or_else(|| l.strip_prefix("x-request-id: "))
+                    })
+                    .unwrap_or_default()
+                    .to_owned();
+                *rid.lock().unwrap() = id;
+                return (
+                    200,
+                    json!({"message": "hi"}).to_string(),
+                    vec![(
+                        "traceparent".into(),
+                        "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01".into(),
+                    )],
+                );
+            }
+            let id = rid.lock().unwrap().clone();
+            if line.contains("/functions/hello/logs") {
+                let mut e = exec(7, "ok", Some("greeting cave"), None);
+                e["request_id"] = json!(id);
+                e["trace_id"] = json!("4bf92f3577b34da6a3ce929d0e0e4736");
+                return (200, json!({"items": [e]}).to_string(), vec![]);
+            }
+            match &insights {
+                Some(v) if line.contains("/api/v1/insights/functions/invocations") => (200, v.to_string(), vec![]),
+                _ => (
+                    404,
+                    json!({"error": {"code": "not_found", "message": "no such route"}}).to_string(),
+                    vec![],
+                ),
+            }
+        })
+        .await
+    }
+
+    fn invoke_args(trace: bool) -> InvokeArgs {
+        InvokeArgs {
+            name: "hello".into(),
+            data: Some("{\"a\":1}".into()),
+            method: None,
+            path: Some("?name=cave".into()),
+            trace,
+            json: false,
+        }
+    }
+
+    #[tokio::test]
+    async fn invoke_prints_result_logs_and_trace_id_and_degrades_without_insights() {
+        let (addr, seen) = invoke_server(None).await;
+        let mut out = Vec::new();
+        let ok = invoke(&client(&addr, Some("tok")), invoke_args(true), &mut out)
+            .await
+            .unwrap();
+        let out = String::from_utf8(out).unwrap();
+        assert!(ok);
+        assert!(out.contains("POST /api/v1/functions/hello/invoke?name=cave"), "{out}");
+        assert!(out.contains("status:    200"), "{out}");
+        assert!(out.contains("trace id:  4bf92f3577b34da6a3ce929d0e0e4736"), "{out}");
+        assert!(out.contains("\"message\": \"hi\""), "{out}");
+        assert!(out.contains("execution: #7 v2 http ok in 3 ms, 20 fuel"), "{out}");
+        assert!(out.contains("[info] greeting cave"), "{out}");
+        assert!(
+            out.contains("host-call timeline unavailable: this server has no /api/v1/insights API"),
+            "{out}"
+        );
+        let first = seen.lock().unwrap()[0].clone();
+        assert!(first.headers.to_ascii_lowercase().contains("authorization: bearer tok"));
+        assert!(first.headers.to_ascii_lowercase().contains("x-request-id: fbcli-"));
+        assert_eq!(first.body, "{\"a\":1}");
+    }
+
+    #[tokio::test]
+    async fn invoke_trace_prints_the_host_call_timeline_from_insights() {
+        let profile = json!({
+            "cold_start": true, "prepare_us": 900, "fuel_used": 20, "fuel_limit": 1000,
+            "memory_peak_bytes": 131072, "memory_limit_bytes": 1048576, "host_calls": 3,
+            "host": {"db.get": {"count": 2, "total_us": 1500, "max_us": 1000, "errors": 1}, "kv": {"count": 1, "total_us": 200, "max_us": 200, "errors": 0}},
+            "timeline": [
+                {"op": "db.get", "at_us": 120, "dur_us": 1000, "ok": true},
+                {"op": "db.get", "at_us": 1200, "dur_us": 500, "ok": false},
+                {"op": "kv", "at_us": 1800, "dur_us": 200, "ok": true}
+            ],
+            "timeline_dropped": 0
+        });
+        let page = json!({"items": [{"id": 7, "profile": profile}, {"id": 6, "profile": null}]});
+        let (addr, seen) = invoke_server(Some(page)).await;
+        let mut out = Vec::new();
+        invoke(&client(&addr, None), invoke_args(true), &mut out).await.unwrap();
+        let out = String::from_utf8(out).unwrap();
+        assert!(
+            out.contains("trace:\n  cold start (prepare 0.90 ms), fuel 20/1000, peak memory 128 KiB of 1024 KiB"),
+            "{out}"
+        );
+        assert!(out.contains("host calls (3):"), "{out}");
+        assert!(out.contains("+    0.12 ms  db.get             1.00 ms  ok"), "{out}");
+        assert!(
+            out.contains("+    1.20 ms  db.get             0.50 ms  FAILED"),
+            "{out}"
+        );
+        assert!(
+            out.contains("db.get         2 call(s), 1.50 ms total, 1.00 ms longest, 1 failed"),
+            "{out}"
+        );
+        assert!(seen.lock().unwrap().iter().any(|s| {
+            s.request_line
+                .contains("insights/functions/invocations?request_id=fbcli-")
+        }));
+
+        // Without --trace the insights API is not asked.
+        let (addr, seen) = invoke_server(Some(json!({"items": []}))).await;
+        let mut out = Vec::new();
+        invoke(&client(&addr, None), invoke_args(false), &mut out)
+            .await
+            .unwrap();
+        assert!(!seen.lock().unwrap().iter().any(|s| s.request_line.contains("insights")));
+    }
+
+    #[tokio::test]
+    async fn invoke_json_and_failures() {
+        let (addr, _) = invoke_server(None).await;
+        let mut a = invoke_args(false);
+        a.json = true;
+        let mut out = Vec::new();
+        invoke(&client(&addr, None), a, &mut out).await.unwrap();
+        let v: Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["status"], 200);
+        assert_eq!(v["trace_id"], "4bf92f3577b34da6a3ce929d0e0e4736");
+        assert_eq!(v["body"]["message"], "hi");
+        assert_eq!(v["execution"]["logs"][0]["message"], "greeting cave");
+
+        // 404: not found, no execution to look for, a failing exit.
+        let (addr, seen) = fake_server(vec![(
+            404,
+            json!({"error": {"code": "function_not_found", "message": "gone"}}).to_string(),
+        )])
+        .await;
+        let mut out = Vec::new();
+        let ok = invoke(&client(&addr, None), invoke_args(false), &mut out)
+            .await
+            .unwrap();
+        assert!(!ok);
+        let out = String::from_utf8(out).unwrap();
+        assert!(
+            out.contains("status:    404  (failed)") && out.contains("the function did not run"),
+            "{out}"
+        );
+        assert_eq!(
+            seen.lock().unwrap().len(),
+            1,
+            "the logs are not searched for a function that did not run"
+        );
+    }
+
+    #[test]
+    fn data_and_trace_helpers() {
+        assert_eq!(
+            trace_of("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01").as_deref(),
+            Some("4bf92f3577b34da6a3ce929d0e0e4736")
+        );
+        assert_eq!(trace_of("garbage"), None);
+        assert_eq!(trace_of("00-short-00f067aa0ba902b7-01"), None);
+        assert!(invoke_body("{\"a\":1}").unwrap().1);
+        assert!(!invoke_body("plain text").unwrap().1);
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("b.json");
+        std::fs::write(&f, "[1]").unwrap();
+        assert_eq!(invoke_body(&format!("@{}", f.display())).unwrap().0, b"[1]");
+        assert!(invoke_body("@/no/such/file").is_err());
+        std::fs::write(&f, vec![b'a'; (1 << 20) + 1]).unwrap();
+        assert!(
+            invoke_body(&format!("@{}", f.display()))
+                .unwrap_err()
+                .to_string()
+                .contains("at most 1 MiB")
+        );
+    }
+
+    #[tokio::test]
+    async fn follow_keeps_going_when_the_server_hiccups() {
+        let ok = |ids: &[i64]| {
+            json!({"items": ids.iter().rev().map(|i| exec(*i, "ok", None, None)).collect::<Vec<_>>()}).to_string()
+        };
+        let (addr, seen) = fake_server(vec![
+            (200, ok(&[1])),
+            (
+                503,
+                json!({"error": {"code": "unavailable", "message": "restarting"}}).to_string(),
+            ),
+            (200, ok(&[1, 2])),
+        ])
+        .await;
+        let mut a = logs_args("hello", true);
+        a.json = true;
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+        let watch = seen.clone();
+        tokio::spawn(async move {
+            while watch.lock().unwrap().len() < 4 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            let _ = tx.send(());
+        });
+        let mut out = Vec::new();
+        logs(&client(&addr, None), a, &mut out, async {
+            let _ = rx.await;
+        })
+        .await
+        .unwrap();
+        let ids: Vec<i64> = String::from_utf8(out)
+            .unwrap()
+            .lines()
+            .map(|l| serde_json::from_str::<Value>(l).unwrap()["id"].as_i64().unwrap())
+            .collect();
+        assert_eq!(
+            ids,
+            vec![1, 2],
+            "the failed poll neither ended the stream nor repeated lines"
+        );
+    }
+
     #[test]
     fn names_are_percent_encoded_in_paths() {
         assert_eq!(enc("hello_world-1"), "hello_world-1");

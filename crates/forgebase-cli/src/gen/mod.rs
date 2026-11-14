@@ -81,12 +81,18 @@ pub async fn run(g: &GlobalArgs, cli: GenCli) -> anyhow::Result<ExitCode> {
 async fn specs_from_project(dir: &Path) -> anyhow::Result<Vec<(String, serde_json::Value)>> {
     let project = layout::load(dir)?;
     crate::project::warn(&project);
-    Ok(project
+    let mut specs: Vec<(String, serde_json::Value)> = project
         .resources
         .iter()
         .filter(|r| r.kind == Kind::Collection)
         .map(|r| (r.name.clone(), r.spec.clone()))
-        .collect())
+        .collect();
+    // Every server has the built-in `users` collection; a project that does not declare it
+    // still gets its types, as it would from a server (`--url`).
+    if !specs.iter().any(|(n, _)| n == "users") {
+        specs.push(("users".to_owned(), serde_json::json!({"type": "auth", "fields": []})));
+    }
+    Ok(specs)
 }
 
 async fn specs_from_server(

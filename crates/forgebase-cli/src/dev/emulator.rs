@@ -164,7 +164,7 @@ impl Emulator {
         let level = g
             .log_level
             .clone()
-            .unwrap_or_else(|| "warn,forgebase::postgres=off,sqlx::query=error".into());
+            .unwrap_or_else(|| "warn,forgebase::postgres=off,sqlx::query=error,forgebase_db::slow_log=error".into());
         forgebase_observability::init_telemetry(
             &level,
             g.log_format.unwrap_or(forgebase_core::LogFormat::Pretty),

@@ -471,6 +471,7 @@ async fn apply_flow(
         allow_destructive: args.allow_destructive,
         update_secrets: args.update_secrets,
         secrets_out: args.secrets_out.clone(),
+        placeholder_secret: None,
     };
     apply::check_secrets_out(project, &opts)?;
     let (plan, approved) = match saved {

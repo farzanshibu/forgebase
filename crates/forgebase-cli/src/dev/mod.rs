@@ -150,6 +150,11 @@ async fn sync(g: &GlobalArgs, em: &Emulator, dir: &Path, say: &Say) -> anyhow::R
     )
     .await?;
     let plan = project::make_plan(&project, &remote, true).await?;
+    for (function, key, var) in unset_secrets(&project) {
+        eprintln!(
+            "warning: {var} is not set: secret {key} of function {function} gets a placeholder value in the emulator (export {var} or put it in .env to use a real one)"
+        );
+    }
     if !plan.has_changes() {
         say.line("project: no changes");
         return Ok(Synced::default());
@@ -166,6 +171,8 @@ async fn sync(g: &GlobalArgs, em: &Emulator, dir: &Path, say: &Say) -> anyhow::R
         &plan,
         &apply::Options {
             allow_destructive: true,
+            // A secret whose variable is not set gets a stand-in: a missing key must not stop the emulator.
+            placeholder_secret: Some("forgebase-dev-placeholder".into()),
             ..apply::Options::default()
         },
         &mut out,
@@ -183,6 +190,22 @@ async fn sync(g: &GlobalArgs, em: &Emulator, dir: &Path, say: &Say) -> anyhow::R
         applied: outcome.applied,
         failed,
     })
+}
+
+/// `(function, secret, variable)` of every function secret whose environment variable is not set.
+fn unset_secrets(project: &layout::Project) -> Vec<(String, String, String)> {
+    let mut out = Vec::new();
+    for r in &project.resources {
+        let crate::project::model::Extra::Function(f) = &r.extra else {
+            continue;
+        };
+        for (key, var) in &f.secrets {
+            if std::env::var_os(var).is_none() {
+                out.push((r.name.clone(), key.clone(), var.clone()));
+            }
+        }
+    }
+    out
 }
 
 async fn seed_all(api: &Api, dir: &Path, say: &Say) -> anyhow::Result<seed::Report> {
