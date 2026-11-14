@@ -269,6 +269,500 @@ pub struct AgreementRef {
     pub version: i64,
 }
 
+/// One alert: a rule and one label set.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Alert {
+    /// When the condition first held.
+    pub active_at: String,
+    /// Annotations with labels and value filled in.
+    #[serde(default)]
+    pub annotations: std::collections::HashMap<String, String>,
+    /// Rule id + labels, hashed: the same alert across evaluations.
+    pub fingerprint: String,
+    /// When it started firing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fired_at: Option<String>,
+    /// Id.
+    pub id: String,
+    /// Labels (`alertname`, `severity`, the series' and the rule's).
+    #[serde(default)]
+    pub labels: std::collections::HashMap<String, String>,
+    /// Last evaluation.
+    pub last_evaluated_at: String,
+    /// `alertname`.
+    pub name: String,
+    /// When it resolved.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_at: Option<String>,
+    /// Rule id.
+    pub rule_id: String,
+    /// Severity.
+    pub severity: AlertSeverity,
+    /// Ids of the active silences that match it (notifications muted).
+    #[serde(default)]
+    pub silenced_by: Vec<String>,
+    /// State.
+    pub state: AlertState,
+    /// Last value of the expression.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<f64>,
+}
+
+/// Comparison of a rule.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AlertComparison {
+    #[serde(rename = ">")]
+    Empty,
+    #[serde(rename = ">=")]
+    Empty_,
+    #[serde(rename = "<")]
+    Empty__,
+    #[serde(rename = "<=")]
+    Empty___,
+    #[serde(rename = "==")]
+    Empty____,
+    #[serde(rename = "!=")]
+    Empty_____,
+    /// A value this SDK version does not know (kept so newer servers do not break old clients).
+    #[serde(other)]
+    Unknown,
+}
+
+/// One notification and its delivery.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct AlertDelivery {
+    /// Attempts so far.
+    pub attempts: i64,
+    /// Created.
+    pub created_at: String,
+    /// `firing`, `resolved` or `test`.
+    pub event: String,
+    /// The alert group.
+    pub group_key: String,
+    /// Id.
+    pub id: String,
+    /// Error of the last attempt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+    /// HTTP status of the last attempt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_status: Option<i64>,
+    /// Next attempt (pending).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_attempt_at: Option<String>,
+    /// Notifier id.
+    pub notifier_id: String,
+    /// What was (or will be) sent.
+    #[serde(default)]
+    pub payload: serde_json::Value,
+    /// When it was delivered.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sent_at: Option<String>,
+    /// `pending` (waiting for a first try or a retry), `sent` or `failed` (gave up).
+    pub status: String,
+}
+
+/// A page of deliveries.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct AlertDeliveryPage {
+    /// Newest first.
+    #[serde(default)]
+    pub items: Vec<AlertDelivery>,
+}
+
+/// An alert with its state changes.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AlertDetail {
+    /// When the condition first held.
+    pub active_at: String,
+    /// Annotations with labels and value filled in.
+    #[serde(default)]
+    pub annotations: std::collections::HashMap<String, String>,
+    /// Rule id + labels, hashed: the same alert across evaluations.
+    pub fingerprint: String,
+    /// When it started firing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fired_at: Option<String>,
+    /// Id.
+    pub id: String,
+    /// Labels (`alertname`, `severity`, the series' and the rule's).
+    #[serde(default)]
+    pub labels: std::collections::HashMap<String, String>,
+    /// Last evaluation.
+    pub last_evaluated_at: String,
+    /// `alertname`.
+    pub name: String,
+    /// When it resolved.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_at: Option<String>,
+    /// Rule id.
+    pub rule_id: String,
+    /// Severity.
+    pub severity: AlertSeverity,
+    /// Ids of the active silences that match it (notifications muted).
+    #[serde(default)]
+    pub silenced_by: Vec<String>,
+    /// State.
+    pub state: AlertState,
+    /// Last value of the expression.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<f64>,
+    /// State changes, oldest first.
+    #[serde(default)]
+    pub events: Vec<AlertEvent>,
+}
+
+/// A state change of an alert.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AlertEvent {
+    /// When.
+    pub at: String,
+    /// New state.
+    pub state: AlertState,
+    /// Value then.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<f64>,
+}
+
+/// A label matcher of a silence or notifier.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct AlertMatcher {
+    /// Label name.
+    pub label: String,
+    /// `=` (default), `!=`, `=~` or `!~` (anchored regular expression).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub op: Option<String>,
+    /// Value or pattern.
+    pub value: String,
+}
+
+/// A notification destination. Secrets (the webhook signing secret, the
+/// Slack URL, the PagerDuty routing key) are sealed and never listed.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AlertNotifier {
+    /// Created.
+    pub created_at: String,
+    /// On or off.
+    pub enabled: bool,
+    /// Labels that group alerts into one notification (default `alertname`).
+    #[serde(default)]
+    pub group_by: Vec<String>,
+    /// Id.
+    pub id: String,
+    /// Kind.
+    pub kind: AlertNotifierKind,
+    /// Last delivery error.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+    /// Last failed delivery.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_failure_at: Option<String>,
+    /// Last successful delivery.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_success_at: Option<String>,
+    /// Only alerts matching all of these.
+    #[serde(default)]
+    pub matchers: Vec<AlertMatcher>,
+    /// Only alerts at least this severe.
+    pub min_severity: AlertSeverity,
+    /// Unique name.
+    pub name: String,
+    /// Re-send a group that is still firing after this long (`4h`).
+    pub repeat_interval: String,
+    /// Also notify when a group resolves.
+    pub send_resolved: bool,
+    /// Webhook signing secret (`whsec_…`): only in the answer that created it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signing_secret: Option<String>,
+    /// Email recipients.
+    #[serde(default)]
+    pub to: Vec<String>,
+    /// Queue topic.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub topic: Option<String>,
+    /// Changed.
+    pub updated_at: String,
+    /// Webhook URL, PagerDuty events URL (Slack: host only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+}
+
+/// A new notifier, or a change (every field replaces; secrets are kept
+/// when not given).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AlertNotifierInput {
+    /// On (default true).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    /// Grouping labels (default `["alertname"]`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_by: Option<Vec<String>>,
+    /// Kind.
+    pub kind: AlertNotifierKind,
+    /// Only alerts matching all of these.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub matchers: Option<Vec<AlertMatcher>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_severity: Option<AlertSeverity>,
+    /// Unique name (letters, digits, `_`, `-`, `.`; 1-64).
+    pub name: String,
+    /// Repeat interval (default `4h`; 1m to 7d).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repeat_interval: Option<String>,
+    /// PagerDuty integration (routing) key (a secret).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub routing_key: Option<String>,
+    /// Notify on resolve (default true).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub send_resolved: Option<bool>,
+    /// Email recipients (1-20).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to: Option<Vec<String>>,
+    /// Queue topic.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub topic: Option<String>,
+    /// Webhook URL; Slack incoming-webhook URL (a secret); PagerDuty events
+    /// URL (default `https://events.pagerduty.com/v2/enqueue`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+}
+
+/// Where notifications go.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AlertNotifierKind {
+    #[serde(rename = "webhook")]
+    Webhook,
+    #[serde(rename = "slack")]
+    Slack,
+    #[serde(rename = "email")]
+    Email,
+    #[serde(rename = "pagerduty")]
+    Pagerduty,
+    #[serde(rename = "queue")]
+    Queue,
+    /// A value this SDK version does not know (kept so newer servers do not break old clients).
+    #[serde(other)]
+    Unknown,
+}
+
+/// A page of alerts.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct AlertPage {
+    /// Alerts, newest first.
+    #[serde(default)]
+    pub items: Vec<Alert>,
+    /// Pass as `before` for the next page.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_before: Option<String>,
+}
+
+/// An expression evaluated now.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct AlertQueryInput {
+    /// Expression.
+    pub expr: String,
+}
+
+/// The result of a query.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct AlertQueryResult {
+    /// Evaluation time.
+    pub at: String,
+    /// Samples.
+    #[serde(default)]
+    pub samples: Vec<AlertQuerySample>,
+}
+
+/// One sample of a query.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct AlertQuerySample {
+    /// Labels.
+    #[serde(default)]
+    pub labels: std::collections::HashMap<String, String>,
+    /// Value (`null` for NaN).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<f64>,
+}
+
+/// An alert rule.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AlertRule {
+    /// Annotations (`summary`, `description`, `runbook_url`).
+    #[serde(default)]
+    pub annotations: std::collections::HashMap<String, String>,
+    /// Creation time (API rules).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<String>,
+    /// Switched off by `[alerts] disabled_rules` (the API cannot switch it on).
+    pub disabled_by_config: bool,
+    /// Whether it is evaluated.
+    pub enabled: bool,
+    /// Expression (PromQL subset).
+    pub expr: String,
+    /// How long the condition must hold before firing (`5m`).
+    pub r#for: String,
+    /// The same in milliseconds.
+    pub for_ms: i64,
+    /// Id: the built-in id (`queue_backlog_high`), `config:<name>`, `rule-…` or `slo:<slo>:<tier>`.
+    pub id: String,
+    /// Extra labels of its alerts.
+    #[serde(default)]
+    pub labels: std::collections::HashMap<String, String>,
+    /// The `alertname` label.
+    pub name: String,
+    /// Comparison.
+    pub op: AlertComparison,
+    /// Severity.
+    pub severity: AlertSeverity,
+    /// Origin.
+    pub source: AlertRuleSource,
+    /// Threshold.
+    pub threshold: f64,
+    /// Last change (API rules).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<String>,
+}
+
+/// A new custom rule.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct AlertRuleInput {
+    /// Annotations.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub annotations: Option<std::collections::HashMap<String, String>>,
+    /// Evaluated (default true).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    /// Expression.
+    pub expr: String,
+    /// Hold time before firing (default `0s`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub r#for: Option<String>,
+    /// Extra labels.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub labels: Option<std::collections::HashMap<String, String>>,
+    /// The `alertname` label (letters, digits, `_`, `-`, `.`; 1-128).
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub op: Option<AlertComparison>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub severity: Option<AlertSeverity>,
+    /// Threshold.
+    pub threshold: f64,
+}
+
+/// A change to a rule. Built-in, file and SLO rules take `enabled` only.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct AlertRulePatch {
+    /// New annotations (replace).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub annotations: Option<std::collections::HashMap<String, String>>,
+    /// Switch the rule on or off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    /// New expression.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expr: Option<String>,
+    /// New hold time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub r#for: Option<String>,
+    /// New labels (replace).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub labels: Option<std::collections::HashMap<String, String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub op: Option<AlertComparison>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub severity: Option<AlertSeverity>,
+    /// New threshold.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub threshold: Option<f64>,
+}
+
+/// Where a rule comes from.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AlertRuleSource {
+    #[serde(rename = "builtin")]
+    Builtin,
+    #[serde(rename = "config")]
+    Config,
+    #[serde(rename = "api")]
+    Api,
+    #[serde(rename = "slo")]
+    Slo,
+    /// A value this SDK version does not know (kept so newer servers do not break old clients).
+    #[serde(other)]
+    Unknown,
+}
+
+/// How urgent an alert is.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AlertSeverity {
+    #[serde(rename = "info")]
+    Info,
+    #[serde(rename = "warning")]
+    Warning,
+    #[serde(rename = "critical")]
+    Critical,
+    /// A value this SDK version does not know (kept so newer servers do not break old clients).
+    #[serde(other)]
+    Unknown,
+}
+
+/// A silence: notifications of matching alerts are muted until `ends_at`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct AlertSilence {
+    /// Why.
+    pub comment: String,
+    /// Created.
+    pub created_at: String,
+    /// Who.
+    pub created_by: String,
+    /// End.
+    pub ends_at: String,
+    /// Id.
+    pub id: String,
+    /// All must match.
+    #[serde(default)]
+    pub matchers: Vec<AlertMatcher>,
+    /// Start.
+    pub starts_at: String,
+    /// `active`, `pending` (starts later) or `expired`.
+    pub status: String,
+}
+
+/// A new silence (or a change: every field replaces).
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct AlertSilenceInput {
+    /// Why (shown in the dashboard).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub comment: Option<String>,
+    /// Length from `starts_at` (`2h`), when `ends_at` is not given.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration: Option<String>,
+    /// End; or give `duration`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ends_at: Option<String>,
+    /// At least one; all must match.
+    #[serde(default)]
+    pub matchers: Vec<AlertMatcher>,
+    /// Start (default now).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub starts_at: Option<String>,
+}
+
+/// State of an alert.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AlertState {
+    #[serde(rename = "pending")]
+    Pending,
+    #[serde(rename = "firing")]
+    Firing,
+    #[serde(rename = "resolved")]
+    Resolved,
+    /// A value this SDK version does not know (kept so newer servers do not break old clients).
+    #[serde(other)]
+    Unknown,
+}
+
 /// Body of a refund (of a consumption or spend) or a reversal (of a top-up
 /// or grant).
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
@@ -332,6 +826,69 @@ pub struct AttemptList {
     pub items: Vec<Attempt>,
 }
 
+/// An audit entry.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct AuditEntryView {
+    /// Who acted: `user:<collection>/<id>`, `admin:<id>`, `service_account:<id>`, `anonymous`.
+    pub actor: String,
+    /// When (RFC 3339).
+    pub at: String,
+    /// Collection of the resource concerned.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub collection: Option<String>,
+    /// Non-secret details.
+    #[serde(default)]
+    pub detail: serde_json::Value,
+    /// The action, such as `login` or `api_key.create`.
+    pub event: String,
+    /// Row id (increasing; the paging cursor).
+    pub id: i64,
+    /// Administrator acting as the actor (impersonation).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub impersonator: Option<String>,
+    /// Client address.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ip: Option<String>,
+    /// `success` or `failure`.
+    pub outcome: String,
+    /// Request id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<String>,
+    /// Id of the resource concerned.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resource_id: Option<String>,
+    /// Kind of the resource concerned.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resource_type: Option<String>,
+    /// User agent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_agent: Option<String>,
+}
+
+/// A page of audit entries.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct AuditPageView {
+    /// The entries.
+    #[serde(default)]
+    pub items: Vec<AuditEntryView>,
+    /// Pass as `cursor` for the next page; absent after the last one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<i64>,
+}
+
+/// An entry and the entries around it.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct AuditRelatedView {
+    /// The entry.
+    pub event: AuditEntryView,
+    /// Other entries of the same actor within the window, oldest first.
+    #[serde(default)]
+    pub same_actor: Vec<AuditEntryView>,
+    /// Other entries of the same request, oldest first.
+    #[serde(default)]
+    pub same_request: Vec<AuditEntryView>,
+}
+
 /// Consistency of one account: the balance, the ledger and the lots agree.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct AuditReport {
@@ -351,6 +908,25 @@ pub struct AuditReport {
     pub lots_remaining: i64,
     /// Subject.
     pub subject: String,
+}
+
+/// Counts of an audit time range.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct AuditSummaryView {
+    /// The most active actors.
+    #[serde(default)]
+    pub actors: Vec<Count>,
+    /// The most frequent events.
+    #[serde(default)]
+    pub events: Vec<Count>,
+    /// The most frequent client addresses.
+    #[serde(default)]
+    pub ips: Vec<Count>,
+    /// Per outcome.
+    #[serde(default)]
+    pub outcomes: Vec<Count>,
+    /// Entries in the range.
+    pub total: i64,
 }
 
 /// `{status:"accepted", message}`.
@@ -706,6 +1282,8 @@ pub struct BillingMaintenanceReport {
     pub usage_events_read: i64,
     /// Usage records stored for metered prices.
     pub usage_recorded: i64,
+    /// Inbound webhook deliveries deleted after the retention (ADR-0032).
+    pub webhook_deliveries_pruned: i64,
 }
 
 /// Operator settings.
@@ -1066,6 +1644,95 @@ pub struct CancelInput {
     pub reason: Option<String>,
 }
 
+/// Every feature of this server.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct Capabilities {
+    /// `sqlite` or `postgres`.
+    pub backend: String,
+    /// One entry per feature, in a fixed order.
+    #[serde(default)]
+    pub features: Vec<Capability>,
+}
+
+/// One feature on this server.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct Capability {
+    /// Whether `engine` is a PostgreSQL extension (an accelerator).
+    pub accelerated: bool,
+    /// What it runs on: an extension and its version (`pgvector 0.8.7`,
+    /// `Apache AGE 1.8.0`, `pg_trgm 1.6`) or a description of the
+    /// portable or built-in engine.
+    pub engine: String,
+    /// The accelerator's PostgreSQL extension, for accelerated features.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extension: Option<String>,
+    /// Stable name: `vector`, `graph`, `opencypher`, `fulltext`, `fuzzy`,
+    /// `queue`, `cron`, `kv`, `realtime`, `read_replicas`, `sharding`.
+    pub feature: String,
+    /// Human name.
+    pub label: String,
+    /// Limits of the engine in use (names and values).
+    #[serde(default)]
+    pub limits: serde_json::Value,
+    /// `[database.postgres.extensions]` mode (`auto`, `on`, `off`) of an
+    /// accelerated feature on PostgreSQL.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
+    /// Why the feature is not on its accelerator although it could be, or
+    /// why it is unavailable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// `active`, `portable`, `off`, `native` or `unavailable` (see the
+    /// module documentation).
+    pub state: String,
+}
+
+/// One kind of event of a record-source topic.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct CatalogEventType {
+    /// JSON Schema of the message `data`.
+    #[serde(default)]
+    pub data_schema: serde_json::Value,
+    /// What it means.
+    pub description: String,
+    /// Example message `data`.
+    #[serde(default)]
+    pub example: serde_json::Value,
+    /// A subscription filter that selects only this event type.
+    #[serde(default)]
+    pub filter: serde_json::Value,
+    /// The record operation (`create`, `update`, `delete`): attribute `forgebase.op`.
+    pub op: String,
+    /// `created`, `updated` or `deleted`.
+    pub r#type: String,
+}
+
+/// A subscribable topic in the event catalog.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CatalogTopic {
+    /// JSON Schema of message `data` (the topic schema; for a record source, the change event).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data_schema: Option<serde_json::Value>,
+    /// What the topic's events are.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// For a record source: its event types (empty otherwise).
+    #[serde(default)]
+    pub event_types: Vec<CatalogEventType>,
+    /// Example message `data`.
+    #[serde(default)]
+    pub example: serde_json::Value,
+    /// Where `example` comes from.
+    pub example_source: ExampleSource,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<RecordSource>,
+    /// Owning tenant.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tenant: Option<String>,
+    /// Topic name.
+    pub topic: String,
+}
+
 /// Body of `POST /billing/subscriptions/{id}/change`.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ChangePlanInput {
@@ -1366,6 +2033,52 @@ pub struct CopyBody {
     /// Source version (copy only).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version_id: Option<String>,
+}
+
+/// A cost estimate. It prices the period's quantities with the catalog as
+/// they are now: not an invoice.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct CostEstimate {
+    /// The same as a decimal string.
+    pub amount: String,
+    /// Sum of the priced lines in minor units.
+    pub amount_minor: i64,
+    /// Credits the credit rates would charge, in total.
+    pub credits: i64,
+    /// ISO 4217 code.
+    pub currency: String,
+    /// Always true: this is an estimate.
+    pub estimate: bool,
+    /// What was priced.
+    #[serde(default)]
+    pub lines: Vec<CostLine>,
+}
+
+/// One priced line of a cost estimate.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct CostLine {
+    /// Estimated amount in minor units of the currency.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub amount_minor: Option<i64>,
+    /// Credits the credit rate of the feature would charge.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credits: Option<i64>,
+    /// The metric.
+    pub metric: String,
+    /// The price used (its key), when one is set for the feature.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub price: Option<String>,
+    /// Units priced.
+    pub quantity: i64,
+}
+
+/// A count of something.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct Count {
+    /// Entries.
+    pub count: i64,
+    /// The value counted (an event, actor, address or outcome).
+    pub key: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
@@ -1746,6 +2459,9 @@ pub struct CypherResult {
     /// One name per `RETURN` item (its alias, else its text).
     #[serde(default)]
     pub columns: Vec<String>,
+    /// The engine that answered: `age` (Apache AGE on the derived graph) or
+    /// `portable` (SQL over the canonical tables, ADR-0034).
+    pub engine: String,
     /// The rows: one JSON value per column. Vertices come back as
     /// `{id, label, properties}`, edges as `{id, type, source, target,
     /// directed, properties}` and paths as `{nodes, edges}`, with ForgeBase
@@ -1859,6 +2575,12 @@ pub struct DeadLetter {
     pub published_at: String,
     /// Why it was dead-lettered.
     pub reason: String,
+    /// When it was redriven to the subscription (RFC 3339); a record is redriven once.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub redriven_at: Option<String>,
+    /// Who redrove it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub redriven_by: Option<String>,
     /// Subscription it failed on.
     pub subscription: String,
     /// Its topic.
@@ -1947,6 +2669,9 @@ pub struct Delivery {
     /// Provider that handled it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
+    /// The provider's id of the message (its own dashboard and logs use it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_message_id: Option<String>,
     /// Realm.
     pub realm: String,
     /// Handed over (epoch ms).
@@ -2338,12 +3063,34 @@ pub struct ErrorEnvelope {
     pub error: ErrorDetail,
 }
 
+/// The subscribable event types: every topic the caller may read.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct EventCatalog {
+    /// By topic name.
+    #[serde(default)]
+    pub topics: Vec<CatalogTopic>,
+}
+
 /// History of a job.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct EventList {
     /// Oldest first.
     #[serde(default)]
     pub items: Vec<JobEvent>,
+}
+
+/// Where an example in the catalog comes from.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ExampleSource {
+    #[serde(rename = "topic")]
+    Topic,
+    #[serde(rename = "schema")]
+    Schema,
+    #[serde(rename = "none")]
+    None,
+    /// A value this SDK version does not know (kept so newer servers do not break old clients).
+    #[serde(other)]
+    Unknown,
 }
 
 /// Body of `POST /exec`.
@@ -2386,6 +3133,9 @@ pub struct ExecutionLog {
     pub request_id: Option<String>,
     /// `ok`, `rejected`, `failed`, `trap`, `fuel_exhausted`, `memory_limit`, `timeout` or `bad_output`.
     pub status: String,
+    /// Trace id of the run (32 hex digits; ADR-0035), when it ran in a trace.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trace_id: Option<String>,
     /// `http`, `hook`, `job` or `test`.
     pub trigger: String,
     /// Version that ran.
@@ -2675,6 +3425,32 @@ pub enum FinalAction {
     Unknown,
 }
 
+/// What one flush wrote.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct FlushReport {
+    /// Function (name, version) rows written.
+    pub functions: i64,
+    /// Slow statements dropped by the sampling budget.
+    pub slow_dropped: i64,
+    /// Slow statements written.
+    pub slow_statements: i64,
+    /// Statement fingerprints written.
+    pub statements: i64,
+}
+
+/// A function over a range: its versions and its time series.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct FunctionDetail {
+    /// Function name.
+    pub function: String,
+    /// Buckets of all versions, oldest first.
+    #[serde(default)]
+    pub series: Vec<FunctionPoint>,
+    /// Statistics per version, newest version first.
+    #[serde(default)]
+    pub versions: Vec<FunctionStat>,
+}
+
 /// A function.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FunctionInfo {
@@ -2709,6 +3485,23 @@ pub struct FunctionList {
     pub items: Vec<FunctionInfo>,
 }
 
+/// One time bucket of a function.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct FunctionPoint {
+    /// Start of the bucket (RFC 3339).
+    pub at: String,
+    /// Cold starts.
+    pub cold_starts: i64,
+    /// Failures.
+    pub errors: i64,
+    /// Executions.
+    pub invocations: i64,
+    /// Mean duration in milliseconds.
+    pub mean_ms: f64,
+    /// 95th percentile in milliseconds.
+    pub p95_ms: f64,
+}
+
 /// How a version runs.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FunctionRuntime {
@@ -2719,6 +3512,64 @@ pub enum FunctionRuntime {
     /// A value this SDK version does not know (kept so newer servers do not break old clients).
     #[serde(other)]
     Unknown,
+}
+
+/// Statistics of one function version over a range.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct FunctionStat {
+    /// Executions that had to load their module or script.
+    pub cold_starts: i64,
+    /// `errors / invocations`.
+    pub error_rate: f64,
+    /// Executions that did not end `ok`.
+    pub errors: i64,
+    /// The fuel limit of the version.
+    pub fuel_limit: i64,
+    /// Most fuel one execution used.
+    pub fuel_max: i64,
+    /// Mean fuel (WebAssembly instructions, roughly) per execution.
+    pub fuel_mean: i64,
+    /// `fuel_max / fuel_limit`: how close the worst execution came.
+    pub fuel_utilisation: f64,
+    /// Function name.
+    pub function: String,
+    /// Host calls by operation, most time first.
+    #[serde(default)]
+    pub host: Vec<HostBreakdown>,
+    /// Host calls per execution, on average.
+    pub host_calls_per_invocation: f64,
+    /// Executions.
+    pub invocations: i64,
+    /// Longest execution in milliseconds.
+    pub max_ms: f64,
+    /// Mean duration in milliseconds.
+    pub mean_ms: f64,
+    /// The memory limit in bytes.
+    pub memory_limit_bytes: i64,
+    /// Largest memory one execution had, in bytes.
+    pub memory_max_bytes: i64,
+    /// Median duration in milliseconds (within about 11 %).
+    pub p50_ms: f64,
+    /// 95th percentile in milliseconds.
+    pub p95_ms: f64,
+    /// 99th percentile in milliseconds.
+    pub p99_ms: f64,
+    /// Executions that hit their time limit.
+    pub timeouts: i64,
+    /// Version.
+    pub version: i64,
+}
+
+/// Functions with their versions, most executions first.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct FunctionStatList {
+    /// Start of the range (RFC 3339).
+    pub from: String,
+    /// One row per function version.
+    #[serde(default)]
+    pub items: Vec<FunctionStat>,
+    /// End of the range, exclusive.
+    pub to: String,
 }
 
 /// Body of a gauge change: `delta` (may be negative) or the new `value`.
@@ -2877,6 +3728,25 @@ pub struct HookSpec {
     pub events: Vec<HookEvent>,
 }
 
+/// Host calls of one operation.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct HostBreakdown {
+    /// Calls.
+    pub count: i64,
+    /// Calls that returned an error to the function.
+    pub errors: i64,
+    /// Longest call in milliseconds.
+    pub max_ms: f64,
+    /// Mean time in milliseconds.
+    pub mean_ms: f64,
+    /// The operation (`db.get`, `kv`, `fetch`, `storage.put`, ...).
+    pub op: String,
+    /// Share of all the function's host time, 0 to 1.
+    pub share: f64,
+    /// Total time in milliseconds.
+    pub total_ms: f64,
+}
+
 /// A provider-hosted page.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct HostedPage {
@@ -3013,8 +3883,8 @@ pub struct IndexDefinitionSchema {
     pub collection: String,
     #[serde(default)]
     pub keys: Vec<IndexKeySchema>,
-    /// `btree` (default), `fulltext` or `trigram` (PostgreSQL with pg_trgm;
-    /// `400 index_kind_unsupported` elsewhere).
+    /// `btree` (default), `fulltext` or `trigram` (pg_trgm where it is in
+    /// use, else the portable engine; ADR-0034).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kind: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -3164,6 +4034,56 @@ pub enum Interval {
     /// A value this SDK version does not know (kept so newer servers do not break old clients).
     #[serde(other)]
     Unknown,
+}
+
+/// One recorded execution with its profile (ADR-0036 §3).
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct InvocationDetail {
+    /// When it started (RFC 3339).
+    pub created_at: String,
+    /// Wall-clock duration.
+    pub duration_ms: i64,
+    /// Error message, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    /// Fuel consumed.
+    pub fuel_used: i64,
+    /// Function name.
+    pub function: String,
+    /// Id (increasing).
+    pub id: i64,
+    /// Lines the function logged (capped).
+    #[serde(default)]
+    pub logs: Vec<LogLine>,
+    /// Request id of the triggering request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<String>,
+    /// `ok`, `rejected`, `failed`, `trap`, `fuel_exhausted`, `memory_limit`, `timeout` or `bad_output`.
+    pub status: String,
+    /// Trace id of the run (32 hex digits; ADR-0035), when it ran in a trace.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trace_id: Option<String>,
+    /// `http`, `hook`, `job` or `test`.
+    pub trigger: String,
+    /// Version that ran.
+    pub version: i64,
+    /// What the host-call boundary measured: cold start, fuel and memory
+    /// against their limits, per-operation counts and times, and a timeline
+    /// of the first host calls. `null` for executions recorded before
+    /// profiling existed or while it was off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<serde_json::Value>,
+}
+
+/// A page of recorded executions with their profiles, newest first.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct InvocationPage {
+    /// The executions.
+    #[serde(default)]
+    pub items: Vec<InvocationDetail>,
+    /// Pass as `cursor` for the next page; absent after the last one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<i64>,
 }
 
 /// An invoice.
@@ -3780,6 +4700,9 @@ pub struct ItemsDeliveryItemsItem {
     /// Provider that handled it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
+    /// The provider's id of the message (its own dashboard and logs use it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_message_id: Option<String>,
     /// Realm.
     pub realm: String,
     /// Handed over (epoch ms).
@@ -4748,6 +5671,11 @@ pub struct Job {
     /// Longest run of one attempt in ms (`null`: no limit).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_ms: Option<i64>,
+    /// W3C `traceparent` of the span that enqueued the job (ADR-0035): the
+    /// run continues that trace, and an external worker may too. Absent
+    /// while trace propagation is off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub traceparent: Option<String>,
     /// Last change (RFC 3339).
     pub updated_at: String,
     /// Time in milliseconds a worker may hold the job without a heartbeat.
@@ -5121,6 +6049,22 @@ pub struct LedgerPage {
     pub next: Option<i64>,
 }
 
+/// The level usage is grouped at.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Level {
+    #[serde(rename = "environment")]
+    Environment,
+    #[serde(rename = "project")]
+    Project,
+    #[serde(rename = "org")]
+    Org,
+    #[serde(rename = "realm")]
+    Realm,
+    /// A value this SDK version does not know (kept so newer servers do not break old clients).
+    #[serde(other)]
+    Unknown,
+}
+
 /// Resource limits of one execution.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct Limits {
@@ -5169,6 +6113,35 @@ pub enum LineKind {
     Unknown,
 }
 
+/// Internal objects a delivery touched.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct Links {
+    /// Billing customer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub customer_id: Option<String>,
+    /// Invoice.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub invoice_id: Option<String>,
+    /// One-time order.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub order_id: Option<String>,
+    /// Payment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payment_id: Option<String>,
+    /// Refund.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refund_id: Option<String>,
+    /// Store purchase (App Store, Google Play, Creem).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub store_purchase_id: Option<String>,
+    /// Subscription.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subscription_id: Option<String>,
+    /// Row of the event dedup table (`webhook-events`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub webhook_event_id: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ListQueryBody {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -5179,8 +6152,8 @@ pub struct ListQueryBody {
     pub fields: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub filter: Option<String>,
-    /// Fuzzy text: trigram similarity, best match first (PostgreSQL with
-    /// pg_trgm; `400 fuzzy_unsupported` otherwise).
+    /// Fuzzy text: trigram similarity, best match first (pg_trgm where it
+    /// is in use, else the portable engine; ADR-0034).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fuzzy: Option<String>,
     /// Fields `fuzzy` compares; each needs a trigram index (default: all
@@ -5482,6 +6455,43 @@ pub enum Metric {
     Unknown,
 }
 
+/// What a built-in metric is.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct MetricInfo {
+    /// What it counts.
+    pub description: String,
+    /// Key, as used in `metric` and `sort`.
+    pub key: String,
+    /// `counter` (work done: summed over the period) or `gauge` (a resource
+    /// held: last value of the period and its peak).
+    pub kind: String,
+    /// Where it comes from.
+    pub source: String,
+    /// Unit.
+    pub unit: String,
+}
+
+/// A list of metrics.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct MetricList {
+    /// The built-in metrics.
+    #[serde(default)]
+    pub items: Vec<MetricInfo>,
+}
+
+/// One metric of a tenant over the period.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct MetricValue {
+    /// `counter` or `gauge`.
+    pub kind: String,
+    /// Gauges: the largest daily value of the period.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peak: Option<i64>,
+    /// Counters: the sum over the period. Gauges: the value of the last day
+    /// with data in the period.
+    pub value: i64,
+}
+
 /// Body of `POST /mget`.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct MgetBody {
@@ -5772,12 +6782,20 @@ pub struct NewSubscription {
     /// Deliver messages with the same ordering key in publish order, one at a time; immutable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ordering: Option<bool>,
+    /// Push: pause delivery after this many consecutive failed attempts
+    /// (1-1000; default: never). Paused subscriptions keep their messages.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pause_after_failures: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub push: Option<PushConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub start: Option<StartPosition>,
     /// Topic to subscribe to.
     pub topic: String,
+    /// Delete the subscription this long after creation (60 s to 31 days;
+    /// default: never). A later change with `ttl_ms` extends it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ttl_ms: Option<i64>,
 }
 
 /// Body of a topic creation.
@@ -5786,6 +6804,12 @@ pub struct NewTopic {
     /// A repeated `dedup_id` inside this window is accepted once (default 10 minutes).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dedup_window_ms: Option<i64>,
+    /// What the topic's events are (event catalog; at most 1024 characters).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// An example of message `data` (event catalog); must satisfy the schema when one is set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub example: Option<serde_json::Value>,
     /// Free-form labels.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub labels: Option<std::collections::HashMap<String, String>>,
@@ -6300,6 +7324,14 @@ pub struct PathResult {
     /// Nodes from `from` to `to`.
     #[serde(default)]
     pub nodes: Vec<Node>,
+}
+
+/// Body of a pause (optional).
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct PauseRequest {
+    /// Why (shown as `paused_reason`; at most 500 characters).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 /// Body of `POST /billing/invoices/{id}/pay`.
@@ -7137,6 +8169,64 @@ pub struct PullResponse {
     pub messages: Vec<ReceivedMessage>,
 }
 
+/// One push attempt of a subscription: a delivery or a test send (ADR-0031 §1).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PushAttempt {
+    /// When it started (RFC 3339).
+    pub at: String,
+    /// Delivery attempt of the message, from 1.
+    pub attempt: i64,
+    /// Webhook URL or function name.
+    pub endpoint: String,
+    /// The failure in words.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_class: Option<PushErrorClass>,
+    /// Record id (increasing).
+    pub id: i64,
+    /// `webhook` or `function`.
+    pub kind: PushKind,
+    /// How long it took in milliseconds.
+    pub latency_ms: i64,
+    /// Message delivered (`test-…` for a test send).
+    pub message_id: String,
+    /// `success` or `failure`.
+    pub outcome: PushOutcome,
+    /// Headers sent (the signature masked).
+    #[serde(default)]
+    pub request_headers: std::collections::HashMap<String, String>,
+    /// The answer's body, cut to `[queue] push_response_body_bytes` (lossy UTF-8).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response_body: Option<String>,
+    /// Full size of the answer's body in bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response_bytes: Option<i64>,
+    /// Allowlisted headers of the answer (`content-type`, `retry-after`, request ids, ...).
+    #[serde(default)]
+    pub response_headers: std::collections::HashMap<String, String>,
+    /// The body was cut.
+    pub response_truncated: bool,
+    /// HTTP status of the answer (webhooks that answered).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<i64>,
+    /// Subscription.
+    pub subscription: String,
+    /// A test send: not a message, no effect on delivery state or totals.
+    pub test: bool,
+}
+
+/// Push attempts of a subscription.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct PushAttemptPage {
+    /// Newest first.
+    #[serde(default)]
+    pub items: Vec<PushAttempt>,
+    /// Pass as `before` for the next page; absent at the end.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_before: Option<i64>,
+}
+
 /// Body of `POST .../lists/{key}/push`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PushBody {
@@ -7156,6 +8246,85 @@ pub struct PushConfig {
     pub kind: PushKind,
 }
 
+/// Why a push attempt failed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PushErrorClass {
+    #[serde(rename = "timeout")]
+    Timeout,
+    #[serde(rename = "dns")]
+    Dns,
+    #[serde(rename = "connect")]
+    Connect,
+    #[serde(rename = "tls")]
+    Tls,
+    #[serde(rename = "ssrf_refused")]
+    SsrfRefused,
+    #[serde(rename = "http_status")]
+    HttpStatus,
+    #[serde(rename = "redirect")]
+    Redirect,
+    #[serde(rename = "protocol")]
+    Protocol,
+    #[serde(rename = "invalid_request")]
+    InvalidRequest,
+    #[serde(rename = "config")]
+    Config,
+    #[serde(rename = "function")]
+    Function,
+    /// A value this SDK version does not know (kept so newer servers do not break old clients).
+    #[serde(other)]
+    Unknown,
+}
+
+/// Endpoint health of a push subscription (ADR-0031 §5): the attempts of the
+/// last hour (at most the newest 1000; test sends excluded) and the
+/// circuit-breaker state.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct PushHealth {
+    /// Attempts in the window.
+    pub attempts: i64,
+    /// Failed attempts since the last success.
+    pub consecutive_failures: i64,
+    /// Failed attempts in the window.
+    pub failures: i64,
+    /// Error of the last failed attempt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+    /// Last failed attempt (RFC 3339).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_failure_at: Option<String>,
+    /// Last successful attempt (RFC 3339).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_success_at: Option<String>,
+    /// Median latency in milliseconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latency_p50_ms: Option<i64>,
+    /// 95th percentile latency in milliseconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latency_p95_ms: Option<i64>,
+    /// 99th percentile latency in milliseconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latency_p99_ms: Option<i64>,
+    /// Auto-pause threshold.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pause_after_failures: Option<i64>,
+    /// Push delivery is paused.
+    pub paused: bool,
+    /// When it was paused (RFC 3339).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paused_at: Option<String>,
+    /// Why it was paused.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paused_reason: Option<String>,
+    /// `successes / attempts` (absent without attempts).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub success_rate: Option<f64>,
+    /// Successful attempts in the window.
+    pub successes: i64,
+    /// Length of the rolling window in milliseconds.
+    pub window_ms: i64,
+}
+
 /// Kind of push endpoint.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PushKind {
@@ -7163,6 +8332,18 @@ pub enum PushKind {
     Webhook,
     #[serde(rename = "function")]
     Function,
+    /// A value this SDK version does not know (kept so newer servers do not break old clients).
+    #[serde(other)]
+    Unknown,
+}
+
+/// How a push attempt ended.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PushOutcome {
+    #[serde(rename = "success")]
+    Success,
+    #[serde(rename = "failure")]
+    Failure,
     /// A value this SDK version does not know (kept so newer servers do not break old clients).
     #[serde(other)]
     Unknown,
@@ -7310,6 +8491,9 @@ pub struct QueueSubscription {
     /// Dead-letter topic.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dead_letter_topic: Option<String>,
+    /// When the subscription is deleted (RFC 3339).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<String>,
     /// Attribute filter.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub filter: Option<serde_json::Value>,
@@ -7323,11 +8507,24 @@ pub struct QueueSubscription {
     pub name: String,
     /// Ordered delivery per ordering key.
     pub ordering: bool,
+    /// Auto-pause after this many consecutive failed push attempts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pause_after_failures: Option<i64>,
+    /// When push delivery was paused (RFC 3339); messages accumulate until it is resumed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paused_at: Option<String>,
+    /// Why it was paused (`auto: …` for the circuit breaker).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paused_reason: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub push: Option<PushConfig>,
     /// Webhook signing secret: returned only when it is created.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub push_secret: Option<String>,
+    /// End of the grace window of the secret a rotation replaced (RFC 3339):
+    /// until then deliveries carry a signature with each secret.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub push_secret_previous_expires_at: Option<String>,
     /// Owning tenant (FB-141); `None` for an instance-wide subscription.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tenant: Option<String>,
@@ -7662,6 +8859,42 @@ pub struct RecurringRevenue {
     pub subscriptions: i64,
 }
 
+/// Body of a redrive: `ids`, or `all` (optionally filtered).
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct RedriveRequest {
+    /// Every dead letter of the subscription not yet redriven (oldest first, at most `limit`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub all: Option<bool>,
+    /// With `all`: only records whose message attributes match this filter (subscription filter syntax).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filter: Option<serde_json::Value>,
+    /// Dead-letter record ids (1-1000).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ids: Option<Vec<i64>>,
+    /// With `all`: most records to redrive in this call (1-1000, default 1000).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<i64>,
+    /// With `all`: only records dead-lettered at or after this RFC 3339 time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub since: Option<String>,
+}
+
+/// Outcome of a redrive.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct RedriveResult {
+    /// Records that were redriven before (each record is redriven once).
+    #[serde(default)]
+    pub already_redriven: Vec<i64>,
+    /// Ids that are not dead letters of this subscription.
+    #[serde(default)]
+    pub not_found: Vec<i64>,
+    /// Records delivered to the subscription again (attempt counter reset).
+    #[serde(default)]
+    pub redriven: Vec<i64>,
+    /// With `all`: matching records left for another call.
+    pub remaining: i64,
+}
+
 /// A refund.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Refund {
@@ -7704,6 +8937,53 @@ pub enum RefundStatus {
     /// A value this SDK version does not know (kept so newer servers do not break old clients).
     #[serde(other)]
     Unknown,
+}
+
+/// A statement that got slower, or started failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct Regression {
+    /// Subsystem.
+    pub area: String,
+    /// `sqlite` or `postgres`.
+    pub backend: String,
+    /// The baseline window.
+    pub baseline: WindowStat,
+    /// `recent p95 - baseline p95` in milliseconds.
+    pub delta_ms: f64,
+    /// Sort key: how much extra time the recent runs cost, in milliseconds.
+    pub extra_ms: f64,
+    /// Fingerprint.
+    pub fingerprint: String,
+    /// `latency` (p95 grew) or `errors` (the error rate grew).
+    pub kind: String,
+    /// `recent p95 / baseline p95` (latency) or the error rate difference (errors).
+    pub ratio: f64,
+    /// The recent window.
+    pub recent: WindowStat,
+    /// The statement with every value replaced by `?`.
+    pub statement: String,
+}
+
+/// What a regression check compared.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct RegressionReport {
+    /// Start of the baseline window.
+    pub baseline_from: String,
+    /// End of the baseline window (the start of the recent one).
+    pub baseline_to: String,
+    /// The regressions, most costly first.
+    #[serde(default)]
+    pub items: Vec<Regression>,
+    /// Fewest runs in each window.
+    pub min_calls: i64,
+    /// Smallest p95 growth reported, in milliseconds.
+    pub min_delta_ms: f64,
+    /// Smallest `recent p95 / baseline p95` reported.
+    pub min_ratio: f64,
+    /// Start of the recent window (RFC 3339).
+    pub recent_from: String,
+    /// End of the recent window.
+    pub recent_to: String,
 }
 
 /// Answer of the removals.
@@ -7814,6 +9094,21 @@ pub struct RetiredList {
     pub items: Vec<RetiredInfo>,
 }
 
+/// Body of a "retry now" (optional).
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct RetryRequest {
+    /// Only these messages (default: every message waiting for a retry backoff).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_ids: Option<Vec<String>>,
+}
+
+/// Outcome of a "retry now".
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct RetryResult {
+    /// Deliveries that were waiting for a backoff and are ready now.
+    pub count: i64,
+}
+
 /// Revenue of one currency in one bucket.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct RevenuePoint {
@@ -7854,12 +9149,41 @@ pub struct RollbackBody {
     pub version: Option<i64>,
 }
 
+/// Result of a rollup.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct RollupResult {
+    /// The day rolled up.
+    pub day: String,
+    /// Values written.
+    pub values: i64,
+}
+
 /// Body of `POST /system/db-logins/{name}/rotate`.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct RotateBody {
     /// New expiry (RFC 3339); absent keeps the current one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub valid_until: Option<String>,
+}
+
+/// Body of a secret rotation (optional).
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct RotateSecretRequest {
+    /// How long the old secret keeps signing too, 0 to 7 days (default 24 hours; `0` drops it at once).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grace_ms: Option<i64>,
+}
+
+/// A rotated webhook secret.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct RotatedSecret {
+    /// Until when deliveries are also signed with the old secret (RFC 3339; absent with no grace).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_expires_at: Option<String>,
+    /// The new signing secret: shown only here.
+    pub push_secret: String,
+    /// Subscription.
+    pub subscription: String,
 }
 
 /// `run_as` of a SQL editor body (FB-153): whose claims the statements run
@@ -8290,6 +9614,147 @@ pub struct SignedUrl {
     pub url: String,
 }
 
+/// A service level objective over a group of routes.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Slo {
+    /// Multi-window burn-rate alerts on.
+    pub alerting: bool,
+    /// Created.
+    pub created_at: String,
+    /// What it promises.
+    pub description: String,
+    /// Id.
+    pub id: String,
+    /// Kind.
+    pub kind: SloKind,
+    /// Extra labels of its alerts.
+    #[serde(default)]
+    pub labels: std::collections::HashMap<String, String>,
+    /// Latency SLOs: the threshold.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latency_threshold_ms: Option<i64>,
+    /// Only these methods (empty: all).
+    #[serde(default)]
+    pub methods: Vec<String>,
+    /// Unique name (the `slo` label).
+    pub name: String,
+    /// Target share of good requests (0.9 to 0.99999).
+    pub objective: f64,
+    /// Route templates starting with this (`/api/v1/collections`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route_prefix: Option<String>,
+    /// Or route templates matching this anchored regular expression.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route_regex: Option<String>,
+    /// Changed.
+    pub updated_at: String,
+    /// Rolling window (`30d`).
+    pub window: String,
+    /// The same in milliseconds.
+    pub window_ms: i64,
+}
+
+/// One burn-rate alert tier.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SloBurnTier {
+    /// Burn rate both windows must exceed.
+    pub burn_rate_threshold: f64,
+    /// Whether it fires now.
+    pub firing: bool,
+    /// Long window.
+    pub long_window: String,
+    /// Rule id.
+    pub rule_id: String,
+    /// Severity.
+    pub severity: AlertSeverity,
+    /// Short window.
+    pub short_window: String,
+    /// `page_fast`, `page_slow` or `ticket`.
+    pub tier: String,
+}
+
+/// Error budget of an SLO over its window.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct SloErrorBudget {
+    /// Bad events the objective allows over the window: `(1 - objective) * total`.
+    pub allowed: f64,
+    /// Bad events so far.
+    pub consumed: i64,
+    /// Share left: `1 - consumed / allowed` (below 0 when overspent; 1 with no traffic).
+    pub remaining_ratio: f64,
+}
+
+/// A new SLO or a change (every field replaces).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SloInput {
+    /// Burn-rate alerts (default true).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alerting: Option<bool>,
+    /// Description.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// Kind.
+    pub kind: SloKind,
+    /// Extra alert labels.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub labels: Option<std::collections::HashMap<String, String>>,
+    /// Latency threshold in milliseconds (latency SLOs).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latency_threshold_ms: Option<i64>,
+    /// Methods (`GET`, `POST`, …).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub methods: Option<Vec<String>>,
+    /// Unique name (letters, digits, `_`, `-`, `.`; 1-64).
+    pub name: String,
+    /// Objective, such as 0.999.
+    pub objective: f64,
+    /// Route prefix (one of prefix or regex; neither: every route).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route_prefix: Option<String>,
+    /// Route regular expression.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route_regex: Option<String>,
+    /// Window (default `30d`; 1h to 90d).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window: Option<String>,
+}
+
+/// SLO kind.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SloKind {
+    #[serde(rename = "availability")]
+    Availability,
+    #[serde(rename = "latency")]
+    Latency,
+    /// A value this SDK version does not know (kept so newer servers do not break old clients).
+    #[serde(other)]
+    Unknown,
+}
+
+/// Where an SLO stands.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SloStatus {
+    /// Burn-rate alert tiers.
+    #[serde(default)]
+    pub alerts: Vec<SloBurnTier>,
+    /// Bad requests.
+    pub bad: i64,
+    /// Burn rate per window (`5m`, `30m`, `1h`, `6h`, `3d`): error ratio / (1 - objective).
+    #[serde(default)]
+    pub burn_rates: std::collections::HashMap<String, f64>,
+    /// The error budget.
+    pub error_budget: SloErrorBudget,
+    /// Good requests.
+    pub good: i64,
+    /// `good / total` (`null` without traffic).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sli: Option<f64>,
+    /// The SLO.
+    pub slo: Slo,
+    /// Requests in the window.
+    pub total: i64,
+}
+
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct SlowQueryLabelSchema {
     pub collection: String,
@@ -8318,6 +9783,42 @@ pub struct SlowQuerySchema {
     pub rows: i64,
     /// SQL text; parameter values are never recorded.
     pub sql: String,
+}
+
+/// One slow statement.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct SlowStatementEntry {
+    /// Subsystem.
+    pub area: String,
+    /// When it finished (RFC 3339).
+    pub at: String,
+    /// `sqlite` or `postgres`.
+    pub backend: String,
+    /// Wall time in milliseconds.
+    pub duration_ms: f64,
+    /// It failed.
+    pub error: bool,
+    /// Fingerprint.
+    pub fingerprint: String,
+    /// Row id (the paging cursor).
+    pub id: i64,
+    /// Rows returned or changed.
+    pub rows: i64,
+    /// The statement with every value replaced by `?`.
+    pub statement: String,
+    /// It ran inside a write transaction.
+    pub write: bool,
+}
+
+/// A page of slow statements, newest first.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct SlowStatementPage {
+    /// The statements.
+    #[serde(default)]
+    pub items: Vec<SlowStatementEntry>,
+    /// Pass as `cursor` for the next page; absent after the last one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<i64>,
 }
 
 /// A saved acknowledgement state of a subscription.
@@ -8445,6 +9946,148 @@ pub struct SqlStatementBody {
 
 /// Where a new subscription starts reading.
 pub type StartPosition = serde_json::Value;
+
+/// One statement shape with its history.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct StatementDetail {
+    /// The subsystem the statement belongs to.
+    pub area: String,
+    /// `sqlite` or `postgres`.
+    pub backend: String,
+    /// Times it ran.
+    pub calls: i64,
+    /// `errors / calls`.
+    pub error_rate: f64,
+    /// Times it failed.
+    pub errors: i64,
+    /// 16 hex digits identifying the statement shape.
+    pub fingerprint: String,
+    /// Longest run in milliseconds.
+    pub max_ms: f64,
+    /// Mean time in milliseconds.
+    pub mean_ms: f64,
+    /// Shortest run in milliseconds.
+    pub min_ms: f64,
+    /// Median in milliseconds (from the latency sketch: within about 11 %).
+    pub p50_ms: f64,
+    /// 95th percentile in milliseconds.
+    pub p95_ms: f64,
+    /// 99th percentile in milliseconds.
+    pub p99_ms: f64,
+    /// Rows returned or changed, total.
+    pub rows: i64,
+    /// Runs at or above the slow threshold.
+    pub slow: i64,
+    /// The statement with every value replaced by `?`.
+    pub statement: String,
+    /// Total wall time in milliseconds.
+    pub total_ms: f64,
+    /// Runs inside a write transaction.
+    pub writes: i64,
+    /// Buckets, oldest first (the not yet flushed part of the last bucket is
+    /// the final point).
+    #[serde(default)]
+    pub series: Vec<StatementPoint>,
+}
+
+/// A page of \[`StatementStat`\].
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct StatementList {
+    /// Start of the range (RFC 3339).
+    pub from: String,
+    /// The statements.
+    #[serde(default)]
+    pub items: Vec<StatementStat>,
+    /// Page size used.
+    pub limit: i64,
+    /// Rows skipped.
+    pub offset: i64,
+    /// End of the range, exclusive (RFC 3339).
+    pub to: String,
+    /// How many statement shapes matched.
+    pub total: i64,
+}
+
+/// One time bucket of a statement.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct StatementPoint {
+    /// Start of the bucket (RFC 3339).
+    pub at: String,
+    /// Runs.
+    pub calls: i64,
+    /// Failures.
+    pub errors: i64,
+    /// Longest in milliseconds.
+    pub max_ms: f64,
+    /// Mean in milliseconds.
+    pub mean_ms: f64,
+    /// 95th percentile in milliseconds.
+    pub p95_ms: f64,
+    /// Length of the bucket in seconds.
+    pub seconds: i64,
+}
+
+/// Statistics of one statement fingerprint over a time range.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct StatementStat {
+    /// The subsystem the statement belongs to.
+    pub area: String,
+    /// `sqlite` or `postgres`.
+    pub backend: String,
+    /// Times it ran.
+    pub calls: i64,
+    /// `errors / calls`.
+    pub error_rate: f64,
+    /// Times it failed.
+    pub errors: i64,
+    /// 16 hex digits identifying the statement shape.
+    pub fingerprint: String,
+    /// Longest run in milliseconds.
+    pub max_ms: f64,
+    /// Mean time in milliseconds.
+    pub mean_ms: f64,
+    /// Shortest run in milliseconds.
+    pub min_ms: f64,
+    /// Median in milliseconds (from the latency sketch: within about 11 %).
+    pub p50_ms: f64,
+    /// 95th percentile in milliseconds.
+    pub p95_ms: f64,
+    /// 99th percentile in milliseconds.
+    pub p99_ms: f64,
+    /// Rows returned or changed, total.
+    pub rows: i64,
+    /// Runs at or above the slow threshold.
+    pub slow: i64,
+    /// The statement with every value replaced by `?`.
+    pub statement: String,
+    /// Total wall time in milliseconds.
+    pub total_ms: f64,
+    /// Runs inside a write transaction.
+    pub writes: i64,
+}
+
+/// State of the statement statistics.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct StatementStatus {
+    /// Statistics are collected.
+    pub enabled: bool,
+    /// Fingerprints held in memory now.
+    pub fingerprints_in_memory: i64,
+    /// Seconds between flushes.
+    pub flush_interval_secs: i64,
+    /// Days kept.
+    pub retention_days: i64,
+    /// Slow statement threshold in milliseconds.
+    pub slow_query_ms: i64,
+    /// Fingerprints stored.
+    pub stored_rows: i64,
+    /// Slow statements stored.
+    pub stored_slow_statements: i64,
+    /// Fingerprints per flush.
+    pub top_n: i64,
+    /// Start of the interval not yet flushed (RFC 3339).
+    pub unflushed_since: String,
+}
 
 /// Instance totals.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
@@ -8711,6 +10354,8 @@ pub struct SubscriptionMetrics {
     /// Age of the oldest unacknowledged message in milliseconds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub oldest_unacked_age_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub push: Option<PushHealth>,
     /// Deliverable now.
     pub ready: i64,
     /// Subscription.
@@ -8746,8 +10391,14 @@ pub struct SubscriptionPatch {
     /// New attempt limit; `0` removes it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_delivery_attempts: Option<i64>,
+    /// New auto-pause threshold; `0` turns auto-pause off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pause_after_failures: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub push: Option<PushConfig>,
+    /// Delete the subscription this long from now; `0` removes the expiry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ttl_ms: Option<i64>,
 }
 
 /// Subscription lifecycle (set by billing, FB-70).
@@ -9001,6 +10652,33 @@ pub struct TemplateInput {
     pub text: String,
 }
 
+/// Body of `POST /email/provider/test`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct TestMailInput {
+    /// Recipient of the test message.
+    pub to: String,
+}
+
+/// Result of a test send.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct TestMailResult {
+    /// The `From` address used.
+    pub from: String,
+    /// The provider's message id, when it returned one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_id: Option<String>,
+    /// Transport that handled it (`resend`, `ses`, ...).
+    pub provider: String,
+}
+
+/// Body of a test send (optional).
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct TestSendRequest {
+    /// `data` of the synthetic message (default: a short `forgebase.test` object).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<serde_json::Value>,
+}
+
 /// How the words of a keyword query combine.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TextOperator {
@@ -9043,6 +10721,12 @@ pub struct Topic {
     pub created_by: String,
     /// Dedup window in milliseconds.
     pub dedup_window_ms: i64,
+    /// What the topic's events are.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// Example of message `data`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub example: Option<serde_json::Value>,
     /// Labels.
     #[serde(default)]
     pub labels: std::collections::HashMap<String, String>,
@@ -9106,12 +10790,21 @@ pub struct TopicMetrics {
 /// Body of a topic change; absent fields keep their value.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct TopicPatch {
+    /// Removes the example.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clear_example: Option<bool>,
     /// Removes the schema.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub clear_schema: Option<bool>,
     /// New dedup window.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dedup_window_ms: Option<i64>,
+    /// New description; an empty string removes it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// New example of message `data`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub example: Option<serde_json::Value>,
     /// Replaces the labels.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub labels: Option<std::collections::HashMap<String, String>>,
@@ -9545,6 +11238,35 @@ pub struct UsagePackInput {
     pub valid_days: Option<i64>,
 }
 
+/// A page of usage rows.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UsageReport {
+    /// Whether the billing catalog was available for prices.
+    pub cost_available: bool,
+    /// Currency of the cost estimates, when there are any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub currency: Option<String>,
+    /// Always true.
+    pub estimate: bool,
+    /// Start of the period (RFC 3339).
+    pub from: String,
+    /// Grouping level asked for.
+    pub group_by: Level,
+    /// The rows.
+    #[serde(default)]
+    pub items: Vec<UsageRow>,
+    /// Page size.
+    pub limit: i64,
+    /// Rows skipped.
+    pub offset: i64,
+    /// Sort key used.
+    pub sort: String,
+    /// End of the period, exclusive.
+    pub to: String,
+    /// Rows matching before paging.
+    pub total: i64,
+}
+
 /// A quota check, consumption or reservation.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct UsageRequest {
@@ -9572,6 +11294,34 @@ pub struct UsageRequest {
     pub units: Option<i64>,
 }
 
+/// Usage of one tenant (or tenant group).
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct UsageRow {
+    /// False for a metering row listed among environments: the events belong
+    /// to an organization or principal, not to one environment.
+    pub attributed: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost: Option<CostEstimate>,
+    /// Id at that level (`shared` for data that belongs to no tenant).
+    pub id: String,
+    /// The level of this row (`environment`, `project`, `org`, `user`, `realm`, `shared`).
+    pub level: String,
+    /// The metrics.
+    #[serde(default)]
+    pub metrics: std::collections::HashMap<String, MetricValue>,
+    /// Display name.
+    pub name: String,
+    /// Organization id, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub org: Option<String>,
+    /// Project id, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
+    /// Realm id, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub realm: Option<String>,
+}
+
 /// What one run of the usage consumer did.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct UsageRun {
@@ -9585,6 +11335,16 @@ pub struct UsageRun {
     pub events_read: i64,
     /// Credits not covered by balances.
     pub shortfall: i64,
+}
+
+/// Daily values of one scope.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct UsageSeries {
+    /// Per metric, `[day, value]` pairs, oldest first.
+    #[serde(default)]
+    pub metrics: std::collections::HashMap<String, Vec<Vec<serde_json::Value>>>,
+    /// The scope (`env:<id>`).
+    pub scope: String,
 }
 
 /// Current usage of one feature of a subject.
@@ -9876,6 +11636,161 @@ pub enum Visibility {
     Unknown,
 }
 
+/// One inbound webhook request (without headers and body).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WebhookDelivery {
+    /// Provider account it was for, when known (Razorpay key id, WeChat Pay
+    /// merchant id, App Store bundle id, Google Play package name).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
+    /// SHA-256 of the whole body, hex (the event's `payload_hash`).
+    pub body_sha256: String,
+    /// Body size as received, in bytes.
+    pub body_size: i64,
+    /// The body is stored (unverified deliveries over the budget are not).
+    pub body_stored: bool,
+    /// Only the first `body_max_bytes` are stored.
+    pub body_truncated: bool,
+    /// Client address (socket peer, or the trusted `X-Forwarded-For`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_addr: Option<String>,
+    /// Processing detail (`invoice_paid`, `stale`, `too_old`, ...) or the error.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    /// Event id at the provider (verified deliveries).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event_id: Option<String>,
+    /// Event type.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event_type: Option<String>,
+    /// Id (`whd_…`).
+    pub id: String,
+    /// Verification and processing time in microseconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latency_us: Option<i64>,
+    /// Internal objects it touched.
+    pub links: Links,
+    /// `processing` when verified, else `verification`.
+    pub outcome: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub processing: Option<WebhookProcessing>,
+    /// Provider named in the path.
+    pub provider: String,
+    /// Why verification refused it (stable code and a fixed message).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// Received.
+    pub received_at: String,
+    /// Operator replays.
+    pub replays: i64,
+    /// When a re-verification accepted it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reverified_at: Option<String>,
+    /// Operator re-verifications.
+    pub reverify_attempts: i64,
+    /// Last change.
+    pub updated_at: String,
+    /// What verification made of it.
+    pub verification: WebhookVerification,
+}
+
+/// A delivery with its stored headers and body. Bodies can contain personal
+/// data (names, emails, addresses): platform administrators only.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WebhookDeliveryDetail {
+    /// Provider account it was for, when known (Razorpay key id, WeChat Pay
+    /// merchant id, App Store bundle id, Google Play package name).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
+    /// SHA-256 of the whole body, hex (the event's `payload_hash`).
+    pub body_sha256: String,
+    /// Body size as received, in bytes.
+    pub body_size: i64,
+    /// The body is stored (unverified deliveries over the budget are not).
+    pub body_stored: bool,
+    /// Only the first `body_max_bytes` are stored.
+    pub body_truncated: bool,
+    /// Client address (socket peer, or the trusted `X-Forwarded-For`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_addr: Option<String>,
+    /// Processing detail (`invoice_paid`, `stale`, `too_old`, ...) or the error.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    /// Event id at the provider (verified deliveries).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event_id: Option<String>,
+    /// Event type.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event_type: Option<String>,
+    /// Id (`whd_…`).
+    pub id: String,
+    /// Verification and processing time in microseconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latency_us: Option<i64>,
+    /// Internal objects it touched.
+    pub links: Links,
+    /// `processing` when verified, else `verification`.
+    pub outcome: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub processing: Option<WebhookProcessing>,
+    /// Provider named in the path.
+    pub provider: String,
+    /// Why verification refused it (stable code and a fixed message).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// Received.
+    pub received_at: String,
+    /// Operator replays.
+    pub replays: i64,
+    /// When a re-verification accepted it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reverified_at: Option<String>,
+    /// Operator re-verifications.
+    pub reverify_attempts: i64,
+    /// Last change.
+    pub updated_at: String,
+    /// What verification made of it.
+    pub verification: WebhookVerification,
+    /// The stored body: text when it is UTF-8, else base64.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body: Option<String>,
+    /// `utf8` or `base64`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body_encoding: Option<String>,
+    /// Allowlisted headers (lower-case names).
+    #[serde(default)]
+    pub headers: serde_json::Value,
+}
+
+/// A page of deliveries.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct WebhookDeliveryPage {
+    /// Deliveries, newest first.
+    #[serde(default)]
+    pub items: Vec<WebhookDelivery>,
+    /// Page size.
+    pub limit: i64,
+    /// Rows skipped.
+    pub offset: i64,
+    /// All deliveries matching the filters.
+    pub total: i64,
+}
+
+/// What a replay or re-verification did.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WebhookDeliveryResult {
+    /// The delivery afterwards.
+    pub delivery: WebhookDelivery,
+    /// Processing detail, or why it does not verify.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    /// `applied`, `ignored`, `failed`, `already_applied` (the event was
+    /// processed before: nothing changed), `already_ignored` (it was
+    /// ignored before: nothing changed) or `unverified` (the stored delivery
+    /// does not verify with the current secrets: nothing was processed).
+    pub result: String,
+}
+
 /// A webhook event received.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct WebhookEvent {
@@ -9910,6 +11825,63 @@ pub struct WebhookOutcome {
     pub event_id: String,
     /// `processed`, `ignored`, `duplicate` (already handled) or `failed`.
     pub result: String,
+}
+
+/// What processing made of a verified delivery.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum WebhookProcessing {
+    #[serde(rename = "applied")]
+    Applied,
+    #[serde(rename = "ignored")]
+    Ignored,
+    #[serde(rename = "duplicate")]
+    Duplicate,
+    #[serde(rename = "failed")]
+    Failed,
+    /// A value this SDK version does not know (kept so newer servers do not break old clients).
+    #[serde(other)]
+    Unknown,
+}
+
+/// What verification made of a delivery.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum WebhookVerification {
+    #[serde(rename = "verified")]
+    Verified,
+    #[serde(rename = "signature_invalid")]
+    SignatureInvalid,
+    #[serde(rename = "timestamp_out_of_tolerance")]
+    TimestampOutOfTolerance,
+    #[serde(rename = "unknown_provider")]
+    UnknownProvider,
+    #[serde(rename = "malformed")]
+    Malformed,
+    #[serde(rename = "rejected")]
+    Rejected,
+    #[serde(rename = "error")]
+    Error,
+    /// A value this SDK version does not know (kept so newer servers do not break old clients).
+    #[serde(other)]
+    Unknown,
+}
+
+/// Latency numbers of one window of a regression.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct WindowStat {
+    /// Runs.
+    pub calls: i64,
+    /// `errors / calls`.
+    pub error_rate: f64,
+    /// Failures.
+    pub errors: i64,
+    /// Mean in milliseconds.
+    pub mean_ms: f64,
+    /// Median in milliseconds.
+    pub p50_ms: f64,
+    /// 95th percentile in milliseconds.
+    pub p95_ms: f64,
+    /// 99th percentile in milliseconds.
+    pub p99_ms: f64,
 }
 
 /// A worker that registered or claimed jobs.
