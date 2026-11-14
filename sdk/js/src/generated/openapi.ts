@@ -8426,7 +8426,11 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Makes a signed URL. */
+        /**
+         * Makes a signed URL. `mode` says who serves it: `proxy` (ForgeBase, a
+         *     relative URL) or `native` (the storage provider, an absolute URL; downloads
+         *     only, under `[storage] signed_urls = "native" | "auto"`).
+         */
         post: operations["sign"];
         delete?: never;
         options?: never;
@@ -18360,15 +18364,22 @@ export interface components {
          * @enum {string}
          */
         SignedMethod: "GET" | "PUT";
+        /**
+         * @description Who serves a signed URL's bytes (ADR-0040 addendum).
+         * @enum {string}
+         */
+        SignedMode: "proxy" | "native";
         /** @description A signed URL. */
         SignedUrl: {
             /** @description RFC 3339 expiry. */
             expires_at: string;
             /** @description `GET` or `PUT`. */
             method: components["schemas"]["SignedMethod"];
+            /** @description `proxy` or `native` (uploads are always `proxy`). */
+            mode?: components["schemas"]["SignedMode"];
             /**
-             * @description Path and query, relative to the server root; usable without credentials
-             *     until `expires_at`.
+             * @description Proxy: path and query, relative to the server root. Native: an
+             *     absolute provider URL. Usable without credentials until `expires_at`.
              */
             url: string;
         };
@@ -53900,6 +53911,13 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ErrorEnvelope"];
                 };
+            };
+            /** @description `native_signing_unavailable`: native mode, but the driver or its credentials cannot sign */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };

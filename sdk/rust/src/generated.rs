@@ -9759,6 +9759,18 @@ pub enum SignedMethod {
     Unknown,
 }
 
+/// Who serves a signed URL's bytes (ADR-0040 addendum).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SignedMode {
+    #[serde(rename = "proxy")]
+    Proxy,
+    #[serde(rename = "native")]
+    Native,
+    /// A value this SDK version does not know (kept so newer servers do not break old clients).
+    #[serde(other)]
+    Unknown,
+}
+
 /// A signed URL.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SignedUrl {
@@ -9766,8 +9778,11 @@ pub struct SignedUrl {
     pub expires_at: String,
     /// `GET` or `PUT`.
     pub method: SignedMethod,
-    /// Path and query, relative to the server root; usable without credentials
-    /// until `expires_at`.
+    /// `proxy` or `native` (uploads are always `proxy`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<SignedMode>,
+    /// Proxy: path and query, relative to the server root. Native: an
+    /// absolute provider URL. Usable without credentials until `expires_at`.
     pub url: String,
 }
 
