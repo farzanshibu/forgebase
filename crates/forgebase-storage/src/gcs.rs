@@ -427,6 +427,8 @@ impl GcsDriver {
             headers: Vec::new(),
             body: body.to_vec(),
         };
+        // The shared client defaults to `Accept: application/json`; media and XML answers are not.
+        req = req.header("accept", "*/*");
         if let Some(t) = token {
             req = req.header("authorization", format!("Bearer {t}"));
         }

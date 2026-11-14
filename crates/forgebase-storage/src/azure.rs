@@ -606,6 +606,8 @@ impl AzureDriver {
             headers: Vec::new(),
             body: body.to_vec(),
         };
+        // The shared client defaults to `Accept: application/json`; Blob answers are XML or bytes.
+        req = req.header("accept", "*/*");
         for (k, v) in all {
             req = req.header(&k, v);
         }
