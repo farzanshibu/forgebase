@@ -53,14 +53,14 @@ describe("Billing shell", () => {
 });
 
 describe("Billing groups", () => {
-  it("puts every route in one group, and the 13 pages in four", () => {
+  it("puts every route in one group, and the 14 pages in four", () => {
     expect(groupOf("/billing").id).toBe("money");
     expect(groupOf("/billing/invoices/inv1").id).toBe("money");
     expect(groupOf("/billing/coupons").id).toBe("catalog");
     expect(groupOf("/billing/stores").id).toBe("catalog");
     expect(groupOf("/billing/usage").id).toBe("customers");
     expect(groupOf("/billing/settings").id).toBe("settings");
-    expect(GROUPS.flatMap((g) => g.pages)).toHaveLength(13);
+    expect(GROUPS.flatMap((g) => g.pages)).toHaveLength(14);
   });
   it("moves between groups and pages", async () => {
     setup();

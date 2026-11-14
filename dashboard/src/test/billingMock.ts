@@ -7,7 +7,7 @@
  */
 import type {
   BillingSettings, CreditNote, Coupon, Customer, Invoice, LedgerEntry, Order, Payment, Price, Product, ProviderAccount, Refund,
-  Subscription, UsageSummary, WebhookEvent, StoreProduct, StorePurchase,
+  Subscription, UsageSummary, WebhookEvent, StoreProduct, StorePurchase, WebhookDeliveryDetail,
 } from "../api";
 import { envelope, type MockApi } from "./mockApi";
 
@@ -32,6 +32,12 @@ export interface BillingState {
   storePurchases: StorePurchase[];
   settings: BillingSettings;
   webhooks: WebhookEvent[];
+  /** The webhook inspector (ADR-0032), plain handlers: the OpenAPI fixture predates it. */
+  deliveries: WebhookDeliveryDetail[];
+  /** What a replay and a re-verify answer: the `result` word. */
+  replayAs: string;
+  reverifyAs: string;
+  calls: { replay: string[]; reverify: string[] };
   usage: UsageSummary[];
   ledger: LedgerEntry[];
   creditBalance: number;
@@ -104,6 +110,8 @@ export function seedBilling(): BillingState {
     ],
     settings: { default_currency: "USD", retry_days: [1, 3, 5], final_action: "cancel", invoice_prefix: "INV", credit_note_prefix: "CN", incomplete_days: 1, webhook_max_age_secs: 259200, webhook_tolerance_secs: 300 },
     webhooks: [{ id: "we1", provider: "stripe", event_id: "evt_1", event_type: "invoice.paid", event_at: T0, received_at: T0, status: "processed", result: "applied", attempts: 1 }],
+    deliveries: seedDeliveries(),
+    replayAs: "applied", reverifyAs: "applied", calls: { replay: [], reverify: [] },
     usage: [
       { feature: "api_calls", kind: "metered", scope_key: "", enabled: true, limit: 1000, carried_in: 0, used: 750, reserved: 0, remaining: 250, pack_remaining: 0, percent: 75, enforcement: "hard", period: "month", window_start: T0, window_end: T1 },
       { feature: "exports", kind: "metered", scope_key: "", enabled: true, limit: 100, carried_in: 0, used: 95, reserved: 0, remaining: 5, pack_remaining: 50, percent: 95, enforcement: "soft", period: "month", window_start: T0, window_end: T1 },
@@ -117,6 +125,23 @@ export function seedBilling(): BillingState {
     creditBalance: 960,
     taxRates: [{ id: "tx1", region: "IN", name: "GST", rate_bp: 1800, active: true }],
   };
+}
+
+const delivery = (id: string, over: Partial<WebhookDeliveryDetail> = {}): WebhookDeliveryDetail => ({
+  id, provider: "stripe", account: null, received_at: T0, client_addr: "203.0.113.7", body_size: 64, body_stored: true, body_truncated: false, body_sha256: "ab".repeat(32),
+  verification: "verified", reason: null, event_id: `evt_${id}`, event_type: "invoice.paid", processing: "applied", outcome: "applied", detail: "invoice_paid", links: {},
+  latency_us: 4200, replays: 0, reverify_attempts: 0, reverified_at: null, updated_at: T0,
+  headers: { "content-type": "application/json", "stripe-signature": "t=1,v1=abc" }, body: '{"id":"evt_1","type":"invoice.paid"}', body_encoding: "utf8", ...over,
+});
+function seedDeliveries(): WebhookDeliveryDetail[] {
+  return [
+    delivery("whd_1", { links: { webhook_event_id: "we1", customer_id: "cus1", subscription_id: "sub1", invoice_id: "inv1", payment_id: "pay1" } }),
+    delivery("whd_2", { verification: "signature_invalid", reason: "signature_mismatch", event_id: null, event_type: null, processing: null, outcome: "signature_invalid", detail: null, latency_us: 300, body: '{"id":"evt_9","type":"invoice.paid"}' }),
+    delivery("whd_3", { provider: "razorpay", account: "rzp_live_1", event_type: "payment.captured", outcome: "duplicate", processing: "duplicate", detail: null }),
+    delivery("whd_4", { provider: "wechat_pay", event_type: null, outcome: "failed", processing: "failed", detail: "database busy", body: "AAEC/w==", body_encoding: "base64", body_size: 4 }),
+    delivery("whd_5", { verification: "rejected", reason: "live_mode", outcome: "rejected", processing: null, event_id: null, event_type: null, body: null, body_encoding: null, body_stored: false, detail: null }),
+    delivery("whd_6", { provider: "google_play", verification: "malformed", reason: "bad_push", outcome: "malformed", processing: null, event_id: null, event_type: null }),
+  ];
 }
 
 const list = (items: unknown[]) => ({ status: 200, body: { items } });
@@ -319,6 +344,34 @@ export function installBilling(mock: MockApi, opts: { disabled?: boolean } = {})
   on("GET", `${B}/payments`, ({ query }) => list(bySubject(st.payments, query)));
   on("GET", `${B}/refunds`, () => list(st.refunds));
   on("GET", `${B}/webhook-events`, () => list(st.webhooks));
+  on("GET", `${B}/webhook-deliveries`, ({ query }) => {
+    const f = (k: string) => query.get(k) ?? "";
+    const rows = st.deliveries.filter((d) => (!f("provider") || d.provider === f("provider")) && (!f("outcome") || d.outcome === f("outcome")) && (!f("event_type") || d.event_type === f("event_type")) && (!f("from") || d.received_at >= f("from")) && (!f("to") || d.received_at < f("to")));
+    const limit = Number(f("limit") || 50), offset = Number(f("offset") || 0);
+    const items = rows.slice(offset, offset + limit).map((d) => { const { headers: _h, body: _b, body_encoding: _e, ...rest } = d; void _h; void _b; void _e; return rest; });
+    return { status: 200, body: { items, total: rows.length, limit, offset } };
+  });
+  on("GET", `${B}/webhook-deliveries/{id}`, ({ params }) => { const d = st.deliveries.find((x) => x.id === params.id); return d ? { status: 200, body: d } : missing("delivery"); });
+  on("POST", `${B}/webhook-deliveries/{id}/replay`, ({ params }) => {
+    const d = st.deliveries.find((x) => x.id === params.id);
+    if (!d) return missing("delivery");
+    if (d.verification !== "verified") return envelope(409, "delivery_not_verified", "not verified");
+    if (!d.body_stored) return envelope(409, "body_not_stored", "no body");
+    st.calls.replay.push(d.id);
+    d.replays++;
+    return { status: 200, body: { result: st.replayAs, detail: st.replayAs === "applied" ? "invoice_paid" : null, delivery: d } };
+  });
+  on("POST", `${B}/webhook-deliveries/{id}/reverify`, ({ params }) => {
+    const d = st.deliveries.find((x) => x.id === params.id);
+    if (!d) return missing("delivery");
+    if (d.verification === "verified") return envelope(409, "delivery_already_verified", "verified");
+    if (d.provider === "google_play") return envelope(409, "not_reverifiable", "no push token");
+    if (!d.body_stored) return envelope(409, "body_not_stored", "no body");
+    st.calls.reverify.push(d.id);
+    d.reverify_attempts++;
+    if (st.reverifyAs === "applied") { d.verification = "verified"; d.processing = "applied"; d.outcome = "applied"; d.reason = null; d.detail = "invoice_paid"; d.reverified_at = T1; }
+    return { status: 200, body: { result: st.reverifyAs, detail: st.reverifyAs === "unverified" ? "signature_mismatch" : "invoice_paid", delivery: d } };
+  });
   on("POST", `${B}/maintenance`, () => ({ status: 200, body: { usage_events_read: 0, usage_recorded: 0, trials_ended: 0, renewed: 0, ended: 0, retries: 1, fulfilled: 0, synced: 0 } }));
   on("GET", `${B}/stats`, () => ({
     status: 200,
