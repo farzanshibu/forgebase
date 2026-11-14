@@ -275,12 +275,14 @@ stops startup with an error.
 | `FORGEBASE_STORAGE_ENABLED`, `FORGEBASE_FUNCTIONS_ENABLED`, `FORGEBASE_QUEUE_ENABLED`, `FORGEBASE_REALTIME_ENABLED`, `FORGEBASE_VECTOR_ENABLED`, `FORGEBASE_GRAPH_ENABLED`, `FORGEBASE_IDENTITY_ENABLED`, `FORGEBASE_ACCESS_ENABLED` | Switch a module on or off (default on; ADR-0026, [architecture.md §6](architecture.md#6-feature-flags)). |
 | `FORGEBASE_REALTIME_MAX_CONNECTIONS_PER_PRINCIPAL` | Most realtime connections one user or key may hold (default 32). |
 | `FORGEBASE_STORAGE_S3_ACCESS_KEY`, `FORGEBASE_STORAGE_S3_SECRET_KEY`, `FORGEBASE_STORAGE_S3_SESSION_TOKEN` | S3 credentials, read from the environment only (the storage driver reads them; the config loader only notes that they are set). |
+| `FORGEBASE_STORAGE_GCS_CREDENTIALS_JSON`, `FORGEBASE_STORAGE_GCS_CREDENTIALS_FILE`, `FORGEBASE_STORAGE_GCS_ACCESS_TOKEN` | Google Cloud Storage credentials (service-account key, path of the key file, fixed token); none = workload identity (§3.7). Environment only. |
+| `FORGEBASE_STORAGE_AZURE_ACCOUNT_KEY`, `FORGEBASE_STORAGE_AZURE_SAS_TOKEN`, `FORGEBASE_STORAGE_AZURE_TENANT_ID`, `FORGEBASE_STORAGE_AZURE_CLIENT_ID`, `FORGEBASE_STORAGE_AZURE_CLIENT_SECRET` | Azure Blob credentials (account key, SAS token, Entra client credentials; the client id alone selects a user-assigned managed identity); none = managed identity (§3.7). Environment only. |
 
 `FORGEBASE_TEST_*` variables (`FORGEBASE_TEST_BACKEND`, `FORGEBASE_TEST_REDIS_URL`,
 `FORGEBASE_TEST_PG_*`) belong to the test suite; the parser ignores them. Do not
 set them on a host that runs ForgeBase.
 
-Storage settings other than the S3 credentials and `enabled` (driver, limits,
+Storage settings other than the credentials above and `enabled` (driver, limits,
 endpoint) are set in the TOML file only. The S3 credential names were rejected
 by the environment parser before FB-91; they are accepted now.
 
@@ -458,6 +460,74 @@ accounts by email (without `xms_edov` they get a new account; see
 [security.md](security.md) §4.1); for Apple, register the callback as a
 `form_post` return URL and note Apple sends the name only on the first
 authorization; for Twitch the claims ForgeBase needs are requested for you.
+
+### 3.7 Object storage drivers
+
+`[storage] driver` chooses where object bytes live (ADR-0018, ADR-0040); the database always holds the metadata.
+
+| Driver | Use it for |
+|---|---|
+| `local` (default) | Files under `<data dir>/storage`. One host, or a shared volume. |
+| `s3` | **Any service with an S3 API**: Amazon S3, MinIO, Ceph, Cloudflare R2, Backblaze B2, Wasabi, DigitalOcean Spaces, Google Cloud Storage (interoperability API, HMAC keys). Requests are path-style SigV4, so the endpoint and the region the service documents are all that differ. |
+| `gcs` | Google Cloud Storage natively (JSON API): a service-account key or workload identity, no HMAC key. |
+| `azure` | Azure Blob Storage: account key, SAS, Microsoft Entra, or a managed identity. |
+
+Most installations only need `s3` with the right endpoint:
+
+```toml
+[storage]
+driver = "s3"
+s3_endpoint = "https://<account-id>.r2.cloudflarestorage.com"   # R2; MinIO: "http://minio:9000"
+s3_region = "auto"                                                # R2 / GCS: "auto"; others: the documented region
+s3_bucket = "forgebase-blobs"
+s3_prefix = "prod/"                                               # optional
+```
+
+```sh
+export FORGEBASE_STORAGE_S3_ACCESS_KEY=... FORGEBASE_STORAGE_S3_SECRET_KEY=...
+```
+
+The per-service endpoint and region table is in [ADR-0040 §1](adr/0040-gcs-azure-storage.md#1-which-targets-already-work-and-which-need-a-driver).
+
+**Google Cloud Storage** (`driver = "gcs"`):
+
+```toml
+[storage]
+driver = "gcs"
+gcs_bucket = "forgebase-blobs"
+gcs_prefix = "prod/"          # optional
+# gcs_endpoint = "http://fake-gcs:4443"   # emulators only; then no credentials are sent
+```
+
+Credentials, first match: `FORGEBASE_STORAGE_GCS_CREDENTIALS_JSON` (the key file's contents),
+`FORGEBASE_STORAGE_GCS_CREDENTIALS_FILE` or `GOOGLE_APPLICATION_CREDENTIALS` (a path), `FORGEBASE_STORAGE_GCS_ACCESS_TOKEN`;
+with none of them (and no custom endpoint) the **metadata server** is used, which is workload identity on GKE and the
+attached service account on GCE and Cloud Run. Grant the identity `roles/storage.objectAdmin` on the bucket (the
+reconciler deletes objects and lists the bucket). Large objects are uploaded as resumable sessions of `s3_part_size`
+bytes (rounded up to 256 KiB).
+
+**Azure Blob Storage** (`driver = "azure"`):
+
+```toml
+[storage]
+driver = "azure"
+azure_account = "myaccount"
+azure_container = "forgebase-blobs"
+azure_prefix = "prod/"        # optional
+# azure_endpoint = "http://127.0.0.1:10000/devstoreaccount1"   # Azurite
+```
+
+Credentials, first match: `FORGEBASE_STORAGE_AZURE_ACCOUNT_KEY`, `FORGEBASE_STORAGE_AZURE_SAS_TOKEN` (needs read, write,
+delete, list and create on the container), Microsoft Entra client credentials (`FORGEBASE_STORAGE_AZURE_TENANT_ID`,
+`..._CLIENT_ID`, `..._CLIENT_SECRET`), else the **managed identity** of the host (AKS, VM, App Service, Container Apps;
+`FORGEBASE_STORAGE_AZURE_CLIENT_ID` picks a user-assigned one). Give an Entra or managed identity the role
+*Storage Blob Data Contributor* on the container. Large objects are uploaded as blocks of `s3_part_size` bytes.
+
+All three remote drivers retry throttling and server errors (`429`, `5xx`) with backoff and report an unreachable store
+or wrong credentials at the first request. Credentials are never written to the configuration file, the database or
+`config show`. **Kubernetes:** put them in the Secret the pod already mounts (§9.3) or use the cluster's workload /
+managed identity; the Helm chart passes any `FORGEBASE_*` environment variable through `extraEnv` / `extraEnvFrom`, so no
+chart change is needed.
 
 ## 4. Data directory
 
@@ -792,11 +862,13 @@ Keys in the TOML file, with defaults. Ranges are the accepted values.
 | `tls.acme.challenges` | `["tls-alpn-01"]` | `tls-alpn-01`, `http-01`, in order of preference. |
 | `tls.acme.eab_kid` | `""` | External account binding key id; the HMAC key is `FORGEBASE_TLS_ACME_EAB_HMAC_KEY`. |
 | `tls.acme.ca_file` | `""` | PEM root for a private CA's own HTTPS endpoint. |
-| `storage.driver` | `"local"` | `local`, `s3` |
+| `storage.driver` | `"local"` | `local`, `s3`, `gcs`, `azure` (§3.7) |
 | `storage.max_object_bytes` | `5368709120` (5 GiB) | |
 | `storage.upload_ttl_secs` | `86400` | |
 | `storage.reconcile_grace_secs` | `3600` | |
-| `storage.s3_endpoint`, `s3_region`, `s3_bucket`, `s3_prefix`, `s3_part_size` | unset / `""` / `8388608` | S3 only. Credentials come from the environment (§3.3). |
+| `storage.s3_endpoint`, `s3_region`, `s3_bucket`, `s3_prefix`, `s3_part_size` | unset / `""` / `8388608` | S3 only (`s3_part_size` is also the upload chunk of `gcs` and `azure`). Credentials come from the environment (§3.3). |
+| `storage.gcs_bucket`, `gcs_prefix`, `gcs_endpoint` | unset / `""` / `""` | GCS only; an empty endpoint is `https://storage.googleapis.com`. Credentials come from the environment (§3.3, §3.7). |
+| `storage.azure_account`, `azure_container`, `azure_prefix`, `azure_endpoint` | unset / unset / `""` / `""` | Azure only; an empty endpoint is `https://<account>.blob.core.windows.net`. Credentials come from the environment (§3.3, §3.7). |
 | `realtime.max_connections_per_principal` | `32` | `1`–`1000000`. Most simultaneous realtime (WebSocket) connections for one user or API key; the next one gets `429 too_many_connections`. Raise it for a shared service identity that fans out many subscribers. |
 | `billing.enabled` | `true` | Mounts `/api/v1/billing/*` and the provider webhooks. |
 | `billing.webhook_log_retention_days` | `30` | Days the billing webhook inspector keeps each incoming provider webhook (headers, body, outcome) before `billing.maintenance` deletes it (ADR-0032). Bodies hold customer personal data ([security.md §4.9](security.md#49-billing-webhooks-and-store-receipts-forgebase-billing-adr-0021)). |
