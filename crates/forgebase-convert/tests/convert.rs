@@ -47,7 +47,7 @@ async fn exec(db: &Database, sql: &str, params: Vec<Value>) {
 }
 
 /// Collections of every shape, records, indexes (manual, unique, partial,
-/// full text), a view, a relation cycle, graph, jobs and a schedule, a
+/// full text, trigram), a view, a relation cycle, graph, jobs and a schedule, a
 /// queue with a delivery owed, vectors with text, and raw rows of the
 /// types the services do not reach (bytea, double precision).
 async fn fixtures(db: &Database, dir: &Path) {
@@ -123,6 +123,17 @@ async fn fixtures(db: &Database, dir: &Path) {
             name: "fts_posts".into(),
             kind: IndexKind::Fulltext,
             ..IndexDefinition::btree("posts", &["title", "body"])
+        },
+    )
+    .await
+    .unwrap();
+    // ADR-0034: SQLite keeps it as a trigram table, PostgreSQL as a GIN index.
+    svc.create_index(
+        &ctx,
+        IndexDefinition {
+            name: "tri_posts_title".into(),
+            kind: IndexKind::Trigram,
+            ..IndexDefinition::btree("posts", &["title"])
         },
     )
     .await
@@ -274,6 +285,22 @@ async fn check_services(db: &Database, dir: &Path) {
         .await
         .unwrap();
     assert_eq!(posts.total_items, Some(60), "full-text search over the recreated index");
+    let fuzzy = svc
+        .list_records(
+            &ctx,
+            "posts",
+            &ListQuery {
+                fuzzy: Some("post 7".into()),
+                ..ListQuery::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        fuzzy.items.first().map(|r| r["title"].clone()),
+        Some(json!("post 7 café")),
+        "fuzzy search over the rebuilt trigram index"
+    );
     let a = svc
         .list_records(
             &ctx,
@@ -397,7 +424,15 @@ async fn round_trip_sqlite_postgres_sqlite_keeps_every_table() {
     .unwrap();
     assert_eq!(to_pg.from, "sqlite");
     assert!(to_pg.collections >= 3);
-    assert_eq!(to_pg.indexes, 2, "the manual b-tree and the full-text index");
+    assert_eq!(
+        to_pg.indexes, 3,
+        "the manual b-tree, the full-text and the trigram index"
+    );
+    assert_eq!(to_pg.rebuilt.len(), 1, "{:?}", to_pg.rebuilt);
+    assert_eq!(
+        (to_pg.rebuilt[0].name.as_str(), to_pg.rebuilt[0].rows),
+        ("tri_posts_title", 60)
+    );
     assert!(to_pg.total_rows() > 100);
     assert_eq!(to_pg.derived_rows, 10, "vector text rebuilt for full text");
     assert!(
@@ -461,6 +496,22 @@ async fn round_trip_sqlite_postgres_sqlite_keeps_every_table() {
     .unwrap();
     same_tables(&to_pg, &to_sqlite);
     assert_eq!(to_sqlite.derived_rows, 10);
+    assert_eq!(to_sqlite.rebuilt.len(), 1, "{:?}", to_sqlite.rebuilt);
+    assert_eq!(
+        to_sqlite.rebuilt[0].trigrams,
+        Some(side_rows(&src, "tri_posts_title").await),
+        "the trigram table holds what the source's held"
+    );
+    assert!(
+        !to_sqlite.manual.iter().any(|m| m.name.contains("tri_posts_title")),
+        "{:?}",
+        to_sqlite.manual
+    );
+    assert!(
+        !to_pg.manual.iter().any(|m| m.name.contains("tri_posts_title")),
+        "{:?}",
+        to_pg.manual
+    );
 
     // The suite of services runs on both results (after the hashes, since
     // it writes).
@@ -486,23 +537,21 @@ async fn to_sqlite_refuses_postgres_only_objects() {
     )
     .await
     .unwrap();
-    // A trigram index (FB-166) where the engine has pg_trgm.
+    // A trigram index (pg_trgm where the engine has it): not refused since
+    // the ADR-0034 addendum, SQLite builds it again.
     pg.setup_extensions(&forgebase_db::ExtensionSetup::default())
         .await
         .unwrap();
-    let trigram = pg.feature_active(forgebase_db::Feature::Trigram);
-    if trigram {
-        svc.create_index(
-            &ctx,
-            IndexDefinition {
-                name: "things_tri".into(),
-                kind: IndexKind::Trigram,
-                ..IndexDefinition::btree("things", &["t"])
-            },
-        )
-        .await
-        .unwrap();
-    }
+    svc.create_index(
+        &ctx,
+        IndexDefinition {
+            name: "things_tri".into(),
+            kind: IndexKind::Trigram,
+            ..IndexDefinition::btree("things", &["t"])
+        },
+    )
+    .await
+    .unwrap();
     let mut tx = pg.begin(TxMode::Normal).await.unwrap();
     for sql in [
         "CREATE FUNCTION public.fb151_double(x integer) RETURNS integer LANGUAGE plpgsql AS $$ BEGIN RETURN x * 2; END $$",
@@ -536,7 +585,7 @@ async fn to_sqlite_refuses_postgres_only_objects() {
     for needle in ["fb151_double", "raw_view", "mood", "hand_made"] {
         assert!(text.contains(needle), "{needle} is listed:\n{text}");
     }
-    assert_eq!(text.contains("trigram index things_tri"), trigram, "{text}");
+    assert!(!text.contains("trigram") && !text.contains("things_tri"), "{text}");
     // Nothing was made on the target.
     let n = back
         .fetch_all(&Statement::raw("SELECT count(*) FROM _forgebase_collections"))
@@ -747,4 +796,357 @@ async fn to_sqlite_skips_the_derived_age_tables() {
     );
     back.close().await;
     db.close().await;
+}
+
+/// Rows of the SQLite trigram table of index `index`.
+async fn side_rows(db: &Database, index: &str) -> u64 {
+    let table = forgebase_data::fuzzy::sqlite_objects(index).table;
+    let n = db
+        .fetch_all(&Statement::raw(format!("SELECT count(*) FROM \"{table}\"")))
+        .await
+        .unwrap();
+    u64::try_from(n.scalar().and_then(Value::as_i64).unwrap()).unwrap()
+}
+
+const FIRST: [&str; 12] = [
+    "Jon", "John", "Jonathan", "Joan", "Maria", "Mario", "Marianne", "Ann", "Anna", "Annette", "Peter", "Petra",
+];
+const LAST: [&str; 8] = ["Smith", "Smyth", "Garcia", "Garza", "Brown", "Browne", "Lee", "Leigh"];
+const CITY: [&str; 7] = ["London", "Londonderry", "Lyon", "Boston", "Austin", "Berlin", "Bern"];
+
+/// `people` (name, city) with a two-key trigram index and 98 records:
+/// ASCII names (the test engine's `C` locale makes pg_trgm treat other
+/// characters as separators, ADR-0034 §1.1), one without a city and one
+/// with an empty name.
+async fn people(db: &Database) {
+    let svc = data(db).await;
+    let ctx = AccessContext::system();
+    svc.create_collection(
+        &ctx,
+        Collection::base("people")
+            .with_field(field(json!({"name": "name", "type": "text"})))
+            .with_field(field(json!({"name": "city", "type": "text"}))),
+    )
+    .await
+    .unwrap();
+    for i in 0..96 {
+        svc.create_record(
+            &ctx,
+            "people",
+            json!({"name": format!("{} {}", FIRST[i % 12], LAST[(i / 12) % 8]), "city": CITY[i % 7]}),
+        )
+        .await
+        .unwrap();
+    }
+    svc.create_record(&ctx, "people", json!({"name": "Jon Smithers"}))
+        .await
+        .unwrap();
+    svc.create_record(&ctx, "people", json!({"name": "", "city": "London"}))
+        .await
+        .unwrap();
+    svc.create_index(
+        &ctx,
+        IndexDefinition {
+            name: "people_fuzzy".into(),
+            kind: IndexKind::Trigram,
+            ..IndexDefinition::btree("people", &["name", "city"])
+        },
+    )
+    .await
+    .unwrap();
+}
+
+/// Fuzzy queries over both keys, each key alone and an explicit threshold.
+fn people_queries() -> Vec<ListQuery> {
+    let q = |text: &str, fields: &[&str], threshold: Option<f64>| ListQuery {
+        fuzzy: Some(text.into()),
+        fuzzy_fields: fields.iter().map(|f| (*f).to_owned()).collect(),
+        fuzzy_threshold: threshold,
+        per_page: Some(500),
+        ..ListQuery::default()
+    };
+    vec![
+        q("jon smith", &[], None),
+        q("jonh", &["name"], None),
+        q("londn", &["city"], None),
+        q("mari garcia", &["name"], Some(0.2)),
+        q("bern", &[], None),
+        q("anette browne", &["name", "city"], Some(0.2)),
+    ]
+}
+
+/// Per query: the ids, names and cities found, best match first.
+async fn fuzzy_answers(db: &Database) -> Vec<Vec<String>> {
+    let svc = data(db).await;
+    let ctx = AccessContext::system();
+    let mut out: Vec<Vec<String>> = Vec::new();
+    for q in people_queries() {
+        let r = svc.list_records(&ctx, "people", &q).await.unwrap();
+        out.push(
+            r.items
+                .iter()
+                .map(|i| format!("{} {} {}", i["id"], i["name"], i["city"]))
+                .collect(),
+        );
+    }
+    assert!(
+        out.iter().all(|a| !a.is_empty()),
+        "every query finds something: {out:?}"
+    );
+    out
+}
+
+/// Fuzzy answers follow inserts, updates and deletes after a conversion.
+async fn trigram_maintained(db: &Database) {
+    let svc = data(db).await;
+    let ctx = AccessContext::system();
+    let find = async |text: &str| -> Vec<String> {
+        svc.list_records(
+            &ctx,
+            "people",
+            &ListQuery {
+                fuzzy: Some(text.into()),
+                per_page: Some(500),
+                ..ListQuery::default()
+            },
+        )
+        .await
+        .unwrap()
+        .items
+        .iter()
+        .map(|i| i["id"].as_str().unwrap().to_owned())
+        .collect()
+    };
+    let new = svc
+        .create_record(&ctx, "people", json!({"name": "Zebulon Quixote", "city": "Zanzibar"}))
+        .await
+        .unwrap();
+    let new_id = new["id"].as_str().unwrap().to_owned();
+    assert_eq!(
+        find("zebulon quixote").await.first(),
+        Some(&new_id),
+        "an insert is indexed"
+    );
+    let jon = find("jon smith").await;
+    let moved = jon.first().unwrap().clone();
+    svc.update_record(
+        &ctx,
+        "people",
+        &moved,
+        json!({"name": "Xavier Yellowstone"}),
+        forgebase_data::UpdateOptions::default(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        find("xavier yellowstone").await.first(),
+        Some(&moved),
+        "an update is indexed"
+    );
+    assert!(!find("jon smith").await.contains(&moved), "the old value is gone");
+    svc.delete_record(&ctx, "people", &new_id, None).await.unwrap();
+    assert!(!find("zebulon quixote").await.contains(&new_id), "a delete is indexed");
+}
+
+/// The trigram feature of a fresh PostgreSQL database in `mode`, every
+/// other accelerator off; whether pg_trgm serves it.
+async fn trigram_mode(db: &Database, mode: forgebase_core::config::ExtensionMode) -> bool {
+    use forgebase_core::config::{ExtensionMode, PostgresExtensions};
+    db.setup_extensions(&forgebase_db::ExtensionSetup {
+        modes: PostgresExtensions {
+            trigram: mode,
+            vector: ExtensionMode::Off,
+            graph: ExtensionMode::Off,
+            queue: ExtensionMode::Off,
+            cron: ExtensionMode::Off,
+        },
+        ..forgebase_db::ExtensionSetup::default()
+    })
+    .await
+    .unwrap();
+    db.feature_active(forgebase_db::Feature::Trigram)
+}
+
+/// ADR-0034 addendum: a SQLite trigram index goes to PostgreSQL (pg_trgm
+/// where the target uses it, else the portable GIN index) and back to a
+/// SQLite trigram table; every fuzzy query answers the same records in the
+/// same order at each step, and the index follows later writes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn trigram_indexes_convert_both_ways_with_the_same_answers() {
+    use forgebase_core::config::ExtensionMode;
+    for mode in [ExtensionMode::Auto, ExtensionMode::Off] {
+        let Some(pg) = forgebase_db::testing::postgres_test_db().await else {
+            eprintln!("skipped: no PostgreSQL engine configured");
+            return;
+        };
+        let pg_trgm = trigram_mode(&pg, mode).await;
+        let engine = if pg_trgm { "pg_trgm" } else { "portable" };
+        eprintln!("trigram = {mode:?}: {engine}");
+        let tmp = tempfile::tempdir().unwrap();
+        let (src_dir, back_dir) = (tmp.path().join("a"), tmp.path().join("b"));
+        std::fs::create_dir_all(&src_dir).unwrap();
+        std::fs::create_dir_all(&back_dir).unwrap();
+        let (src, src_path) = sqlite_db(&src_dir).await;
+        people(&src).await;
+        let before = fuzzy_answers(&src).await;
+        let src_trigrams = side_rows(&src, "people_fuzzy").await;
+        assert!(src_trigrams > 0);
+
+        let lines = std::sync::Mutex::new(Vec::<String>::new());
+        let progress = |l: &str| lines.lock().unwrap().push(l.to_owned());
+        let to_pg = convert(
+            Endpoint {
+                db: &src,
+                conn: &Conn::Sqlite(src_path.clone()),
+            },
+            Endpoint {
+                db: &pg,
+                conn: &Conn::Postgres(pg_url(&pg)),
+            },
+            &progress,
+        )
+        .await
+        .unwrap();
+        assert_eq!(to_pg.rebuilt.len(), 1, "{:?}", to_pg.rebuilt);
+        let b = &to_pg.rebuilt[0];
+        assert_eq!(
+            (
+                b.kind.as_str(),
+                b.name.as_str(),
+                b.collection.as_str(),
+                b.engine.as_str()
+            ),
+            ("trigram", "people_fuzzy", "people", engine)
+        );
+        assert_eq!((b.rows, b.trigrams), (98, None));
+        assert!(
+            lines
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|l| l.starts_with("built trigram index people_fuzzy on people")),
+            "{:?}",
+            lines.lock().unwrap()
+        );
+        assert!(
+            !to_pg
+                .tables
+                .iter()
+                .any(|t| t.table.starts_with("_forgebase_trgm_people")),
+            "the trigram table is not copied"
+        );
+        assert!(to_pg.manual.is_empty(), "{:?}", to_pg.manual);
+        let def = pg
+            .fetch_all(&Statement::raw(
+                "SELECT indexdef FROM pg_indexes WHERE schemaname = 'public' AND indexname = 'people_fuzzy'",
+            ))
+            .await
+            .unwrap();
+        let def = def.scalar().and_then(Value::as_str).unwrap().to_owned();
+        let marker = if pg_trgm { "gin_trgm_ops" } else { "_forgebase_trgm(" };
+        assert!(def.contains(marker), "{def}");
+        let def_row = pg
+            .fetch_all(&Statement::raw(
+                "SELECT definition FROM _forgebase_indexes WHERE name = 'people_fuzzy'",
+            ))
+            .await
+            .unwrap();
+        let def_row: Json = serde_json::from_str(def_row.scalar().and_then(Value::as_str).unwrap()).unwrap();
+        assert_eq!(def_row["kind"], "trigram", "the definition carried over");
+        assert_eq!(fuzzy_answers(&pg).await, before, "PostgreSQL answers as SQLite did");
+
+        let (back, back_path) = sqlite_db(&back_dir).await;
+        let to_sqlite = convert(
+            Endpoint {
+                db: &pg,
+                conn: &Conn::Postgres(pg_url(&pg)),
+            },
+            Endpoint {
+                db: &back,
+                conn: &Conn::Sqlite(back_path.clone()),
+            },
+            &|_| {},
+        )
+        .await
+        .unwrap();
+        same_tables(&to_pg, &to_sqlite);
+        assert_eq!(to_sqlite.rebuilt.len(), 1, "{:?}", to_sqlite.rebuilt);
+        let b = &to_sqlite.rebuilt[0];
+        assert_eq!((b.engine.as_str(), b.rows), ("portable", 98));
+        assert_eq!(b.trigrams, Some(src_trigrams), "the same trigram rows as the source");
+        assert_eq!(side_rows(&back, "people_fuzzy").await, src_trigrams);
+        assert!(to_sqlite.manual.is_empty(), "{:?}", to_sqlite.manual);
+        let triggers = back
+            .fetch_all(&Statement::raw(
+                "SELECT count(*) FROM sqlite_master WHERE type = 'trigger' AND name LIKE '\\_forgebase\\_trgm\\_people\\_fuzzy\\_a_' ESCAPE '\\'",
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            triggers.scalar().and_then(Value::as_i64),
+            Some(3),
+            "the triggers are back"
+        );
+        assert_eq!(fuzzy_answers(&back).await, before, "SQLite answers as before");
+
+        // Writes after the conversions (the hashes above are compared first).
+        trigram_maintained(&pg).await;
+        trigram_maintained(&back).await;
+        src.close().await;
+        back.close().await;
+    }
+}
+
+/// A copy that fails after the trigram index was taken out leaves the
+/// target as step 2 made it (the index is back, no rows) and the source
+/// as it was.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_failed_copy_keeps_the_trigram_index_on_the_target() {
+    let Some(pg) = forgebase_db::testing::postgres_test_db().await else {
+        eprintln!("skipped: no PostgreSQL engine configured");
+        return;
+    };
+    let tmp = tempfile::tempdir().unwrap();
+    let (src, src_path) = sqlite_db(tmp.path()).await;
+    people(&src).await;
+    // PostgreSQL text cannot hold NUL: the copy of `people` fails.
+    exec(
+        &src,
+        "UPDATE people SET city = 'Lon' || char(0) || 'don' WHERE name = 'Jon Smithers'",
+        vec![],
+    )
+    .await;
+    let src_trigrams = side_rows(&src, "people_fuzzy").await;
+    let err = convert(
+        Endpoint {
+            db: &src,
+            conn: &Conn::Sqlite(src_path.clone()),
+        },
+        Endpoint {
+            db: &pg,
+            conn: &Conn::Postgres(pg_url(&pg)),
+        },
+        &|_| {},
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(err, ConvertError::Copy { .. }), "{err}");
+    let ix = pg
+        .fetch_all(&Statement::raw(
+            "SELECT count(*) FROM pg_indexes WHERE schemaname = 'public' AND indexname = 'people_fuzzy'",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(ix.scalar().and_then(Value::as_i64), Some(1), "the index is back");
+    let rows = pg
+        .fetch_all(&Statement::raw("SELECT count(*) FROM public.people"))
+        .await
+        .unwrap();
+    assert_eq!(rows.scalar().and_then(Value::as_i64), Some(0), "nothing was copied");
+    assert_eq!(
+        side_rows(&src, "people_fuzzy").await,
+        src_trigrams,
+        "the source is unchanged"
+    );
+    src.close().await;
 }

@@ -438,6 +438,104 @@ pub(crate) fn render(
     })
 }
 
+/// The SQLite objects behind one trigram index (ADR-0034 §1.2).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SqliteTrigramObjects {
+    /// The trigram table `_forgebase_trgm_<index>`.
+    pub table: String,
+    /// The triggers that keep it: after insert, delete and update.
+    pub triggers: [String; 3],
+}
+
+/// The names of the SQLite trigram table and triggers of index `index`.
+/// They are derived from the index definition, so `forgebase db convert`
+/// leaves them out of the table pairing and of the hand-made objects it
+/// reports, and builds them again on a SQLite target.
+pub fn sqlite_objects(index: &str) -> SqliteTrigramObjects {
+    let table = side_table(&forgebase_db::SqliteDialect, index);
+    SqliteTrigramObjects {
+        triggers: [format!("{table}_ai"), format!("{table}_ad"), format!("{table}_au")],
+        table,
+    }
+}
+
+/// One trigram index taken out of a bulk load and built again after it
+/// (`forgebase db convert`, ADR-0034 addendum). The statements are the
+/// data core's own: [`create_sql`] on PostgreSQL, [`rebuild_sql`] on SQLite,
+/// for the engine of the database the service runs on.
+#[derive(Debug, Clone)]
+pub struct TrigramReload {
+    /// Index name.
+    pub index: String,
+    /// Collection name.
+    pub collection: String,
+    /// The engine the index is built with.
+    pub engine: TrigramEngine,
+    /// The collection's table, as SQL (quoted; `public.` on PostgreSQL).
+    pub table: String,
+    /// SQLite: the trigram table, as SQL (its rows are the index).
+    pub side_table: Option<String>,
+    /// Before the load: PostgreSQL drops the index, SQLite its triggers.
+    pub suspend: Vec<String>,
+    /// After the load: PostgreSQL creates the index; SQLite creates the
+    /// triggers again and fills the trigram table from the loaded rows.
+    pub reload: Vec<String>,
+}
+
+impl DataService {
+    /// Every trigram index of this database, with the statements that take
+    /// it out of a bulk load into its collection and build it afterwards
+    /// (see [`TrigramReload`]). Read from `_forgebase_indexes` and the
+    /// stored collection definitions, not from the cached catalog.
+    ///
+    /// # Errors
+    /// A definition that does not read, or names a collection that does
+    /// not exist; database errors.
+    pub async fn trigram_reloads(&self) -> Result<Vec<TrigramReload>, DataError> {
+        let backend = self.inner.backend.as_ref();
+        let d = backend.dialect();
+        let cat = CatalogSnapshot::load(backend).await?;
+        let engine = TrigramEngine::of(d, cat.pg_trgm());
+        let rows = backend
+            .fetch_all(&forgebase_db::Statement::raw(
+                "SELECT collection_id, definition FROM _forgebase_indexes WHERE kind = 'btree' ORDER BY name",
+            ))
+            .await?;
+        let mut out = Vec::new();
+        for r in &rows.rows {
+            let mut def: IndexDefinition = serde_json::from_str(r[1].as_str().unwrap_or("{}"))?;
+            if def.kind != crate::IndexKind::Trigram {
+                continue;
+            }
+            let coll = r[0]
+                .as_str()
+                .and_then(|id| cat.get(id))
+                .ok_or_else(|| DataError::Internal(format!("trigram index {} has no collection", def.name)))?;
+            def.collection = coll.name.clone();
+            let side = (!is_pg(d)).then(|| d.quote_ident(&side_table(d, &def.name)));
+            let suspend = if is_pg(d) {
+                drop_sql(d, &def)
+            } else {
+                sqlite_objects(&def.name)
+                    .triggers
+                    .iter()
+                    .map(|t| format!("DROP TRIGGER IF EXISTS {}", d.quote_ident(t)))
+                    .collect()
+            };
+            out.push(TrigramReload {
+                reload: rebuild_sql(d, &cat, coll, &def)?,
+                suspend,
+                side_table: side,
+                table: rel(d, &coll.name),
+                engine,
+                collection: coll.name.clone(),
+                index: def.name,
+            });
+        }
+        Ok(out)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -468,5 +566,15 @@ mod tests {
             drop_sql(&PgDialect, &def("ix", &["name"])),
             ["DROP INDEX IF EXISTS public.\"ix\""]
         );
+    }
+
+    #[test]
+    fn sqlite_object_names_match_the_ddl() {
+        let o = sqlite_objects("ix");
+        assert_eq!(o.table, "_forgebase_trgm_ix");
+        let drops = drop_sql(&SqliteDialect, &def("ix", &["name"]));
+        for (t, sql) in o.triggers.iter().zip(&drops) {
+            assert_eq!(sql, &format!("DROP TRIGGER IF EXISTS \"{t}\""));
+        }
     }
 }

@@ -18,7 +18,7 @@ use std::process::ExitCode;
 use anyhow::{Context, anyhow, bail};
 use clap::{Args, ValueEnum};
 use forgebase_backup::{BackupOptions, SnapshotStore};
-use forgebase_core::config::{DatabaseBackend, PostgresMode};
+use forgebase_core::config::{DatabaseBackend, ExtensionMode, PostgresExtensions, PostgresMode};
 use forgebase_core::{Config, DataLayout, LoadedConfig};
 use forgebase_db::{Database, DbOptions, DbTarget, SecretString};
 use forgebase_pgengine::{Engine, EngineHandle, Role};
@@ -197,6 +197,13 @@ pub async fn run(g: &GlobalArgs, args: ConvertCli) -> anyhow::Result<ExitCode> {
         println!("  the old database is kept at {} (never deleted)", k.display());
     }
     println!("  {config_note}");
+    for b in &report.rebuilt {
+        let trigrams = b.trigrams.map(|n| format!(", {n} trigram row(s)")).unwrap_or_default();
+        println!(
+            "  {} index {} on {} built on the target ({}): {} row(s){trigrams} in {} ms",
+            b.kind, b.name, b.collection, b.engine, b.rows, b.millis
+        );
+    }
     for n in &report.notes {
         println!("  note: {n}");
     }
@@ -281,6 +288,26 @@ async fn convert_open(
     let progress = |line: &str| say(line);
     let result = async {
         target.migrate(None).await?;
+        if to != BackendMarker::Sqlite {
+            // Trigram indexes are built on the target by the engine its
+            // server will use: pg_trgm or portable, by
+            // [database.postgres.extensions] trigram (ADR-0034). The other
+            // accelerators decide at the first start, as before (the pins
+            // this writes are replaced by the copy of _forgebase_meta).
+            let modes = PostgresExtensions {
+                trigram: config.database.postgres.extensions.trigram,
+                vector: ExtensionMode::Off,
+                graph: ExtensionMode::Off,
+                queue: ExtensionMode::Off,
+                cron: ExtensionMode::Off,
+            };
+            target
+                .setup_extensions(&forgebase_db::ExtensionSetup {
+                    modes,
+                    ..forgebase_db::ExtensionSetup::default()
+                })
+                .await?;
+        }
         let r = forgebase_convert::convert(
             forgebase_convert::Endpoint {
                 db: source,

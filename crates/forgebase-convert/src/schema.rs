@@ -76,6 +76,9 @@ pub(crate) struct Built {
     pub indexes: usize,
     /// Relation fields added after their target existed (relation cycles).
     pub deferred_fields: usize,
+    /// The target's trigram indexes, with the statements that take them
+    /// out of the copy and build them again after it (ADR-0034 addendum).
+    pub trigram: Vec<forgebase_data::fuzzy::TrigramReload>,
 }
 
 fn relation_targets(c: &Collection) -> BTreeSet<String> {
@@ -169,5 +172,6 @@ pub(crate) async fn build(target: &Database, cat: &SourceCatalog) -> Result<Buil
     if !problems.is_empty() {
         return Err(ConvertError::Refused(problems));
     }
+    built.trigram = data.trigram_reloads().await?;
     Ok(built)
 }

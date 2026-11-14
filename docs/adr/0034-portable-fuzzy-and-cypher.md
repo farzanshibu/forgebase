@@ -266,15 +266,11 @@ configured modes). The same list is `database.capabilities` of
 - SQLite trigram indexes cost disk (one row per distinct trigram per value
   and key) and write time (the trigger walks the value); a value's trigram
   rows are rewritten only when a key value changes.
-- `forgebase db convert` still refuses trigram indexes from PostgreSQL to
-  SQLite, and its table pairing does not know the SQLite trigram tables
-  yet (see Follow-ups).
+- `forgebase db convert` carries trigram indexes in both directions (see
+  the addendum).
 
 ## Follow-ups (other areas)
 
-- `forgebase-convert`: skip `_forgebase_trgm_<index>` tables like FTS5
-  shadow tables, drop the PostgreSQL → SQLite trigram refusal, and refill
-  the SQLite trigram tables after the copy (`fuzzy::rebuild_sql`).
 - Dashboard: the index kind selector offers `trigram` on every backend;
   `fuzzy_unsupported` / `index_kind_unsupported` texts in `errors.ts` are
   stale; show `engine` on openCypher results and the capability matrix in
@@ -299,3 +295,19 @@ small edits in `indexes.rs`, `list.rs`, `catalog.rs`, `collections.rs`,
 schema-change test). `forgebase-api`: `src/capabilities.rs`, the route,
 `database.capabilities`, OpenAPI. Migrations `0056_portable_trigram` (both
 backends), registered in `forgebase-migrations`.
+
+## Addendum: `forgebase db convert` with trigram indexes (2026-11-14)
+
+The conversion now carries trigram indexes both ways. The definition is
+copied with `_forgebase_indexes`. The derived objects are never copied:
+SQLite's `_forgebase_trgm_<index>` table and its triggers are left out of
+the table pairing and of the hand-made objects the report lists. Inside the
+copy transaction the target drops each index (PostgreSQL) or its triggers
+(SQLite) before the copy, then builds it after the copy with the data
+core's own DDL for the target's engine (`DataService::trigram_reloads`:
+`create_sql` on PostgreSQL, `rebuild_sql` on SQLite). A failure rolls the
+build back with the copy. `forgebase db convert --to postgres` first decides
+`[database.postgres.extensions] trigram` on the target, so the index is
+built for the engine that server will use. `ConvertReport.rebuilt` lists
+each index with its engine, record count, trigram rows (SQLite) and build
+time.
