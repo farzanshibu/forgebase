@@ -32,7 +32,8 @@ export function fmtValue(v: number | null | undefined): string {
 /** `0.99958` as `99.958%`. */
 export function pct(ratio: number | null | undefined, digits = 2): string {
   if (ratio === null || ratio === undefined || !Number.isFinite(ratio)) return "—";
-  return `${(ratio * 100).toFixed(digits).replace(/\.?0+$/, "")}%`;
+  const text = (ratio * 100).toFixed(digits);
+  return `${text.includes(".") ? text.replace(/\.?0+$/, "") : text}%`;
 }
 
 /** The runbook link of an alert, only when it is a web address (an annotation is free text from a rule). */
