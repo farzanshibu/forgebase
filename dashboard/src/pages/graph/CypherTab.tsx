@@ -5,10 +5,11 @@ import { Textarea } from "panelui-web/textarea";
 import { ApiError, cypher, dropCypherGraph, graphStats } from "../../api";
 import type { CypherResult, CypherStatus } from "../../api";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
-import { EmptyState } from "../../components/EmptyState";
 import { FormField } from "../../components/FormField";
 import { SkeletonLines } from "../../components/Skeleton";
+import { Badge } from "../../components/StatusBadge";
 import { Button, ErrorView, Panel } from "../../components/ui";
+import { queryPosition } from "../../errors";
 import { useLoad } from "../../hooks";
 import { notify } from "../../toaster";
 import { Cell } from "./cypherCells";
@@ -68,7 +69,7 @@ export const EXAMPLES = [
   { name: "People", text: "MATCH (p:Person) RETURN p", note: "Every node labelled Person." },
   { name: "Who knows whom", text: "MATCH (a:Person)-[r:KNOWS]->(b:Person) RETURN a.id AS who, b.id AS knows", note: "One row per KNOWS edge." },
   { name: "Friends of friends", text: "MATCH (a {id: $start})-[:KNOWS*1..2]->(b) RETURN DISTINCT b", note: "Uses the parameter start." , params: '{ "start": "alice" }' },
-  { name: "Paths", text: "MATCH p = (a {id: $start})-[:KNOWS*1..3]->(b) RETURN p", note: "Returns whole paths.", params: '{ "start": "alice" }' },
+  { name: "Paths", text: "MATCH p = (a {id: $start})-[:KNOWS*1..3]->(b) RETURN p", note: "Returns whole paths. Path variables need Apache AGE; the built-in engine says where it stops.", params: '{ "start": "alice" }' },
   { name: "Count by label", text: "MATCH (n) RETURN n.label AS label, count(*) AS total", note: "How many nodes per label." },
 ] as { name: string; text: string; note: string; params?: string }[];
 
@@ -171,18 +172,13 @@ export default function CypherTab() {
   const status = waiting ? live ?? stats.data?.cypher ?? undefined : stats.data?.cypher ?? undefined;
   if (stats.loading && !stats.data) return <SkeletonLines lines={4} label="Loading openCypher" />;
   if (stats.error && !stats.data) return <ErrorView error={stats.error} onRetry={stats.reload} />;
-  if (stats.data && !stats.data.cypher) {
-    return (
-      <EmptyState compact title="openCypher is off on this server" why="openCypher is not available on this server. It needs PostgreSQL with Apache AGE; the Nodes, Edges, Explorer and Query runner tabs work everywhere." docs="docs/adr/0006-graph.md" />
-    );
-  }
-
+  // Without a derived-graph status the server runs the built-in engine (ADR-0034): nothing to build, nothing to drop.
   const show = (msg?: string) => (touched ? msg : undefined);
   return (
     <div className="space-y-4">
       <Panel title="openCypher">
         {status && <StatusStrip status={status} onDropped={() => { setResult(undefined); stats.reload(); }} />}
-        <p className="mb-3 text-sm text-muted-foreground">Ask questions of your graph with openCypher. Queries only read; nothing you run here changes your data.</p>
+        <p className="mb-3 text-sm text-muted-foreground">Ask questions of your graph with openCypher. Queries only read; nothing you run here changes your data. They run on Apache AGE where PostgreSQL has it, and on ForgeBase&apos;s built-in engine (a read-only subset) everywhere else.</p>
         <div className="mb-3 flex flex-wrap items-center gap-2" role="group" aria-label="Example queries">
           <span className="text-xs text-muted-foreground">Examples:</span>
           {EXAMPLES.map((x) => (
@@ -206,15 +202,34 @@ export default function CypherTab() {
         <div className="mt-3"><Button tone="primary" disabled={busy || waiting} onClick={() => void run()}>{waiting ? "Waiting for the graph…" : busy ? "Running…" : "Run query"}</Button></div>
       </Panel>
       <ErrorView error={error} />
+      <ErrorPlace error={error} query={query} />
       {result && <Results result={result} limit={limitCheck.value ?? LIMIT.def} />}
     </div>
   );
 }
 
+/** The line of the query the server named, with a caret under the column (cypher_invalid, cypher_unsupported, cypher_too_complex). */
+function ErrorPlace({ error, query }: { error: unknown; query: string }) {
+  const pos = queryPosition(error);
+  const line = pos ? query.split("\n")[pos.line - 1] : undefined;
+  if (!pos || line === undefined) return null;
+  return (
+    <figure aria-label="Where the query stops" className="rounded-lg border border-border bg-muted/40 p-3">
+      <figcaption className="mb-1 text-xs text-muted-foreground">Line {pos.line}, column {pos.column}</figcaption>
+      <pre className="overflow-x-auto font-mono text-xs leading-5"><code>{line}{"\n"}{" ".repeat(Math.max(0, pos.column - 1))}^</code></pre>
+    </figure>
+  );
+}
+
+const ENGINE_WORDS = {
+  age: "Answered by Apache AGE on the derived copy of your graph.",
+  portable: "Answered by ForgeBase's built-in engine, reading your graph tables directly: a read-only subset of openCypher.",
+} as const;
+
 function Results({ result, limit }: { result: CypherResult; limit: number }) {
   const n = result.rows.length;
   return (
-    <Panel title={`${n} ${n === 1 ? "row" : "rows"}`}>
+    <Panel title={`${n} ${n === 1 ? "row" : "rows"}`} actions={result.engine ? <Badge tone={result.engine === "age" ? "info" : "neutral"} title={ENGINE_WORDS[result.engine]}>engine: {result.engine}</Badge> : undefined}>
       {result.truncated && (
         <p role="note" className="mb-2 text-sm text-warning">Truncated: more rows matched than the limit of {limit}. Raise the limit (up to {LIMIT.max}) or narrow the query.</p>
       )}

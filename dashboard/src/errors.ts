@@ -18,6 +18,12 @@ export interface ErrorWords {
   next: string;
 }
 
+/** Where in a query text the server found a problem (1-based). */
+export interface QueryPosition {
+  line: number;
+  column: number;
+}
+
 export type ErrorKind = "session" | "forbidden" | "network" | "disabled" | "invalid" | "missing" | "server" | "other";
 
 export interface ExplainedError extends ErrorWords {
@@ -27,6 +33,8 @@ export interface ExplainedError extends ErrorWords {
   requestId?: string;
   /** The server's own message, for Details. */
   message: string;
+  /** The line and column of an openCypher problem, when the server named them. */
+  position?: QueryPosition;
   /** The parsed response body (or the thrown value), for Details. */
   raw: unknown;
 }
@@ -67,11 +75,14 @@ export const ERROR_WORDS = {
   extension_unavailable: { title: "This PostgreSQL engine does not ship that extension", next: "Use an engine that includes it, or pick another extension." },
   run_as_ddl: { title: "Run as does not run schema changes", next: "Run reads and writes as the user. To change the schema, switch Run as back to Administrator." },
   run_as_unavailable: { title: "Run as needs PostgreSQL with row-level security", next: "Switch Run as back to Administrator, or move the project to PostgreSQL." },
-  fuzzy_unsupported: { title: "Fuzzy search needs PostgreSQL with pg_trgm", next: "Turn Fuzzy off, or move the project to PostgreSQL." },
+  // Reserved since ADR-0034: fuzzy search runs on every database, so a current server no longer answers this. An older one still can.
+  fuzzy_unsupported: { title: "This server version cannot do fuzzy search", next: "Current versions run fuzzy search on every database (pg_trgm where PostgreSQL has it, a portable engine elsewhere, ADR-0034). Update the server, or turn Fuzzy off." },
   no_trigram_index: { title: "No trigram index covers that field", next: "Create an index of kind trigram on the field in Indexes, then search again." },
-  index_kind_unsupported: { title: "This database cannot build that kind of index", next: "Pick btree or fulltext, or move the project to PostgreSQL for trigram." },
+  // Reserved since ADR-0034: the trigram index kind is built on every database now.
+  index_kind_unsupported: { title: "This server version cannot build that kind of index", next: "Current versions build the trigram kind on every database (ADR-0034). Update the server, or pick btree." },
   invalid_fuzzy_threshold: { title: "The fuzzy threshold must be between 0 and 1", next: "Use a number such as 0.3." },
-  cypher_unsupported: { title: "openCypher is not available on this server", next: "openCypher needs PostgreSQL with Apache AGE. Use the Traversal and Shortest path queries instead, they work everywhere." },
+  cypher_unsupported: { title: "That query uses openCypher the built-in engine does not support", next: "The message says which construct and where. Rewrite the query without it (WITH, OPTIONAL MATCH, UNWIND, UNION, CASE, arithmetic, path variables and unbounded * are outside the subset), or use the Traversal and Shortest path queries." },
+  cypher_too_complex: { title: "That query is too big or too deep for the built-in engine", next: "Use at most 10 hops in a variable-length path, constrain its start node (a property or a label), or split the query. The message says which limit and where." },
   cypher_invalid: { title: "That query could not be understood", next: "Check the syntax. A query needs a final RETURN with named items, and RETURN * is not allowed." },
   cypher_read_only: { title: "That query changes data", next: "Cypher here only reads; write through the REST graph API (Nodes and Edges tabs)." },
   cypher_error: { title: "The query failed while running", next: "Check the labels, properties and parameters it uses. The server message below says what it hit." },
@@ -113,6 +124,18 @@ function nextFor(status: number | undefined): string {
   return "Try again.";
 }
 
+/**
+ * The line and column of an openCypher error (`cypher_invalid`, `cypher_unsupported`, `cypher_too_complex`): from
+ * `error.details.line` and `column` when the server sends them, else from the "(line 2, column 14)" its message ends with.
+ */
+export function queryPosition(error: unknown): QueryPosition | undefined {
+  if (!(error instanceof ApiError) || !error.code.startsWith("cypher_")) return undefined;
+  const d = (error.body as { error?: { details?: { line?: unknown; column?: unknown } } } | undefined)?.error?.details;
+  if (typeof d?.line === "number" && typeof d.column === "number") return { line: d.line, column: d.column };
+  const m = /\(line (\d+), column (\d+)\)/.exec(error.message);
+  return m ? { line: Number(m[1]), column: Number(m[2]) } : undefined;
+}
+
 /** The permission a 403 names, from "missing permission collections:read" and similar messages. */
 export function missingPermission(error: unknown): string | undefined {
   if (!(error instanceof ApiError)) return undefined;
@@ -123,7 +146,7 @@ export function missingPermission(error: unknown): string | undefined {
 /** Explain any thrown value in plain words. Never returns raw JSON in `title` or `next`. */
 export function explain(error: unknown): ExplainedError {
   if (error instanceof ApiError) {
-    const base = { status: error.status, code: error.code, requestId: error.requestId, message: error.message, raw: error.body ?? { error: { code: error.code, message: error.message } } };
+    const base = { status: error.status, code: error.code, requestId: error.requestId, message: error.message, position: queryPosition(error), raw: error.body ?? { error: { code: error.code, message: error.message } } };
     // A failed sign-in is a 401 too: its own code (invalid_credentials) has better words than "session ended".
     if (error.status === 401 && error.code === "invalid_credentials") return { ...base, kind: "invalid", ...ERROR_WORDS.invalid_credentials };
     if (error.status === 401) return { ...base, kind: "session", title: "Your session ended", next: "Sign in again to carry on." };
