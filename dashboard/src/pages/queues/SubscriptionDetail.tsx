@@ -10,6 +10,7 @@ import { notify } from "../../toaster";
 import Tenant from "../jobs/Tenant";
 import AttemptLog from "./AttemptLog";
 import DeadLetters from "./DeadLetters";
+import NewSecretNotice from "./NewSecretNotice";
 import PushTools from "./PushTools";
 import QueueRules from "./QueueRules";
 import { useLoad } from "../../hooks";
@@ -77,6 +78,7 @@ export default function SubscriptionDetail() {
           />
         }
       />
+      <NewSecretNotice key={sub} name={sub} sub={s} />
       <ErrorView error={error ?? info.error} />
       {notice && <p role="status" className="rounded-lg border border-success/40 bg-success/10 p-3 text-sm text-success">{notice}</p>}
       {info.loading && !info.data && !info.error && <SkeletonLines lines={4} label="Loading subscription" />}

@@ -1,22 +1,19 @@
 import { Fragment, useEffect, useId, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { ApiError, createQueueSubscription, deleteQueueTopic, getQueueTopic, listQueueSubscriptions, publishQueueMessages, queueTopicMessages, queueTopicMetrics } from "../../api";
+import { ApiError, deleteQueueTopic, getQueueTopic, listQueueSubscriptions, publishQueueMessages, queueTopicMessages, queueTopicMetrics } from "../../api";
 import type { QueueMessage, QueueSubscription } from "../../api";
 import { Button, ErrorView } from "../../components/ui";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
-import { CreateSheet } from "../../components/CreateSheet";
 import { EmptyState } from "../../components/EmptyState";
-import { FormField } from "../../components/FormField";
 import { HelpTip } from "../../components/HelpTip";
 import { PageHeader } from "../../components/PageHeader";
 import { Pager } from "../../components/Pager";
 import { SkeletonLines, SkeletonTable } from "../../components/Skeleton";
 import { UseFromCodeButton } from "../../components/UseFromCode";
-import { fieldErrors } from "../../errors";
 import { useLoad, type LoadState } from "../../hooks";
 import { notify } from "../../toaster";
-import { validate } from "../../validate";
 import Tenant from "../jobs/Tenant";
+import NewSubscription from "./NewSubscription";
 import QueueRules from "./QueueRules";
 import TopicCatalogEntry from "./TopicCatalogEntry";
 import { bytes, duration, parseAttrs, parseJson, pretty } from "./util";
@@ -27,7 +24,6 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { Table } from "panelui-web/table";
 import { Input } from "panelui-web/input";
 import { Textarea } from "panelui-web/textarea";
-import { Check, Sel } from "../../components/controls";
 
 const PAGE = 25;
 
@@ -267,58 +263,5 @@ function Subscriptions({ subs }: { subs: LoadState<QueueSubscription[]> }) {
         </ul>
       )}
     </Section>
-  );
-}
-
-/** New subscription for this topic. The owner is the signed-in account: record messages reach the subscription as that account sees them. */
-function NewSubscription({ topic, tenant: topicTenant, open, onOpenChange, onCreated }: { topic: string; tenant?: string; open: boolean; onOpenChange: (open: boolean) => void; onCreated: () => void }) {
-  const [name, setName] = useState("");
-  const [deadline, setDeadline] = useState("30");
-  const [attempts, setAttempts] = useState("");
-  const [dlt, setDlt] = useState("");
-  const [ordering, setOrdering] = useState(false);
-  const [start, setStart] = useState<"latest" | "earliest">("latest");
-  const [tenant, setTenant] = useState("");
-  const [touched, setTouched] = useState(false);
-  const [saveError, setSaveError] = useState<unknown>();
-  const n = name.trim();
-  const nameError = (touched ? validate.topicName(n) : undefined) ?? fieldErrors(saveError).name;
-  const secs = (v: string) => (v && !(Number(v) > 0) ? "Use a number above 0." : undefined);
-  return (
-    <CreateSheet
-      open={open} onOpenChange={onOpenChange}
-      title="New subscription" description={`A subscription reads topic ${topic} with its own cursor. You become its owner.`}
-      submitLabel="Create subscription" canSubmit={!validate.topicName(n) && !secs(deadline)} onError={setSaveError}
-      onSubmit={async () => {
-        const t = tenant.trim() || topicTenant;
-        const made = await createQueueSubscription({
-          name: n, topic, ack_deadline_ms: Math.round(Number(deadline || "30") * 1000), ordering, start,
-          ...(attempts ? { max_delivery_attempts: Number(attempts) } : {}), ...(dlt ? { dead_letter_topic: dlt.trim() } : {}),
-        }, t || undefined);
-        setName(""); setAttempts(""); setDlt(""); setTouched(false); setSaveError(undefined);
-        onCreated();
-        return { what: `Subscription ${made.name ?? n}`, href: `/queues/s/${encodeURIComponent(made.name ?? (t ? `${t}/${n}` : n))}` };
-      }}
-    >
-      <FormField label="Name" required help="Letters, digits, dots, dashes, underscores or colons." error={nameError}>
-        {(p) => <Input {...p} size="sm" className="w-full" value={name} onChange={(e) => { setName(e.target.value); setTouched(true); }} />}
-      </FormField>
-      <FormField label="Ack deadline (seconds)" term="ack_deadline" error={secs(deadline)}>
-        {(p) => <Input {...p} size="sm" className="w-full" inputMode="decimal" value={deadline} onChange={(e) => setDeadline(e.target.value)} />}
-      </FormField>
-      <FormField label="Max attempts" help="After this many failed deliveries a message goes to the dead-letter topic. Empty: unlimited.">
-        {(p) => <Input {...p} size="sm" className="w-full" inputMode="numeric" value={attempts} onChange={(e) => setAttempts(e.target.value)} />}
-      </FormField>
-      <FormField label="Dead-letter topic" term="dead_letter" help="Optional. You need permission to publish to it.">
-        {(p) => <Input {...p} size="sm" className="w-full" value={dlt} onChange={(e) => setDlt(e.target.value)} />}
-      </FormField>
-      <FormField label="Start" help="Latest: only new messages. Earliest: every message still retained.">
-        {(p) => <Sel {...p} aria-label="Start" value={start} onChange={(v) => setStart(v as "latest" | "earliest")} options={[{ value: "latest", label: "latest" }, { value: "earliest", label: "earliest" }]} />}
-      </FormField>
-      <FormField label="Tenant" help="Optional. Defaults to the topic's tenant.">
-        {(p) => <Input {...p} size="sm" className="w-full" value={tenant} onChange={(e) => setTenant(e.target.value)} placeholder={topicTenant ?? ""} />}
-      </FormField>
-      <Check checked={ordering} onChange={setOrdering} label="Ordered" description="Deliver messages with the same ordering key one after another." />
-    </CreateSheet>
   );
 }

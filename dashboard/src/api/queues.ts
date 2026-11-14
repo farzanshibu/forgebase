@@ -54,6 +54,12 @@ export interface SubscriptionPatch { pause_after_failures?: number }
 export interface NewSubscription {
   name: string; topic: string; filter?: unknown; ack_deadline_ms?: number; max_delivery_attempts?: number; backoff_base_ms?: number; backoff_max_ms?: number;
   dead_letter_topic?: string; ordering?: boolean; start?: "latest" | "earliest" | { time: string };
+  /** Push delivery instead of pull: a webhook URL, or the name of a function. */
+  push?: PushConfig;
+  /** Push: pause delivery after this many consecutive failed attempts (1 to 1000; default never). */
+  pause_after_failures?: number;
+  /** Delete the subscription this long after creation (60 s to 31 days; default never). */
+  ttl_ms?: number;
 }
 export interface TopicMetrics {
   topic: string; messages: number; bytes: number; oldest_message_age_ms?: number | null; published_total: number; published_bytes: number;

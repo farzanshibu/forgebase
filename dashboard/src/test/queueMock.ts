@@ -30,6 +30,8 @@ export interface QueueState {
   testResult: "success" | "failure" | "rate_limited";
   /** Deliveries waiting for a retry backoff: what "retry now" reports. */
   delayed: number;
+  /** When set, creating a push subscription is refused with this error (the server's URL and function checks). */
+  refusePush?: { code: string; message: string };
   calls: { redrive: unknown[]; retry: unknown[]; rotate: unknown[]; pause: unknown[]; resume: number; expire: number; test: number; patchSub: unknown[]; patchTopic: unknown[] };
 }
 
@@ -137,13 +139,18 @@ export function installQueues(mock: MockApi): QueueState {
 
   mock.on("GET", `${Q}/subscriptions`, ({ query }) => ({ status: 200, body: { items: st.subs.filter((x) => !query.get("topic") || x.topic === query.get("topic")) } }));
   mock.on("POST", `${Q}/subscriptions`, ({ body, headers }) => {
-    const b = body as { name: string; topic: string; ack_deadline_ms?: number; max_delivery_attempts?: number; ordering?: boolean };
+    const b = body as { name: string; topic: string; ack_deadline_ms?: number; max_delivery_attempts?: number; ordering?: boolean; push?: { kind: "webhook" | "function"; endpoint: string }; pause_after_failures?: number; ttl_ms?: number };
     const { tenant, key } = scoped(b.name, headers);
     if (s(key)) return envelope(409, "subscription_exists", "subscription exists");
     if (!t(b.topic)) return no("topic");
-    const made = sub(key, b.topic, { ack_deadline_ms: b.ack_deadline_ms ?? 30_000, max_delivery_attempts: b.max_delivery_attempts ?? null, ordering: !!b.ordering, tenant: tenant ?? null });
+    if (st.refusePush && b.push) return envelope(400, st.refusePush.code, st.refusePush.message);
+    const made = sub(key, b.topic, {
+      ack_deadline_ms: b.ack_deadline_ms ?? 30_000, max_delivery_attempts: b.max_delivery_attempts ?? null, ordering: !!b.ordering, tenant: tenant ?? null,
+      ...(b.push ? { push: b.push, pause_after_failures: b.pause_after_failures ?? null } : {}), ...(b.ttl_ms ? { expires_at: new Date(Date.parse(NOW) + b.ttl_ms).toISOString() } : {}),
+    });
     st.subs.push(made);
-    return { status: 201, body: made };
+    // The signing secret of a webhook is in the create answer only: the stored subscription never carries it.
+    return { status: 201, body: b.push?.kind === "webhook" ? { ...made, push_secret: `whsec_created_${st.subs.length}` } : made };
   });
   mock.on("GET", `${Q}/subscriptions/{sub}`, ({ params }) => (s(params.sub!) ? { status: 200, body: s(params.sub!) } : no("subscription")));
   mock.on("DELETE", `${Q}/subscriptions/{sub}`, ({ params }) => {
