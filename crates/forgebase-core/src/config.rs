@@ -24,12 +24,12 @@ use crate::error::{ErrorCode, ErrorKind};
 #[path = "topology_config.rs"]
 pub mod topology_config;
 
-/// `[tls]` and `[tls.acme]`: native TLS (ADR-0033).
-#[path = "tls_config.rs"]
-pub mod tls_config;
 /// `[observability]` and `[alerts]` (ADR-0035).
 #[path = "telemetry_config.rs"]
 pub mod telemetry_config;
+/// `[tls]` and `[tls.acme]`: native TLS (ADR-0033).
+#[path = "tls_config.rs"]
+pub mod tls_config;
 
 /// `[observability]`: slow statements, statement statistics, function
 /// profiling (ADR-0036).
