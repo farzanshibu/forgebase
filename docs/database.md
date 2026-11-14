@@ -271,6 +271,17 @@ Each backend is copied with its own tool:
   (point-in-time restore). A restore never changes the backend: a PostgreSQL
   backup is refused in a SQLite data directory and the reverse (use
   `db convert`, §0).
+- **Drill.** `forgebase backup drill [id|latest]` proves a backup restores:
+  it restores into a scratch directory (never the live one), starts a quiet
+  server on it (no jobs, cron, push delivery, webhooks or alerts), runs
+  `doctor`, compares record and storage counts with the manifest, reads a
+  sample of records and blobs, checks the master key, then deletes the copy
+  and prints the recovery time (RTO) and the backup's age (RPO); it exits
+  non-zero on any failure. SQLite and the bundled PostgreSQL are supported.
+  `POST /api/v1/system/backups/{id}/drill` runs one as a job, `GET
+  .../drills` lists the history, `[backup] drill_schedule` schedules it
+  (ADR-0041, [operations/disaster-recovery.md](operations/disaster-recovery.md)).
+  A backup carries the sealed `tls/` directory when `[backup] include_tls` is on.
 - **Restore on PostgreSQL.** The bundled engine's backup replaces
   `postgres/data` and `postgres/roles.secret`. It needs the same PostgreSQL
   major and refuses while a postmaster still runs on the cluster. PostgreSQL

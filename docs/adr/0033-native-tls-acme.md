@@ -316,6 +316,8 @@ MPL-2.0), not linked.
 - The dashboard does not show the `tls` status entry yet (fields in
   decision 11), and the feature registry's first `list` settings
   (`tls.acme.domains`, `tls.acme.challenges`) are read-only there.
-- `forgebase backup` snapshots do not include `<data_dir>/tls/`; a restored
-  server requests a new certificate. Including it (it is sealed) is a
-  backup follow-up.
+- ~~`forgebase backup` snapshots do not include `<data_dir>/tls/`; a restored
+  server requests a new certificate.~~ Resolved by ADR-0041: `[backup]
+  include_tls` (on by default with `mode = "acme"`) puts the sealed `tls/`
+  directory in every backup and a restore brings it back. Cluster backups and
+  the pre-migration snapshot still do not carry it.

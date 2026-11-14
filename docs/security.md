@@ -18,7 +18,7 @@ To report a vulnerability, see [`SECURITY.md`](../SECURITY.md).
 | Records and collections | Application data, possibly personal. |
 | Credentials | Passwords, sessions, refresh tokens, API keys, PATs, MFA secrets, recovery codes, OAuth client secrets. |
 | Signing keys | Sign access tokens, OIDC tokens and signed storage URLs. |
-| Master key (`<data_dir>/auth/master.key`) | Root for the pepper and the encryption keys. Losing it or leaking it breaks the stored secrets. |
+| Master key (`<data_dir>/auth/master.key`) | Root for the pepper and the encryption keys. Losing it or leaking it breaks the stored secrets. It is kept out of backups on purpose: escrow it apart from them and prove the escrow with `forgebase backup drill --master-key` ([operations/disaster-recovery.md](operations/disaster-recovery.md#33-master-key-escrow)). |
 | Billing and provider secrets | Payment-provider keys, webhook secrets, store credentials. |
 | Function code and secrets | Tenant code and its secrets. |
 | Storage objects | Uploaded files. |

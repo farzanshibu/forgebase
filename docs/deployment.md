@@ -485,6 +485,13 @@ one copy of it apart from the backups. Schedule snapshots with cron or a
 systemd timer, for example `forgebase backup --keep-last 14 --max-age-days 30`.
 Restore with `forgebase restore latest --force` on the stopped data directory.
 See [database.md §5](database.md#5-backups-and-rollback).
+A backup you have not restored is a hope: `forgebase backup drill` restores the
+newest snapshot into a scratch directory, starts a quiet server on it, checks the
+data and reports the recovery time (RTO) and the backup's age (RPO), without
+touching the live data; set `[backup] drill_schedule` to run it weekly. The
+runbooks are in [operations/](operations/): [disaster recovery](operations/disaster-recovery.md),
+[HA and failover](operations/ha-failover.md), [alerting](operations/alerting-runbook.md),
+[upgrades](operations/upgrades.md).
 
 ## 5. TLS
 
@@ -615,10 +622,12 @@ email = "ops@example.com"
 - The account key and certificate are stored under `<data_dir>/tls/acme/`,
   sealed with the data directory's master key (`<data_dir>/auth/master.key`).
   `status.json` next to them holds the expiry and last error for
-  `forgebase doctor`. `forgebase backup` snapshots do not include `tls/`:
-  after a restore the server simply requests a new certificate (mind the
-  CA's rate limits when restoring often; a file-level copy of the whole data
-  directory keeps it).
+  `forgebase doctor`. `forgebase backup` snapshots include `tls/` when
+  `[backup] include_tls` is on (the default with `mode = "acme"`; ADR-0041),
+  so a restore keeps its certificate; the state is sealed with the master key,
+  which a backup does not carry unless you say so. A backup made without it
+  (or an older one) leaves a restored server to request a new certificate:
+  mind the CA's rate limits when restoring often.
 
 #### Redis protocol over TLS
 
@@ -693,6 +702,9 @@ Scrape every 15 s or so; each scrape refreshes the gauges below.
 | `forgebase_tls_renewals_total`, `forgebase_tls_renewal_failures_total` | counter | none (ACME mode) |
 | `forgebase_tls_reloads_total`, `forgebase_tls_reload_failures_total` | counter | none (files mode) |
 | `forgebase_tls_handshake_failures_total` | counter | `listener` = `https` or `resp` |
+| `forgebase_backup_last_drill_success_timestamp_seconds`, `forgebase_backup_last_drill_ok`, `forgebase_backup_drill_rpo_seconds` | gauge | none (after the first restore drill; ADR-0041) |
+| `forgebase_backup_drill_duration_seconds` | gauge | `phase` = `total`, `restore`, `start` or `checks` (the latest drill) |
+| `forgebase_backup_drills_total` | counter | `outcome` = `passed` or `failed` (drills run as jobs since the process started) |
 
 Notes:
 
@@ -726,6 +738,8 @@ With `log.format = "json"`, every line carries `trace_id` and `span_id`.
 
 ## 6. Upgrades
 
+The zero-surprise version of this section, with a snapshot-plus-drill step and a
+rehearsal of the migration on a copy, is [operations/upgrades.md](operations/upgrades.md).
 Migrations run automatically on `serve`. Before you upgrade:
 
 1. Read the release notes for the new version. Moving from 0.2 to 0.3: read
@@ -827,6 +841,9 @@ Keys in the TOML file, with defaults. Ranges are the accepted values.
 | `observability.otlp.endpoint`, `protocol`, `headers`, `service_name`, `service_instance_id`, `resource_attributes`, `sampling_ratio`, `export_traces`, `export_logs`, `timeout_secs`, `ca_file` | `"http://127.0.0.1:4318"`, `"http/protobuf"`, `{}`, `"forgebase"`, `""`, `{}`, `1.0`, `true`, `false`, `10`, `""` | See [observability.md §1.2](observability.md#12-turning-on-export). Secret headers: `FORGEBASE_OTLP_HEADERS`. |
 | `alerts.enabled` | `true` | `/api/v1/alerts`, `/api/v1/slos` and rule evaluation. |
 | `alerts.evaluation_interval_secs`, `disabled_rules`, `allow_http`, `history_retention_days`, `tls_cert_expiry_metric` | `30`, `[]`, `false`, `30`, `"forgebase_tls_certificate_expiry_timestamp_seconds"` | `1`–`3600` s; built-in rule ids; `http://` notifier URLs; `1`–`3650` days; a gauge name. `[[alerts.rules]]`: custom rules ([observability.md §2.4](observability.md#24-custom-rules)). |
+| `backup.source` | `"primary"` | `primary` or `replica`: where `forgebase backup --cluster` copies each set from (ADR-0029 §2.9). |
+| `backup.include_tls` | `"auto"` | `true`, `false` or `auto` (on with `tls.mode = "acme"`): backups carry the sealed `tls/` directory (ADR-0041). |
+| `backup.drill_schedule` | unset | A UTC cron expression: restore-drill the newest snapshot on that schedule (ADR-0041). |
 
 Example `[billing]` section (turns billing off):
 
@@ -843,6 +860,7 @@ test-mode keys are accepted (see [security.md §3](security.md#3-trust-boundarie
 - [ ] `forgebase doctor` passes on the data directory.
 - [ ] `auth/master.key` is backed up separately from the data backups.
 - [ ] `forgebase backup` runs on a schedule and `forgebase backup verify latest` passes.
+- [ ] `forgebase backup drill` passes (or `[backup] drill_schedule` is set) and the recovery time it reports fits your RTO ([operations/disaster-recovery.md](operations/disaster-recovery.md)).
 - [ ] `FORGEBASE_HOST` is loopback, or only the proxy can reach the port.
 - [ ] TLS terminates at the proxy.
 - [ ] `log.format` is `json` for log collection.
@@ -953,6 +971,11 @@ snapshots. `auth/master.key` is not in the backup (§4): copy it once with
 `kubectl exec forgebase-0 -- cat /data/auth/master.key`. Restoring needs a stopped
 server: scale the StatefulSet to 0 and run `forgebase restore` in a one-off pod on the
 same PVC.
+Prove the snapshots restore with `kubectl exec forgebase-0 -- forgebase backup drill`
+(it needs a snapshot's worth of free space on the volume, or `--work-dir` on an
+emptyDir), or set `[backup] drill_schedule` in the mounted `forgebase.toml`
+([operations/disaster-recovery.md](operations/disaster-recovery.md),
+[operations/ha-failover.md §8](operations/ha-failover.md#8-kubernetes)).
 
 ### 9.6 Checks
 

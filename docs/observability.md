@@ -189,7 +189,11 @@ Everything on `/metrics` is available too: `forgebase_http_requests_total`,
 
 Each can be switched off with `PATCH /api/v1/alerts/rules/{id}
 {"enabled": false}` or listed in `[alerts] disabled_rules` (the API cannot
-switch those on).
+switch those on). Each rule has a runbook (meaning, first checks, fixes) under
+the same id in [operations/alerting-runbook.md](operations/alerting-runbook.md).
+The restore drill (`forgebase backup drill`, ADR-0041) exports
+`forgebase_backup_last_drill_success_timestamp_seconds`; the runbook shows
+custom rules on it.
 
 #### `http_5xx_ratio_high`
 
