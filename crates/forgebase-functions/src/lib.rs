@@ -1050,6 +1050,23 @@ impl FunctionService {
         }
     }
 
+    /// The module of a WebAssembly version, as deployed (`forgebase project
+    /// pull`, ADR-0037). A JavaScript or TypeScript version has none
+    /// (`function_source_not_found`; read its source instead).
+    pub async fn version_module(&self, ctx: &AccessContext, name: &str, version: i64) -> Result<Vec<u8>> {
+        self.authorize(ctx, Action::ReadFunctions)?;
+        let e = self.entry(name)?;
+        let t = self.target(&e, version).await?;
+        let module = match t.config.runtime {
+            FunctionRuntime::Wasm => store::wasm(self.backend().as_ref(), &e.row.id, version).await?,
+            FunctionRuntime::Js => None,
+        };
+        module.ok_or_else(|| FunctionError::NoSource {
+            name: name.to_owned(),
+            version,
+        })
+    }
+
     /// The key-value namespace rules of a function.
     pub fn kv_rules(&self, ctx: &AccessContext, name: &str) -> Result<Vec<KvRule>> {
         self.authorize(ctx, Action::ReadFunctions)?;

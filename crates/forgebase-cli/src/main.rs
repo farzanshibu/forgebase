@@ -16,6 +16,9 @@
 //! forgebase queues publish|pull|tail   publish to a topic, pull from a subscription, follow a topic
 //! forgebase jobs watch <ID>            follow a long-running job's progress until it finishes
 //! forgebase db status|psql|dump|convert  the database engine; convert moves a project between SQLite and PostgreSQL
+//! forgebase project pull|plan|apply|drift|validate|schemas   the server's configuration as code (ADR-0037)
+//! forgebase deploy                     build functions and apply the project (plan + apply)
+//! forgebase new <DIR> [--template ..]  scaffold an app project with the project-as-code layout
 //! ```
 //!
 //! Configuration precedence: flags > `FORGEBASE_*` environment > config file > defaults.
@@ -30,6 +33,7 @@ mod dotenv;
 mod functions;
 mod node;
 mod probe;
+mod project;
 mod queues;
 #[cfg(test)]
 mod testserver;
@@ -205,6 +209,12 @@ enum Command {
     /// Run this host's PostgreSQL as a managed replica of a ForgeBase server
     /// (engine only: no API, no services).
     Node(Box<node::NodeCli>),
+    /// The server's configuration as code: pull, plan, apply, drift (ADR-0037).
+    Project(Box<project::ProjectCli>),
+    /// Build functions and apply the project directory to a server (plan + apply).
+    Deploy(Box<project::DeployCli>),
+    /// Create an app project: the project-as-code layout, samples, seed data, a CI workflow.
+    New(Box<project::NewCli>),
 }
 
 fn main() -> ExitCode {
@@ -274,5 +284,8 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         Command::Jobs(j) => queues::run_jobs(g, j.server, j.command).await,
         Command::Db(d) => db::run(g, *d).await,
         Command::Node(n) => node::run(g, *n).await,
+        Command::Project(p) => project::run_project(g, *p).await,
+        Command::Deploy(d) => project::run_deploy(g, *d).await,
+        Command::New(n) => project::run_new(*n),
     }
 }

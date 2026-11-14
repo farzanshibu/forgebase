@@ -87,6 +87,7 @@ pub fn router<S: Clone + Send + Sync + 'static>(svc: FunctionService) -> Router<
         .route("/functions/types", get(types))
         .route("/functions/{name}/versions", get(versions))
         .route("/functions/{name}/versions/{version}/source", get(version_source))
+        .route("/functions/{name}/versions/{version}/module", get(version_module))
         .route("/functions/{name}/kv-rules", get(kv_rules).put(put_kv_rules))
         .route("/functions/{name}/rollback", post(rollback))
         .route("/functions/{name}/logs", get(logs))
@@ -117,7 +118,7 @@ pub fn openapi() -> utoipa::openapi::OpenApi {
 #[derive(OpenApi)]
 #[openapi(
     paths(
-        list, deploy, get_one, delete_one, versions, version_source, types, rollback, logs, secrets, put_secret,
+        list, deploy, get_one, delete_one, versions, version_source, version_module, types, rollback, logs, secrets, put_secret,
         delete_secret, kv_rules, put_kv_rules, invoke, invoke_path
     ),
     components(schemas(
@@ -306,6 +307,22 @@ async fn version_source(
     Path((name, version)): Path<(String, i64)>,
 ) -> ApiResult {
     Ok(Json(s.version_source(&ctx, &name, version).await.map_err(api)?).into_response())
+}
+
+/// The module of a WebAssembly version (`application/wasm`).
+#[utoipa::path(get, path = "/api/v1/functions/{name}/versions/{version}/module", tag = "functions",
+    params(("name" = String, Path, description = "Function name"), ("version" = i64, Path, description = "Version")),
+    responses(
+        (status = 200, description = "The module as deployed", content_type = "application/wasm", body = Vec<u8>),
+        (status = 404, description = "No such version, or a JavaScript/TypeScript version (`function_source_not_found`)"),
+    ))]
+async fn version_module(
+    State(s): State<FunctionService>,
+    Access(ctx): Access,
+    Path((name, version)): Path<(String, i64)>,
+) -> ApiResult {
+    let bytes = s.version_module(&ctx, &name, version).await.map_err(api)?;
+    Ok(([(header::CONTENT_TYPE, "application/wasm")], bytes).into_response())
 }
 
 /// The `forgebase` module declarations (`.d.ts`) for editors: the function API.

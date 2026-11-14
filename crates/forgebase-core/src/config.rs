@@ -1501,6 +1501,9 @@ impl ConfigOverrides {
                 // Read by the engine (forgebase-pgengine) and its build, and by
                 // the test helpers; never configuration.
                 "PG_ENGINE_DIR" | "PG_ENGINE_ARCHIVE" | "PG_ENGINE_LOCK" => {}
+                // The server and credential of `forgebase project` / `deploy`
+                // (ADR-0037) and the Terraform provider; never configuration.
+                "URL" | "TOKEN" | "ADMIN_EMAIL" | "ADMIN_PASSWORD" | "CA_FILE" => {}
                 k if k.starts_with("TEST_") => {}
                 "DB_SYNCHRONOUS" => o.synchronous = Some(value.parse().map_err(bad)?),
                 "DB_BUSY_TIMEOUT_MS" => o.busy_timeout_ms = Some(parse_num(&value).map_err(bad)?),
@@ -2660,6 +2663,21 @@ mod tests {
         let e = env(&[("FORGEBASE_CONFIG", "nope.toml")]);
         let err = ConfigLoader::new(tmp.path()).env(e).load().unwrap_err();
         assert_eq!(err.code(), "config_file_missing");
+    }
+
+    #[test]
+    fn project_cli_variables_are_not_configuration() {
+        let vars = [
+            "FORGEBASE_URL",
+            "FORGEBASE_TOKEN",
+            "FORGEBASE_ADMIN_EMAIL",
+            "FORGEBASE_ADMIN_PASSWORD",
+            "FORGEBASE_CA_FILE",
+        ]
+        .map(|k| (k.to_owned(), "x".to_owned()));
+        let o = ConfigOverrides::from_env(vars).expect("ADR-0037 variables are accepted");
+        assert!(o.secrets_set.is_empty());
+        assert!(ConfigOverrides::from_env([("FORGEBASE_TOKENS".to_owned(), "x".to_owned())]).is_err());
     }
 
     #[test]
