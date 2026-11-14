@@ -1,4 +1,4 @@
-import type { InsightAuditFilter } from "../../api";
+import type { InsightAuditEntry, InsightAuditFilter } from "../../api";
 import { formatBytes } from "../../format";
 
 export interface RangePreset { id: string; label: string; secs: number }
@@ -71,3 +71,6 @@ export function auditFilterOf(d: AuditDraft): InsightAuditFilter {
     from: localToIso(d.from), to: localToIso(d.to), q: t(d.q), order: d.order === "asc" ? "asc" : undefined,
   };
 }
+
+/** What an audit entry is about: type, collection and id, joined. */
+export const resourceOf = (e: InsightAuditEntry): string => [e.resource_type, e.collection, e.resource_id].filter(Boolean).join(" · ") || "—";

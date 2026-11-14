@@ -13,7 +13,7 @@ import { useLoad } from "../../hooks";
 import { BACKEND_NAME } from "../database/info";
 
 const STATE_TONE: Record<CapabilityState, Tone> = { active: "ok", native: "ok", portable: "info", off: "neutral", unavailable: "bad" };
-export const STATE_WORDS: Record<CapabilityState, string> = {
+const STATE_WORDS: Record<CapabilityState, string> = {
   active: "Runs on its PostgreSQL extension.",
   portable: "Runs on ForgeBase's own engine, which works on every database and gives the same answers.",
   native: "Part of the server itself; nothing to configure.",

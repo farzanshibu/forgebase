@@ -81,3 +81,11 @@ export const matcherLines = (ms: LabelMatcher[]): string => ms.map((m) => `${m.l
 
 /** Comma or newline separated words, trimmed, empty ones dropped. */
 export const parseList = (text: string): string[] => text.split(/[\n,]/).map((s) => s.trim()).filter(Boolean);
+
+/** A burn rate of 1 spends the budget exactly over the window; the tone says how worrying it is. */
+export function burnTone(rate: number | null): "ok" | "warn" | "bad" | "neutral" {
+  if (rate === null) return "neutral";
+  if (rate >= 6) return "bad";
+  if (rate >= 1) return "warn";
+  return "ok";
+}

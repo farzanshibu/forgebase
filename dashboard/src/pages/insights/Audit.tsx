@@ -13,8 +13,8 @@ import { CardBody, HEAD_ROW, TableCard } from "../../components/TableCard";
 import { Button, ErrorView } from "../../components/ui";
 import { useCursorList, useLoad } from "../../hooks";
 import { Section, When } from "../jobs/ops";
-import AuditRelated, { resourceOf } from "./AuditRelated";
-import { BLANK_AUDIT_DRAFT, auditFilterOf, fmtInt, type AuditDraft } from "./util";
+import AuditRelated from "./AuditRelated";
+import { BLANK_AUDIT_DRAFT, auditFilterOf, fmtInt, resourceOf, type AuditDraft } from "./util";
 
 /** Audit investigation: search the authentication and administration log, follow an entry to what happened around it, export what matches. */
 export default function Audit() {

@@ -12,19 +12,11 @@ import { notify } from "../../toaster";
 import { Section } from "../jobs/ops";
 import SloSheet from "./SloSheet";
 import { SeverityBadge } from "./shared";
-import { fmtValue, pct } from "./util";
+import { burnTone, fmtValue, pct } from "./util";
 
 /** Windows in the order the server measures them; any other key follows. */
 const WINDOWS = ["5m", "30m", "1h", "6h", "3d"];
 const TIER_WORDS: Record<string, string> = { page_fast: "Fast page", page_slow: "Slow page", ticket: "Ticket" };
-
-/** A burn rate of 1 spends the budget exactly over the window; the tone says how worrying it is. */
-export function burnTone(rate: number | null): "ok" | "warn" | "bad" | "neutral" {
-  if (rate === null) return "neutral";
-  if (rate >= 6) return "bad";
-  if (rate >= 1) return "warn";
-  return "ok";
-}
 
 function BudgetBar({ ratio, name }: { ratio: number; name: string }) {
   const overspent = ratio < 0;

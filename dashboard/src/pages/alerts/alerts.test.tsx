@@ -6,8 +6,7 @@ import { renderStudio, signedIn } from "../../test/helpers";
 import { alert, installAlerts, notifier, rule, slo, sloStatus, type AlertsState } from "../../test/alertsMock";
 import { confirmDialog, sheet, toast } from "../../test/dataStudioMock";
 import { pick } from "../../test/pick";
-import { fmtValue, isDuration, kvText, matchersFromAlert, parseKv, parseMatcherLines, passes, pct, runbookUrl } from "./util";
-import { burnTone } from "./Slos";
+import { burnTone, fmtValue, isDuration, kvText, matchersFromAlert, parseKv, parseMatcherLines, passes, pct, runbookUrl } from "./util";
 
 afterEach(() => {
   vi.unstubAllGlobals();

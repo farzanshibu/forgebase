@@ -7,8 +7,7 @@ import { Badge } from "../../components/StatusBadge";
 import { ErrorView } from "../../components/ui";
 import { useLoad } from "../../hooks";
 import { Code, When } from "../jobs/ops";
-
-export const resourceOf = (e: InsightAuditEntry): string => [e.resource_type, e.collection ? `${e.collection}` : undefined, e.resource_id].filter(Boolean).join(" · ") || "—";
+import { resourceOf } from "./util";
 
 function Entries({ title, items, empty }: { title: string; items: InsightAuditEntry[]; empty: string }) {
   return (
