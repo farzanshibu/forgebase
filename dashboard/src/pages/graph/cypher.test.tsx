@@ -22,6 +22,7 @@ const RESULT: CypherResult = {
   columns: ["p", "r", "path", "n"],
   rows: [[alice, knows, { nodes: [alice, bob], edges: [knows] }, 3]],
   truncated: false,
+  engine: "age",
 };
 
 interface Opts { cypher?: CypherStatus; answer?: (body: { query: string; params?: unknown; limit?: number; timeout_ms?: number }) => ReturnType<typeof envelope> | { status: number; body: unknown } }
@@ -79,7 +80,8 @@ describe("openCypher tab: which engine answered", () => {
   });
 
   it("draws no badge when an older server does not say", async () => {
-    setup();
+    // A 0.3 server answers without `engine`.
+    setup({ answer: () => ({ status: 200, body: { ...RESULT, engine: undefined } }) });
     renderStudio("/graph/cypher");
     await run0();
     await screen.findByRole("table", { name: "Query results" }, T);
@@ -106,7 +108,7 @@ describe("openCypher tab: query, parameters and results", () => {
 
   it("notes when the result is truncated and when nothing matched", async () => {
     let n = 0;
-    setup({ answer: () => ({ status: 200, body: n++ === 0 ? { ...RESULT, truncated: true } : { columns: ["p"], rows: [], truncated: false } }) });
+    setup({ answer: () => ({ status: 200, body: n++ === 0 ? { ...RESULT, truncated: true } : { columns: ["p"], rows: [], truncated: false, engine: "age" } }) });
     renderStudio("/graph/cypher");
     await run0();
     expect(await screen.findByRole("note", {}, T)).toHaveTextContent(/Truncated: more rows matched than the limit of 100/);

@@ -106,7 +106,8 @@ PostgreSQL cannot run as root: run as an unprivileged user, or use
 `--database sqlite`. The `-lite` release has no PostgreSQL engine and
 defaults to SQLite (`forgebase --version` says `lite`). An existing SQLite
 project stays SQLite after an upgrade; `forgebase db convert --to postgres`
-moves it. See [Upgrading to 0.3](docs/release-notes/0.3.md#upgrading-to-03).
+moves it. See [Upgrading to 0.3](docs/release-notes/0.3.md#upgrading-to-03) and the
+[0.4 upgrade notes](docs/release-notes/0.4.md#upgrade-notes).
 
 ## Commands
 

@@ -14,7 +14,7 @@ services:
       context: .
       args:
         ENGINE_ARCHIVE: ${ENGINE_ARCHIVE:-}
-    image: forgebase:0.3.5
+    image: forgebase:0.4.0
     restart: unless-stopped
     ports:
       - "127.0.0.1:8090:8090"

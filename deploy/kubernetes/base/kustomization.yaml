@@ -20,4 +20,4 @@ resources:
 
 images:
   - name: ghcr.io/farzanshibu/forgebase
-    newTag: "0.3.4"
+    newTag: "0.4.0"

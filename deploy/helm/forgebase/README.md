@@ -60,7 +60,7 @@ The data directory records its engine in `forgebase.backend`, and a setting that
 contradicts it stops startup. Choose once, and move with `forgebase db convert`.
 
 **The `-lite` image.** The release workflow publishes `ghcr.io/farzanshibu/forgebase`
-(the standard image, tags `0.3.4`, `0.3`, `sha-…`) and no `-lite` image. To use one,
+(the standard image, tags `0.4.0`, `0.4`, `sha-…`) and no `-lite` image. To use one,
 build the Dockerfile without `ENGINE_ARCHIVE`, push it as `<repository>:<version>-lite`
 and set `image.variant=lite` (and `image.repository` if it lives elsewhere). The
 standard image also runs SQLite (`database.backend=sqlite`) and is what you want
@@ -178,7 +178,7 @@ Both endpoints are open to everybody regardless of `opsAccess`.
   `key_file` point at it; ForgeBase reloads the files when cert-manager rotates them.
   The probes switch to HTTPS on their own (`probes.scheme` empty). ACME runs on one
   server per domain, which matches this single-pod chart. Needs a ForgeBase release
-  with native TLS (after 0.3.5).
+  with native TLS (0.4.0 or later).
 * Do not publish the RESP port (`resp.exposeService`) outside a trusted network
   unless `config.resp.tls` is on (it then uses the same certificate).
 
