@@ -150,7 +150,7 @@ pub async fn start_loaded(loaded: &LoadedConfig) -> Result<RunningServer, Server
         ..PoolConfig::default()
     };
     let origin = (loaded.origin.clone(), loaded.sources.clone());
-    start_full(config, Some(origin), JobRegistry::new(), pool).await
+    start_full(config, Some(origin), JobRegistry::new(), pool, false).await
 }
 
 /// Like [`start`], with in-process handlers for job kinds. The worker pool
@@ -160,7 +160,25 @@ pub async fn start_with_jobs(
     registry: JobRegistry,
     pool: PoolConfig,
 ) -> Result<RunningServer, ServerError> {
-    start_full(config, None, registry, pool).await
+    start_full(config, None, registry, pool, false).await
+}
+
+/// Starts a **quiescent** server (ADR-0041): the database, the API and the
+/// listener, but nothing that acts on its own. No job worker pool and no
+/// scheduler (so no scheduled job and no cron fires, and no job is claimed),
+/// no queue push delivery, no outbound webhooks or alert notifications, no
+/// function after-hooks, no realtime dispatch, no vector warm-up, no TLS
+/// renewal, no scheduled drill. A restore drill uses it to look at restored
+/// data without the data doing anything in the world. The caller picks a
+/// loopback address and port `0`, and turns TLS and RESP off.
+pub async fn start_quiescent(config: &Config) -> Result<RunningServer, ServerError> {
+    start_quiescent_with_jobs(config, JobRegistry::new()).await
+}
+
+/// [`start_quiescent`] with handlers registered (they never run: a test
+/// registers one to prove it).
+pub async fn start_quiescent_with_jobs(config: &Config, registry: JobRegistry) -> Result<RunningServer, ServerError> {
+    start_full(config, None, registry, PoolConfig::default(), true).await
 }
 
 /// The startup sequence. Without `origin`, `config` counts as built in code:
@@ -171,6 +189,7 @@ async fn start_full(
     origin: Option<(ConfigOrigin, ConfigSources)>,
     registry: JobRegistry,
     pool: PoolConfig,
+    quiescent: bool,
 ) -> Result<RunningServer, ServerError> {
     // A configuration built in code states its backend on purpose; from the
     // loader, only a layer other than the defaults does (FB-148).
@@ -205,6 +224,7 @@ async fn start_full(
         registry,
         pool,
         tls,
+        quiescent,
     )
     .await;
     match started {
@@ -283,6 +303,7 @@ async fn start_on(
     registry: JobRegistry,
     pool: PoolConfig,
     tls: Option<tls::TlsSetup>,
+    quiescent: bool,
 ) -> Result<RunningServer, ServerError> {
     let tls = tls.map(Arc::new);
     let migrations = match db.migrate(Some(&layout.backups_dir())).await {
@@ -435,6 +456,8 @@ async fn start_on(
         }
     };
     kv.start_background();
+    // The config file a restore drill's child process loads (ADR-0041).
+    let system_config_file = system_config.target_file();
     let opts = RouterOptions {
         request_timeout: Duration::from_secs(config.server.request_timeout_secs),
         ops_access: config.server.ops_access,
@@ -452,7 +475,7 @@ async fn start_on(
             max_connections_per_principal: usize::try_from(config.realtime.max_connections_per_principal)
                 .unwrap_or(usize::MAX),
             // FB-91: off, the outbox is still written and pruned, nothing is delivered.
-            dispatch: config.realtime.enabled,
+            dispatch: config.realtime.enabled && !quiescent,
             ..forgebase_realtime::RealtimeConfig::default()
         },
         None,
@@ -553,6 +576,19 @@ async fn start_on(
         options: moves::options_from(config),
     });
     let registry = moves::register_jobs(registry, moves.clone());
+    // ADR-0041: restore drills run as jobs, in a child process of this executable.
+    let drill_runner = forgebase_backup::drill::DrillRunner::for_current_exe(
+        layout.root(),
+        Some(system_config_file.as_path()).filter(|p| p.is_file()),
+    );
+    let registry = match &drill_runner {
+        Some(runner) => forgebase_backup::drill::register_jobs(
+            registry,
+            runner.clone(),
+            forgebase_backup::drill::DrillStore::new(layout),
+        ),
+        None => registry,
+    };
     replicas
         .attach(router.clone(), jobs.clone(), state.data().clone())
         .await;
@@ -723,7 +759,9 @@ async fn start_on(
         forgebase_credits::extension(credits.clone()),
         forgebase_customize::extension(customize.clone()),
         forgebase_backup::extension({
-            let service = forgebase_backup::BackupService::new(db.clone(), layout.clone());
+            let service = forgebase_backup::BackupService::new(db.clone(), layout.clone())
+                .with_drills(jobs.clone(), drill_runner.is_some() && !quiescent)
+                .with_tls(config.backup.includes_tls(config.tls.mode));
             match database::pg_source(config, layout, backend, engine.as_deref(), None) {
                 Some(src) => service.with_pg(src),
                 None => service,
@@ -774,6 +812,16 @@ async fn start_on(
         ],
         database_topology: replicas.ops(),
         ..opts
+    };
+    // ADR-0041: the drill gauges come from the history files on every scrape.
+    let state = {
+        let store = forgebase_backup::drill::DrillStore::new(layout);
+        state.with_metrics_collector(move || {
+            let store = store.clone();
+            async move {
+                let _ = tokio::task::spawn_blocking(move || forgebase_backup::drill::publish_metrics(&store)).await;
+            }
+        })
     };
     let state = state.with_metrics_collector(subsystem_gauges(
         jobs.clone(),
@@ -932,7 +980,7 @@ async fn start_on(
                 .await
         }),
     };
-    let tls_tasks = tls.as_ref().map(|t| t.start_background());
+    let tls_tasks = tls.as_ref().filter(|_| !quiescent).map(|t| t.start_background());
     let upkeep = tokio::spawn(async {
         let handle = forgebase_observability::metrics_handle();
         let mut tick = tokio::time::interval(Duration::from_secs(5));
@@ -942,22 +990,37 @@ async fn start_on(
         }
     });
 
-    let job_pool = forgebase_jobs::start_pool(jobs.clone(), registry, pool);
-    // FB-165: schedules pg_cron can express fire from the database; the rest
-    // (and everything on SQLite or without pg_cron) stay on the Rust tick.
-    let pgcron = forgebase_jobs::attach_pgcron_sets(&jobs, &db).await;
-    if let Some(v) = &vector {
-        v.start_background();
-    }
-    if let Some(f) = &functions {
-        f.start_background();
-    }
-    if let Some(q) = &queue {
-        q.start_background();
-    }
-    if let Some(a) = &alerts {
-        a.start_background();
-    }
+    // ADR-0041: a quiescent server starts none of the workers below. Nothing
+    // claims a job, fires a schedule, delivers a push or a webhook, sends an
+    // alert, runs a function hook or renews a certificate.
+    let (job_pool, pgcron) = if quiescent {
+        (None, None)
+    } else {
+        let job_pool = forgebase_jobs::start_pool(jobs.clone(), registry, pool);
+        // FB-165: schedules pg_cron can express fire from the database; the rest
+        // (and everything on SQLite or without pg_cron) stay on the Rust tick.
+        let pgcron = forgebase_jobs::attach_pgcron_sets(&jobs, &db).await;
+        if drill_runner.is_some() {
+            forgebase_backup::drill::sync_schedule(&jobs, config.backup.drill_schedule.as_deref()).await;
+        } else if config.backup.drill_schedule.is_some() {
+            tracing::warn!(
+                "[backup] drill_schedule is set but this server is not the forgebase command: no drill is scheduled"
+            );
+        }
+        if let Some(v) = &vector {
+            v.start_background();
+        }
+        if let Some(f) = &functions {
+            f.start_background();
+        }
+        if let Some(q) = &queue {
+            q.start_background();
+        }
+        if let Some(a) = &alerts {
+            a.start_background();
+        }
+        (Some(job_pool), pgcron)
+    };
 
     tracing::info!(
         %addr,
@@ -967,6 +1030,7 @@ async fn start_on(
         instance_id = %instance.instance_id,
         applied_migrations = migrations.applied.len(),
         disabled = ?forgebase_core::features::disabled(config).iter().map(|f| f.id).collect::<Vec<_>>(),
+        quiescent,
         "forgebase started"
     );
     Ok(RunningServer {
@@ -978,7 +1042,7 @@ async fn start_on(
         task: Some(task),
         upkeep,
         jobs,
-        job_pool: Some(job_pool),
+        job_pool,
         pgcron,
         kv,
         vector,
