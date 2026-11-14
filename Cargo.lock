@@ -1365,16 +1365,20 @@ dependencies = [
 name = "forgebase-bench"
 version = "0.3.5"
 dependencies = [
+ "bytes",
  "criterion",
  "forgebase-auth",
  "forgebase-core",
  "forgebase-data",
  "forgebase-db",
+ "forgebase-entitlements",
+ "forgebase-graph",
  "forgebase-jobs",
  "forgebase-kv",
  "forgebase-policy",
  "forgebase-queue",
  "forgebase-server",
+ "forgebase-storage",
  "forgebase-vector",
  "futures-util",
  "serde_json",

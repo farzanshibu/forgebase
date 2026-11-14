@@ -10,6 +10,9 @@
 //! `FORGEBASE_PG_ENGINE_DIR` in a build without the embedded engine.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+pub mod report;
+pub mod resources;
+
 use std::sync::Arc;
 
 use forgebase_core::config::{DatabaseBackend, PostgresMode};
@@ -90,6 +93,51 @@ impl Rig {
     }
 }
 
+/// Whether the benches run at smoke scale: small data sets, so that
+/// `cargo test -p forgebase-bench --benches` (Criterion's test mode, every
+/// bench once) finishes in seconds. `FB_BENCH_SCALE=full|smoke` decides;
+/// without it a run under `cargo bench` (which passes `--bench`) is full and
+/// anything else is smoke.
+pub fn smoke() -> bool {
+    match std::env::var("FB_BENCH_SCALE").as_deref() {
+        Ok("full") => false,
+        Ok("smoke") => true,
+        _ => !std::env::args().any(|a| a == "--bench"),
+    }
+}
+
+/// `full` at full scale, `small` at smoke scale ([`smoke`]).
+pub fn scaled(full: usize, small: usize) -> usize {
+    if smoke() { small } else { full }
+}
+
+/// A small deterministic generator (xorshift64*), so every run builds the
+/// same data and the numbers compare run to run.
+#[derive(Debug, Clone)]
+pub struct Lcg(u64);
+
+impl Lcg {
+    /// A generator from `seed` (any value; zero is replaced).
+    pub fn new(seed: u64) -> Self {
+        Self(if seed == 0 { 0x9E37_79B9_7F4A_7C15 } else { seed })
+    }
+
+    /// The next 64-bit value.
+    pub fn next_u64(&mut self) -> u64 {
+        let mut x = self.0;
+        x ^= x >> 12;
+        x ^= x << 25;
+        x ^= x >> 27;
+        self.0 = x;
+        x.wrapping_mul(0x2545_F491_4F6C_DD1D)
+    }
+
+    /// A value in `0..n` (`n > 0`).
+    pub fn below(&mut self, n: u64) -> u64 {
+        self.next_u64() % n
+    }
+}
+
 /// Returns the `q`-quantile (0..=1) of `samples` (sorted in place), or zero when empty.
 pub fn percentile(samples: &mut [u64], q: f64) -> u64 {
     if samples.is_empty() {
@@ -126,6 +174,13 @@ mod tests {
         let data = rig.data().await;
         drop(data);
         rig.close().await;
+    }
+
+    #[test]
+    fn generator_is_deterministic() {
+        let (mut a, mut b) = (Lcg::new(7), Lcg::new(7));
+        assert!((0..100).all(|_| a.next_u64() == b.next_u64()));
+        assert!((0..100).all(|_| a.below(10) < 10));
     }
 
     #[test]
