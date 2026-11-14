@@ -1,6 +1,6 @@
 [package]
 name = "forgebase-storage"
-description = "ForgeBase object storage: buckets, objects, local filesystem and S3-compatible drivers, streaming, multipart and resumable uploads, checksums, deduplication, versions, signed URLs, bucket policies, storage quotas and a reconciler."
+description = "ForgeBase object storage: buckets, objects, local filesystem, S3-compatible, Google Cloud Storage and Azure Blob drivers, streaming, multipart and resumable uploads, checksums, deduplication, versions, signed URLs, bucket policies, storage quotas and a reconciler."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,6 +9,7 @@ license.workspace = true
 
 [dependencies]
 axum.workspace = true
+base64.workspace = true
 forgebase-api.workspace = true
 forgebase-auth.workspace = true
 forgebase-core.workspace = true
@@ -19,6 +20,7 @@ forgebase-jobs.workspace = true
 futures-util.workspace = true
 getrandom.workspace = true
 hmac.workspace = true
+ring.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
