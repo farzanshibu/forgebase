@@ -1,8 +1,8 @@
 import { useState, type ReactNode } from "react";
 import { EmptyState } from "../../components/EmptyState";
 import {
-  DEFAULT_LDAP, DEFAULT_TURNSTILE, deleteSmsGateway, deleteSocialProvider, getSmsGateway, listSocialProviders, PROVIDER_KINDS, putRealmIdentity, putSmsGateway, putSocialProvider,
-  SECRET_MASK, TURNSTILE_ACTIONS, type LdapSettings, type ProviderKind, type RealmConfig, type RealmIdentity, type SmsConfig, type SmsProviderType, type SocialProvider, type TurnstileSettings,
+  checkProviderForm, DEFAULT_LDAP, DEFAULT_TURNSTILE, deleteSmsGateway, deleteSocialProvider, getSmsGateway, listSocialProviders, PROVIDER_KIND_INFO, PROVIDER_KINDS, putRealmIdentity, putSmsGateway, putSocialProvider,
+  TURNSTILE_ACTIONS, type LdapSettings, type ProviderKind, type RealmConfig, type RealmIdentity, type SmsConfig, type SmsProviderType, type SocialProvider, type TurnstileSettings,
 } from "../../api";
 import { Button, ConfirmButton } from "../../components/ui";
 import { Sel, Toggle } from "../../components/controls";
@@ -13,7 +13,11 @@ import { notify } from "../../toaster";
 import { ActionError } from "../access/shared";
 import { useRun } from "../access/util";
 import { TableCard, Tag } from "../billing/shared";
-import { Check, Field, MultiPick, Note, Saved } from "./shared";
+import { Check, Field, MultiPick, Note, Saved, SecretInput } from "./shared";
+import { FormField } from "../../components/FormField";
+import { Textarea } from "panelui-web/textarea";
+import { SMS_FIELDS, SMS_PROVIDER_LABEL, checkGateway } from "./gatewayFields";
+import { GatewayFieldInput } from "./EmailProviderPage";
 import { csv, useRealm } from "./util";
 import { Input } from "panelui-web/input";
 import { Badge } from "../../components/StatusBadge";
@@ -89,6 +93,9 @@ function Social({ realm, enabled }: { realm: string; enabled: boolean }) {
   );
 }
 
+/** `key=value` lines to a map (`authorize_params`); a line without `=` is skipped. */
+const parseParams = (text: string): Record<string, string> => Object.fromEntries(text.split("\n").map((l) => l.trim()).filter((l) => l.includes("=")).map((l) => [l.slice(0, l.indexOf("=")).trim(), l.slice(l.indexOf("=") + 1).trim()]));
+
 function ProviderSheet({ open, onOpenChange, realm, existing, onDone }: { open: boolean; onOpenChange: (v: boolean) => void; realm: string; existing?: SocialProvider; onDone: () => void }) {
   const [id, setId] = useState(existing?.id ?? "");
   const [kind, setKind] = useState<ProviderKind>(existing?.kind ?? "google");
@@ -96,6 +103,15 @@ function ProviderSheet({ open, onOpenChange, realm, existing, onDone }: { open: 
   const [secret, setSecret] = useState<string | null>(existing?.client_secret ?? null);
   const [display, setDisplay] = useState(existing?.display_name ?? "");
   const [issuer, setIssuer] = useState(existing?.issuer ?? "");
+  const [tenant, setTenant] = useState(existing?.tenant ?? "");
+  const [baseUrl, setBaseUrl] = useState(existing?.base_url ?? "");
+  const [allowed, setAllowed] = useState((existing?.allowed_tenants ?? []).join(", "));
+  const [params, setParams] = useState(Object.entries(existing?.authorize_params ?? {}).map(([k, v]) => `${k}=${v}`).join("\n"));
+  const info = PROVIDER_KIND_INFO[kind];
+  const wants = (f: "issuer" | "tenant" | "allowed_tenants" | "base_url") => !!info?.fields.includes(f);
+  const authorizeParams = parseParams(params);
+  const allowedList = csv(allowed);
+  const errors = checkProviderForm({ kind, tenant, base_url: baseUrl, allowed_tenants: allowedList, authorize_params: authorizeParams });
   return (
     <CreateSheet
       open={open}
@@ -103,10 +119,14 @@ function ProviderSheet({ open, onOpenChange, realm, existing, onDone }: { open: 
       title={existing ? `Edit provider ${existing.id}` : "New social provider"}
       description={`Realm ${realm}. Copy the client id and secret from the provider's developer console.`}
       submitLabel="Save provider"
-      canSubmit={!!id && !!clientId}
+      canSubmit={!!id && !!clientId && Object.keys(errors).length === 0}
       onSubmit={async () => {
         await putSocialProvider(realm, id, {
           kind, client_id: clientId, client_secret: secret, display_name: display || null, issuer: kind === "oidc" ? issuer || null : null,
+          ...(wants("tenant") ? { tenant: tenant.trim() || null } : {}),
+          ...(wants("base_url") ? { base_url: baseUrl.trim() || null } : {}),
+          ...(wants("allowed_tenants") ? { allowed_tenants: allowedList.length ? allowedList : null } : {}),
+          authorize_params: Object.keys(authorizeParams).length ? authorizeParams : null,
           ...(existing?.apple ? { apple: existing.apple } : {}),
         });
         onDone();
@@ -116,11 +136,29 @@ function ProviderSheet({ open, onOpenChange, realm, existing, onDone }: { open: 
     >
       <div className="grid gap-3 sm:grid-cols-2">
         <Field label="Provider id" help={existing ? "Fixed once created." : "Used in the sign-in URL."}><Input size="sm" aria-label="Provider id" className="font-mono" value={id} disabled={!!existing} onChange={(e) => setId(e.target.value)} placeholder="google" /></Field>
-        <Field label="Kind"><Sel aria-label="Provider kind" value={kind} onChange={(v) => setKind(v as ProviderKind)} options={PROVIDER_KINDS} /></Field>
+        <Field label="Kind" help={info?.help}><Sel aria-label="Provider kind" value={kind} onChange={(v) => setKind(v as ProviderKind)} options={PROVIDER_KINDS.map((k) => ({ value: k, label: PROVIDER_KIND_INFO[k]?.label ?? k }))} /></Field>
         <Field label="Client id" className="sm:col-span-2"><Input size="sm" aria-label="Client id" className="font-mono" value={clientId} onChange={(e) => setClientId(e.target.value)} /></Field>
         <div className="sm:col-span-2"><SecretInput label="Client secret" stored={existing?.client_secret ?? null} onChange={setSecret} /></div>
         <Field label="Display name" help="The button text, such as Google."><Input size="sm" aria-label="Display name" value={display} onChange={(e) => setDisplay(e.target.value)} /></Field>
-        {kind === "oidc" && <Field label="Issuer URL"><Input size="sm" aria-label="Issuer URL" className="font-mono" value={issuer} onChange={(e) => setIssuer(e.target.value)} placeholder="https://accounts.example.com" /></Field>}
+        {wants("issuer") && <Field label="Issuer URL"><Input size="sm" aria-label="Issuer URL" className="font-mono" value={issuer} onChange={(e) => setIssuer(e.target.value)} placeholder="https://accounts.example.com" /></Field>}
+        {wants("tenant") && (
+          <FormField label={kind === "keycloak" ? "Realm" : "Tenant"} required={info?.tenantRequired} help={info?.tenantHelp} error={errors.tenant}>
+            {(p) => <Input {...p} size="sm" className="font-mono" value={tenant} onChange={(e) => setTenant(e.target.value)} placeholder={kind === "microsoft" ? "common" : "my-realm"} />}
+          </FormField>
+        )}
+        {wants("base_url") && (
+          <FormField label={kind === "keycloak" ? "Server URL" : kind === "gitlab" ? "GitLab URL" : "Login host"} required={info?.baseUrlRequired} help={info?.baseUrlHelp} error={errors.base_url}>
+            {(p) => <Input {...p} size="sm" className="font-mono" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder={kind === "keycloak" ? "https://sso.example.com" : kind === "gitlab" ? "https://gitlab.com" : "https://login.microsoftonline.com"} />}
+          </FormField>
+        )}
+        {wants("allowed_tenants") && (
+          <FormField label="Allowed tenants" help="Optional, for common and organizations: the tenant GUIDs allowed to sign in, comma separated. Empty allows any." error={errors.allowed_tenants} className="sm:col-span-2">
+            {(p) => <Input {...p} size="sm" className="font-mono" value={allowed} onChange={(e) => setAllowed(e.target.value)} placeholder="00000000-0000-0000-0000-000000000000" />}
+          </FormField>
+        )}
+        <FormField label="Extra authorize parameters" help="Optional. One name=value per line, such as prompt=select_account or Slack's team=T0123. The protocol parameters (scope, state, redirect_uri and the like) are set by the sign-in flow." error={errors.authorize_params} className="sm:col-span-2">
+          {(p) => <Textarea {...p} size="sm" autoResize={false} spellCheck={false} className="block h-16 w-full font-mono text-xs" value={params} onChange={(e) => setParams(e.target.value)} />}
+        </FormField>
       </div>
     </CreateSheet>
   );
@@ -146,30 +184,30 @@ function SmsGateway({ realm }: { realm: string }) {
 function GatewayForm({ realm, current, onSaved }: { realm: string; current: SmsConfig | null; onSaved: () => void }) {
   const [cfg, setCfg] = useState<SmsConfig>(current ?? { provider: "dev" });
   const [saved, setSaved] = useState(false);
+  const [touched, setTouched] = useState(false);
   const { run, error, busy } = useRun(() => { setSaved(true); onSaved(); });
-  const up = (p: Partial<SmsConfig>) => setCfg({ ...cfg, ...p });
-  const txt = (label: string, key: "account_sid" | "from" | "messaging_service_sid" | "base_url" | "url") => (
-    <Field label={label}><Input size="sm" aria-label={label} className="font-mono" value={cfg[key] ?? ""} onChange={(e) => up({ [key]: e.target.value } as Partial<SmsConfig>)} /></Field>
-  );
+  const fields = SMS_FIELDS[cfg.provider];
+  const errors = checkGateway(fields, cfg as unknown as Record<string, string | null | undefined>);
+  const same = current?.provider === cfg.provider;
+  const up = (key: string, v: string | null) => { setCfg({ ...cfg, [key]: v } as SmsConfig); setTouched(true); };
+  /** Only this gateway's fields, so switching type never sends a stale one. */
+  const body = (): SmsConfig => ({ provider: cfg.provider, ...Object.fromEntries(fields.filter((f) => { const v = (cfg as unknown as Record<string, unknown>)[f.key]; return f.secret ? typeof v === "string" : v != null && String(v).trim() !== ""; }).map((f) => [f.key, (cfg as unknown as Record<string, unknown>)[f.key]])) });
   return (
-    <form aria-label="SMS gateway" className="space-y-3 p-4" onSubmit={(e) => { e.preventDefault(); setSaved(false); void run(() => putSmsGateway(realm, cfg)); }}>
+    <form aria-label="SMS gateway" noValidate className="space-y-3 p-4" onSubmit={(e) => { e.preventDefault(); setTouched(true); setSaved(false); if (Object.keys(errors).length) return; void run(() => putSmsGateway(realm, body())); }}>
       <p className="text-xs text-muted-foreground">{current ? "This realm sends codes through its own gateway." : "No gateway set for this realm: the instance gateway is used."}</p>
       <Field label="Gateway type">
-        <Sel aria-label="Gateway type" value={cfg.provider} onChange={(v) => setCfg({ provider: v as SmsProviderType })} options={[{ value: "dev", label: "Development (writes codes to disk)" }, { value: "twilio", label: "Twilio" }, { value: "webhook", label: "HTTPS webhook" }]} />
+        <Sel aria-label="Gateway type" value={cfg.provider} onChange={(v) => { setCfg({ provider: v as SmsProviderType }); setTouched(false); }} options={(Object.keys(SMS_FIELDS) as SmsProviderType[]).map((t) => ({ value: t, label: SMS_PROVIDER_LABEL[t] }))} />
       </Field>
-      {cfg.provider === "twilio" && (
+      {fields.length > 0 && (
         <div className="grid gap-3 sm:grid-cols-2">
-          {txt("Account SID", "account_sid")}{txt("From number", "from")}{txt("Messaging service SID", "messaging_service_sid")}
-          <SecretInput label="Auth token" stored={cfg.auth_token ?? null} onChange={(v) => up({ auth_token: v })} />
+          {fields.map((f) => (
+            <GatewayFieldInput key={`${cfg.provider}:${f.key}`} f={f} value={(cfg as unknown as Record<string, string | null | undefined>)[f.key]} stored={same ? ((current as unknown as Record<string, string | null | undefined>)[f.key] ?? null) : null} error={touched ? errors[f.key] : undefined} onChange={(v) => up(f.key, v)} />
+          ))}
         </div>
       )}
-      {cfg.provider === "webhook" && (
-        <div className="grid gap-3 sm:grid-cols-2">
-          {txt("Webhook URL", "url")}
-          <SecretInput label="Bearer token" stored={cfg.bearer_token ?? null} onChange={(v) => up({ bearer_token: v })} />
-        </div>
-      )}
+      {cfg.provider !== "dev" && <Note>Numbers must be in E.164 form (+14155550100): the server refuses anything else before calling the gateway.</Note>}
       <ActionError error={error} />
+      {touched && Object.keys(errors).length > 0 && <p role="alert" className="text-xs text-destructive">Fix the fields marked above to save.</p>}
       <div className="flex items-center gap-3">
         <Button type="submit" tone="primary" disabled={busy}>{busy ? "Saving…" : "Save SMS gateway"}</Button>
         <Saved show={saved} />
@@ -193,21 +231,6 @@ function Section({ title, description, badge, ident, reload, render }: { title: 
         </div>
       </form>
     </TableCard>
-  );
-}
-
-/** A write-only secret input: shows whether a secret is stored; empty keeps it, typing replaces it, Clear removes it. */
-function SecretInput({ label, stored, onChange }: { label: string; stored: string | null; onChange: (v: string | null) => void }) {
-  const [v, setV] = useState("");
-  const isSet = stored === SECRET_MASK;
-  return (
-    <Field label={label} help={isSet ? "A value is stored. Type to replace it, or clear it." : "Write-only: never shown again after saving."}>
-      <span className="flex items-center gap-2">
-        <Input size="sm" aria-label={label} type="password" autoComplete="off" value={v} placeholder={isSet ? "set (leave empty to keep)" : "not set"}
-          onChange={(e) => { setV(e.target.value); onChange(e.target.value === "" ? (isSet ? SECRET_MASK : null) : e.target.value); }} />
-        {isSet && <Button aria-label={`Clear ${label}`} onClick={() => { setV(""); onChange(""); }}>Clear</Button>}
-      </span>
-    </Field>
   );
 }
 
