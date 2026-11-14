@@ -105,8 +105,18 @@ export const STUDIOS: Studio[] = [
   // Operate
   {
     path: "system", label: "System", title: "System", group: "operate", docs: "docs/deployment.md",
-    summary: "Server health, version and backups.",
-    tabs: [{ to: "/system", label: "Health" }, { to: "/system/topology", label: "Database topology" }, { to: "/system/backups", label: "Backups" }],
+    summary: "Server health, version, certificate, the engine behind each feature, and backups.",
+    tabs: [{ to: "/system", label: "Health" }, { to: "/system/capabilities", label: "Capabilities" }, { to: "/system/topology", label: "Database topology" }, { to: "/system/backups", label: "Backups" }],
+  },
+  {
+    path: "alerts", label: "Alerts", title: "Alerts and SLOs", term: "slo", group: "operate", docs: "docs/observability.md", feature: "alerts",
+    summary: "Firing alerts, rules, silences, notifiers and service level objectives with error budgets.",
+    tabs: [{ to: "/alerts", label: "Alerts" }, { to: "/alerts/history", label: "History" }, { to: "/alerts/rules", label: "Rules" }, { to: "/alerts/silences", label: "Silences" }, { to: "/alerts/notifiers", label: "Notifiers" }, { to: "/alerts/slos", label: "SLOs" }],
+  },
+  {
+    path: "insights", label: "Insights", title: "Insights", group: "operate", docs: "docs/adr/0036-ops-insights.md",
+    summary: "Slow statements and regressions, usage with estimated cost, function profiles and the audit trail.",
+    tabs: [{ to: "/insights", label: "Statements" }, { to: "/insights/regressions", label: "Regressions" }, { to: "/insights/slow", label: "Slow log" }, { to: "/insights/usage", label: "Usage and cost" }, { to: "/insights/functions", label: "Functions" }, { to: "/insights/audit", label: "Audit" }],
   },
   { path: "system/features", label: "Features and settings", title: "Features and settings", group: "operate", docs: "docs/adr/0026-first-run-setup-and-feature-configuration.md", summary: "Switch server features on or off and change their settings." },
 ];
@@ -160,7 +170,7 @@ export function isStudioDisabled(s: Studio, features: ServerFeature[] | undefine
 }
 
 /** Studios that change the whole server: a realm administrator (FB-137) does not see them (their pages say "for platform administrators"). */
-export const PLATFORM_ONLY: readonly string[] = ["billing", "system", "system/features"];
+export const PLATFORM_ONLY: readonly string[] = ["billing", "system", "system/features", "alerts", "insights"];
 
 /**
  * The studios the nav and the palette show: every studio whose feature is on. A realm administrator (`platform:
