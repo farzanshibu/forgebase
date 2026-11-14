@@ -27,8 +27,8 @@ use crate::password::PasswordHasher;
 use crate::store::{self, Tx, first, i, ot, read, rfc3339, rows, t};
 use crate::{AuthConfig, AuthError, AuthMethod, Authenticated, CredentialKind, Subject};
 
-pub(crate) use flows::normalize_email;
 pub use audit_search::{AUDIT_PAGE_MAX, AuditPage, AuditRelated, AuditSearch, AuditSummary};
+pub(crate) use flows::normalize_email;
 pub use flows::{LoginOptions, LoginOutcome, TotpSetup, UserView};
 pub use impersonation::{ImpersonationGrant, ImpersonationView};
 pub use machine::{ADMIN_PASSWORD_MIN, AdminView, ApiKeyView, BoundKey, CreatedKey, KeyOptions, ServiceAccountView};

@@ -236,14 +236,23 @@ impl InsightsService {
     pub(crate) async fn prune(&self, now: i64) -> Result<()> {
         let cutoff = now - i64::from(self.inner.cfg.retention_days) * 86_400_000;
         self.write(vec![
-            Statement::new("DELETE FROM _forgebase_stmt_stats WHERE bucket_start < ?1", vec![cutoff.into()]),
-            Statement::new("DELETE FROM _forgebase_slow_statements WHERE at < ?1", vec![cutoff.into()]),
+            Statement::new(
+                "DELETE FROM _forgebase_stmt_stats WHERE bucket_start < ?1",
+                vec![cutoff.into()],
+            ),
+            Statement::new(
+                "DELETE FROM _forgebase_slow_statements WHERE at < ?1",
+                vec![cutoff.into()],
+            ),
             Statement::new(
                 "DELETE FROM _forgebase_slow_statements WHERE id <= (
                      SELECT id FROM _forgebase_slow_statements ORDER BY id DESC LIMIT 1 OFFSET 20000)",
                 vec![],
             ),
-            Statement::new("DELETE FROM _forgebase_fn_stats WHERE bucket_start < ?1", vec![cutoff.into()]),
+            Statement::new(
+                "DELETE FROM _forgebase_fn_stats WHERE bucket_start < ?1",
+                vec![cutoff.into()],
+            ),
             // Daily tenant usage is kept for 400 days whatever the retention:
             // a billing year plus a month of margin.
             Statement::new(

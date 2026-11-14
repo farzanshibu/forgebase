@@ -322,11 +322,14 @@ impl FnProfiler {
     /// Folds one finished execution into the aggregates.
     pub fn record(&self, f: &Finished<'_>) {
         let mut g = self.inner.lock().unwrap_or_else(|p| p.into_inner());
-        let a = g.functions.entry((f.function.to_owned(), f.version)).or_insert_with(|| FnAggregate {
-            function: f.function.to_owned(),
-            version: f.version,
-            ..FnAggregate::default()
-        });
+        let a = g
+            .functions
+            .entry((f.function.to_owned(), f.version))
+            .or_insert_with(|| FnAggregate {
+                function: f.function.to_owned(),
+                version: f.version,
+                ..FnAggregate::default()
+            });
         a.invocations += 1;
         if f.is_error() {
             a.errors += 1;
@@ -408,7 +411,11 @@ mod tests {
         let mut p = Profile::new(true);
         for i in 0..(MAX_TIMELINE + 5) {
             let t = p.begin();
-            p.end(t, canonical_op(if i % 2 == 0 { "db.get" } else { "fetch" }), i % 10 != 0);
+            p.end(
+                t,
+                canonical_op(if i % 2 == 0 { "db.get" } else { "fetch" }),
+                i % 10 != 1,
+            );
         }
         p.memory(4096);
         p.memory(1024);
@@ -439,7 +446,15 @@ mod tests {
         assert_eq!(a.host["kv"].count, 3);
         assert_eq!((a.fuel_total, a.fuel_limit, a.fuel_max), (300, 1_000, 100));
         assert_eq!(a.sketch.count(), 3);
-        assert_eq!(d.tenants, vec![TenantFnUsage { tenant: "env1".into(), invocations: 2, compute_ms: 10, fuel: 200 }]);
+        assert_eq!(
+            d.tenants,
+            vec![TenantFnUsage {
+                tenant: "env1".into(),
+                invocations: 2,
+                compute_ms: 10,
+                fuel: 200
+            }]
+        );
         assert!(prof.drain().functions.is_empty());
         let j = finished(&p, "ok", true, None).detail_json();
         assert_eq!(j["cold_start"], true);

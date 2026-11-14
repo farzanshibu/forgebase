@@ -120,7 +120,11 @@ async fn statements_group_by_shape_and_slow_ones_keep_no_values() {
     let env = Env::with(|c| c.observability.slow_query_ms = 15).await;
     let admin = env.admin("stmt-admin@example.com").await;
     let db = env.server.database();
-    for (n, lit) in [(300_000, "hunter2-first"), (310_000, "hunter2-second"), (320_000, "hunter2-third")] {
+    for (n, lit) in [
+        (300_000, "hunter2-first"),
+        (310_000, "hunter2-second"),
+        (320_000, "hunter2-third"),
+    ] {
         db.fetch_all(&Statement::raw(heavy(n, lit))).await.unwrap();
     }
     let f = env.as_(&admin, "POST", "/api/v1/insights/flush", &[], None).await;
@@ -143,19 +147,32 @@ async fn statements_group_by_shape_and_slow_ones_keep_no_values() {
     let detail = ok_json(&env, &admin, &format!("/api/v1/insights/queries/{fp}")).await;
     assert_eq!(detail["calls"], 3);
     assert!(!detail["series"].as_array().unwrap().is_empty());
-    assert_eq!(get(&env, &admin, "/api/v1/insights/queries/0123456789abcdef").await.status, 404);
+    assert_eq!(
+        get(&env, &admin, "/api/v1/insights/queries/0123456789abcdef")
+            .await
+            .status,
+        404
+    );
 
     // The slow statement log lists them, redacted, and never the values.
     let slow = get(&env, &admin, "/api/v1/insights/slow-queries?q=recursive").await;
     assert_eq!(slow.status, 200, "{}", slow.text());
-    assert!(!slow.text().contains("hunter2"), "no literal value in the slow log: {}", slow.text());
+    assert!(
+        !slow.text().contains("hunter2"),
+        "no literal value in the slow log: {}",
+        slow.text()
+    );
     let entries = slow.json()["items"].as_array().unwrap().clone();
     assert!(!entries.is_empty(), "{}", slow.text());
     assert!(entries.iter().all(|e| e["duration_ms"].as_f64().unwrap() >= 15.0));
     assert!(entries[0]["statement"].as_str().unwrap().contains("with recursive"));
     // The Prometheus counter by area is exported.
     let metrics = env.as_(&admin, "GET", "/metrics", &[], None).await;
-    assert!(metrics.text().contains("forgebase_db_slow_statements_total{"), "{}", &metrics.text()[..200.min(metrics.text().len())]);
+    assert!(
+        metrics.text().contains("forgebase_db_slow_statements_total{"),
+        "{}",
+        &metrics.text()[..200.min(metrics.text().len())]
+    );
     env.shutdown().await;
 }
 
@@ -206,7 +223,12 @@ async fn a_slowdown_is_reported_as_a_regression_against_the_baseline() {
     for i in 0..25 {
         db.fetch_all(&Statement::raw(probe(200_000 + i))).await.unwrap();
     }
-    let r = ok_json(&env, &admin, "/api/v1/insights/queries/regressions?window=1800&baseline=43200&min_calls=20").await;
+    let r = ok_json(
+        &env,
+        &admin,
+        "/api/v1/insights/queries/regressions?window=1800&baseline=43200&min_calls=20",
+    )
+    .await;
     let items = r["items"].as_array().unwrap();
     let fp = fingerprint_id(backend_name(&env), &probe(1));
     let hit = items
@@ -218,10 +240,26 @@ async fn a_slowdown_is_reported_as_a_regression_against_the_baseline() {
     assert_eq!(hit["baseline"]["calls"], 180);
     assert!(hit["recent"]["p95_ms"].as_f64().unwrap() > hit["baseline"]["p95_ms"].as_f64().unwrap());
     // Too few runs, or a higher bar: not reported.
-    let none = ok_json(&env, &admin, "/api/v1/insights/queries/regressions?window=1800&baseline=43200&min_calls=1000").await;
+    let none = ok_json(
+        &env,
+        &admin,
+        "/api/v1/insights/queries/regressions?window=1800&baseline=43200&min_calls=1000",
+    )
+    .await;
     assert!(none["items"].as_array().unwrap().is_empty());
-    let none = ok_json(&env, &admin, "/api/v1/insights/queries/regressions?window=1800&baseline=43200&min_ratio=100000").await;
-    assert!(none["items"].as_array().unwrap().iter().all(|i| i["kind"] != "latency" || i["fingerprint"] != fp.as_str()));
+    let none = ok_json(
+        &env,
+        &admin,
+        "/api/v1/insights/queries/regressions?window=1800&baseline=43200&min_ratio=100000",
+    )
+    .await;
+    assert!(
+        none["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|i| i["kind"] != "latency" || i["fingerprint"] != fp.as_str())
+    );
     // A window that ends before the slowdown sees the baseline only.
     let until = forgebase_insights::iso(now - 3_600_000);
     let before = ok_json(
@@ -230,7 +268,13 @@ async fn a_slowdown_is_reported_as_a_regression_against_the_baseline() {
         &format!("/api/v1/insights/queries/regressions?window=1800&baseline=43200&until={until}"),
     )
     .await;
-    assert!(before["items"].as_array().unwrap().iter().all(|i| i["fingerprint"] != fp.as_str()));
+    assert!(
+        before["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|i| i["fingerprint"] != fp.as_str())
+    );
     env.shutdown().await;
 }
 
@@ -337,7 +381,9 @@ async fn tenant_usage_matches_the_seeded_numbers_and_prices_come_from_the_catalo
     let cid = env
         .server
         .database()
-        .fetch_all(&Statement::raw("SELECT id FROM _forgebase_vector_collections WHERE name = 'docs'"))
+        .fetch_all(&Statement::raw(
+            "SELECT id FROM _forgebase_vector_collections WHERE name = 'docs'",
+        ))
         .await
         .unwrap()
         .rows[0][0]
@@ -354,7 +400,12 @@ async fn tenant_usage_matches_the_seeded_numbers_and_prices_come_from_the_catalo
     let kv = env.server.kv();
     let tenant_ctx = AccessContext::system().with_tenant("env-b1");
     for k in ["k1", "k2", "k3"] {
-        kv.exec(&tenant_ctx, "app", &[b"SET".to_vec(), k.as_bytes().to_vec(), b"value".to_vec()]).unwrap();
+        kv.exec(
+            &tenant_ctx,
+            "app",
+            &[b"SET".to_vec(), k.as_bytes().to_vec(), b"value".to_vec()],
+        )
+        .unwrap();
     }
     kv.flush().await.unwrap();
     sql(
@@ -478,12 +529,19 @@ async fn tenant_usage_matches_the_seeded_numbers_and_prices_come_from_the_catalo
         .await
         .unwrap();
 
-    let r = env.as_(&admin, "POST", "/api/v1/insights/usage/rollup", &[], None).await;
+    let r = env
+        .as_(&admin, "POST", "/api/v1/insights/usage/rollup", &[], None)
+        .await;
     assert_eq!(r.status, 200, "{}", r.text());
     assert!(r.json()["values"].as_u64().unwrap() >= 10, "{}", r.text());
 
     // Per environment: resources.
-    let by_env = ok_json(&env, &admin, "/api/v1/insights/usage?period=month&group_by=environment&limit=100").await;
+    let by_env = ok_json(
+        &env,
+        &admin,
+        "/api/v1/insights/usage?period=month&group_by=environment&limit=100",
+    )
+    .await;
     assert_eq!(by_env["estimate"], true);
     let a1 = row(&by_env, "env-a1");
     assert_eq!(a1["metrics"]["storage.bytes"]["value"], 3500);
@@ -494,7 +552,7 @@ async fn tenant_usage_matches_the_seeded_numbers_and_prices_come_from_the_catalo
     assert_eq!(a1["org"], "org-a");
     assert_eq!(a1["project"], "proj-a");
     assert_eq!(a1["metrics"]["storage.bytes"]["kind"], "gauge");
-    
+
     let a2 = row(&by_env, "env-a2");
     assert_eq!(a2["metrics"]["storage.bytes"]["value"], 400);
     assert_eq!(a2["metrics"]["functions.invocations"]["value"], 3);
@@ -505,10 +563,18 @@ async fn tenant_usage_matches_the_seeded_numbers_and_prices_come_from_the_catalo
     // Metering rows are not attributed to an environment.
     let metered = row(&by_env, "org-a");
     assert_eq!(metered["attributed"], false);
-    assert_eq!(metered["metrics"]["usage.api.requests"]["value"], 1000, "last month's 9999 is outside");
+    assert_eq!(
+        metered["metrics"]["usage.api.requests"]["value"], 1000,
+        "last month's 9999 is outside"
+    );
 
     // Per organization: environments and metering add up; the cost uses the catalog price.
-    let by_org = ok_json(&env, &admin, "/api/v1/insights/usage?period=month&group_by=org&sort=usage.api.requests").await;
+    let by_org = ok_json(
+        &env,
+        &admin,
+        "/api/v1/insights/usage?period=month&group_by=org&sort=usage.api.requests",
+    )
+    .await;
     let a = row(&by_org, "org-a");
     assert_eq!(a["name"], "Acme");
     assert_eq!(a["metrics"]["storage.bytes"]["value"], 3900);
@@ -519,17 +585,37 @@ async fn tenant_usage_matches_the_seeded_numbers_and_prices_come_from_the_catalo
     assert_eq!(cost["amount_minor"], 3000, "1000 units at 3 cents: {cost}");
     assert_eq!(cost["amount"], "30.00");
     assert_eq!(cost["credits"], 200, "1000 units at 2 credits per 10: {cost}");
-    let line = cost["lines"].as_array().unwrap().iter().find(|l| l["metric"] == "usage.api.requests").unwrap();
+    let line = cost["lines"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|l| l["metric"] == "usage.api.requests")
+        .unwrap();
     assert_eq!(line["price"], "api-metered");
     // Sorted largest first, the personal subject last.
-    let ids: Vec<&str> = by_org["items"].as_array().unwrap().iter().map(|r| r["id"].as_str().unwrap()).collect();
+    let ids: Vec<&str> = by_org["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["id"].as_str().unwrap())
+        .collect();
     assert_eq!(ids.first(), Some(&"org-a"), "{ids:?}");
     assert_eq!(row(&by_org, "org-b")["cost"]["amount_minor"], 150);
     assert_eq!(row(&by_org, "user:users/ann")["cost"]["amount_minor"], 33);
 
     // Top N by a metric, by cost, and by a bad metric.
-    let top = ok_json(&env, &admin, "/api/v1/insights/usage/top?metric=storage.bytes&n=2&group_by=environment").await;
-    let top_ids: Vec<&str> = top["items"].as_array().unwrap().iter().map(|r| r["id"].as_str().unwrap()).collect();
+    let top = ok_json(
+        &env,
+        &admin,
+        "/api/v1/insights/usage/top?metric=storage.bytes&n=2&group_by=environment",
+    )
+    .await;
+    let top_ids: Vec<&str> = top["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["id"].as_str().unwrap())
+        .collect();
     assert_eq!(top_ids, ["env-b1", "env-a1"]);
     let top_cost = ok_json(&env, &admin, "/api/v1/insights/usage/top?metric=cost&n=1&group_by=org").await;
     assert_eq!(top_cost["items"][0]["id"], "org-a");
@@ -539,25 +625,66 @@ async fn tenant_usage_matches_the_seeded_numbers_and_prices_come_from_the_catalo
     let realm = ok_json(&env, &admin, "/api/v1/insights/usage?period=month&group_by=realm").await;
     assert_eq!(row(&realm, "default")["metrics"]["storage.bytes"]["value"], 93_900);
     let today = forgebase_insights::iso(now).split('T').next().unwrap().to_owned();
-    let day = ok_json(&env, &admin, &format!("/api/v1/insights/usage?period=day&date={today}&group_by=project")).await;
+    let day = ok_json(
+        &env,
+        &admin,
+        &format!("/api/v1/insights/usage?period=day&date={today}&group_by=project"),
+    )
+    .await;
     assert_eq!(row(&day, "proj-a")["metrics"]["storage.bytes"]["value"], 3900);
-    let tomorrow = forgebase_insights::iso(now + 86_400_000).split('T').next().unwrap().to_owned();
-    let custom = ok_json(&env, &admin, &format!("/api/v1/insights/usage?from={today}&to={tomorrow}&group_by=org")).await;
+    let tomorrow = forgebase_insights::iso(now + 86_400_000)
+        .split('T')
+        .next()
+        .unwrap()
+        .to_owned();
+    let custom = ok_json(
+        &env,
+        &admin,
+        &format!("/api/v1/insights/usage?from={today}&to={tomorrow}&group_by=org"),
+    )
+    .await;
     let too_long = get(&env, &admin, "/api/v1/insights/usage?from=2020-01-01&to=2100-01-01").await;
     assert_eq!(too_long.status, 400);
     assert_eq!(too_long.code(), "invalid_range");
     assert_eq!(row(&custom, "org-a")["metrics"]["usage.api.requests"]["value"], 1000);
-    let series = ok_json(&env, &admin, &format!("/api/v1/insights/usage/series?scope=env:env-a1&from={today}")).await;
+    let series = ok_json(
+        &env,
+        &admin,
+        &format!("/api/v1/insights/usage/series?scope=env:env-a1&from={today}"),
+    )
+    .await;
     assert_eq!(series["metrics"]["storage.bytes"][0][1], 3500);
     // A currency with no price: no cost, but the quantities stay.
-    let eur = ok_json(&env, &admin, "/api/v1/insights/usage?period=month&group_by=org&currency=EUR").await;
-    assert!(row(&eur, "org-a")["cost"]["lines"].as_array().unwrap().iter().all(|l| l["amount_minor"].is_null()));
+    let eur = ok_json(
+        &env,
+        &admin,
+        "/api/v1/insights/usage?period=month&group_by=org&currency=EUR",
+    )
+    .await;
+    assert!(
+        row(&eur, "org-a")["cost"]["lines"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|l| l["amount_minor"].is_null())
+    );
     // Paging.
-    let page = ok_json(&env, &admin, "/api/v1/insights/usage?period=month&group_by=environment&limit=1&offset=1").await;
+    let page = ok_json(
+        &env,
+        &admin,
+        "/api/v1/insights/usage?period=month&group_by=environment&limit=1&offset=1",
+    )
+    .await;
     assert_eq!(page["items"].as_array().unwrap().len(), 1);
     assert!(page["total"].as_u64().unwrap() >= 4);
     let metrics = ok_json(&env, &admin, "/api/v1/insights/usage/metrics").await;
-    assert!(metrics["items"].as_array().unwrap().iter().any(|m| m["key"] == "storage.bytes" && m["kind"] == "gauge"));
+    assert!(
+        metrics["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|m| m["key"] == "storage.bytes" && m["kind"] == "gauge")
+    );
     env.shutdown().await;
 }
 
@@ -584,12 +711,17 @@ async fn function_profiles_show_host_calls_and_cold_starts() {
     // A restart would find the script uncached: forget it.
     env.server.functions().unwrap().evict_caches();
     for _ in 0..3 {
-        let r = env.as_(&admin, "POST", "/api/v1/functions/prof/invoke", &[], Some(json!({}))).await;
+        let r = env
+            .as_(&admin, "POST", "/api/v1/functions/prof/invoke", &[], Some(json!({})))
+            .await;
         assert_eq!(r.status, 200, "{}", r.text());
     }
     let list = ok_json(&env, &admin, "/api/v1/insights/functions?function=prof").await;
     let f = &list["items"][0];
-    assert_eq!((f["function"].as_str(), f["invocations"].as_u64(), f["errors"].as_u64()), (Some("prof"), Some(3), Some(0)));
+    assert_eq!(
+        (f["function"].as_str(), f["invocations"].as_u64(), f["errors"].as_u64()),
+        (Some("prof"), Some(3), Some(0))
+    );
     assert_eq!(f["cold_starts"], 1);
     assert_eq!(f["host"][0]["op"], "kv");
     assert_eq!(f["host"][0]["count"], 6);
@@ -597,16 +729,36 @@ async fn function_profiles_show_host_calls_and_cold_starts() {
     assert!(f["p95_ms"].as_f64().unwrap() > 0.0);
     assert!(f["memory_max_bytes"].as_u64().unwrap() > 0);
     // Per invocation, newest first, with the timeline.
-    let inv = ok_json(&env, &admin, "/api/v1/insights/functions/invocations?function=prof&limit=2").await;
+    let inv = ok_json(
+        &env,
+        &admin,
+        "/api/v1/insights/functions/invocations?function=prof&limit=2",
+    )
+    .await;
     assert_eq!(inv["items"].as_array().unwrap().len(), 2);
     assert!(inv["next_cursor"].is_i64(), "{inv}");
     let first = &inv["items"][0];
     assert_eq!(first["trigger"], "http");
     assert_eq!(first["profile"]["timeline"][0]["op"], "kv");
-    let one = ok_json(&env, &admin, &format!("/api/v1/insights/functions/invocations/{}", first["id"])).await;
+    let one = ok_json(
+        &env,
+        &admin,
+        &format!("/api/v1/insights/functions/invocations/{}", first["id"]),
+    )
+    .await;
     assert_eq!(one["id"], first["id"]);
-    let all = ok_json(&env, &admin, "/api/v1/insights/functions/invocations?function=prof&limit=10").await;
-    let profiles: Vec<bool> = all["items"].as_array().unwrap().iter().map(|i| i["profile"]["cold_start"].as_bool().unwrap()).collect();
+    let all = ok_json(
+        &env,
+        &admin,
+        "/api/v1/insights/functions/invocations?function=prof&limit=10",
+    )
+    .await;
+    let profiles: Vec<bool> = all["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| i["profile"]["cold_start"].as_bool().unwrap())
+        .collect();
     assert_eq!(profiles.iter().filter(|c| **c).count(), 1, "{profiles:?}");
     let detail = ok_json(&env, &admin, "/api/v1/insights/functions/prof").await;
     assert_eq!(detail["versions"][0]["invocations"], 3);
@@ -621,10 +773,18 @@ async fn function_profiles_show_host_calls_and_cold_starts() {
 
 #[allow(clippy::too_many_arguments)]
 async fn audit_row(env: &Env, at: i64, event: &str, outcome: &str, actor: &str, ip: &str, rid: &str, detail: &str) {
+    // `detail` is `jsonb` on PostgreSQL.
+    let detail_sql = if backend_name(env) == "postgres" {
+        "CAST(?9 AS jsonb)"
+    } else {
+        "?9"
+    };
     sql(
         env,
-        "INSERT INTO _forgebase_auth_audit (at, event, outcome, actor, subject_type, collection, subject_id, ip, user_agent, request_id, detail, realm)
-         VALUES (?1, ?2, ?3, ?4, 'user', 'users', ?5, ?6, ?7, ?8, CAST(?9 AS TEXT), 'default')",
+        &format!(
+            "INSERT INTO _forgebase_auth_audit (at, event, outcome, actor, subject_type, collection, subject_id, ip, user_agent, request_id, detail, realm)
+             VALUES (?1, ?2, ?3, ?4, 'user', 'users', ?5, ?6, ?7, ?8, {detail_sql}, 'default')"
+        ),
         vec![
             at.into(),
             event.into(),
@@ -658,22 +818,80 @@ async fn audit_search_pages_exports_and_relates_events() {
     assert_eq!(bad.status, 401, "{}", bad.text());
     let real = ok_json(&env, &admin, "/api/v1/insights/audit?outcome=failure&action=login").await;
     assert!(!real["items"].as_array().unwrap().is_empty(), "{real}");
-    assert!(real["items"].as_array().unwrap().iter().all(|e| e["outcome"] == "failure" && e["event"].as_str().unwrap().starts_with("login")));
+    assert!(
+        real["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|e| e["outcome"] == "failure" && e["event"].as_str().unwrap().starts_with("login"))
+    );
 
     // Seeded rows for exact assertions (Unix seconds, far from the real ones).
     let t0 = 1_700_000_000;
     let rows = [
-        (t0, "api_key.create", "success", "service_account:sa1", "10.0.0.1", "rq-A", r#"{"name":"deploy-key"}"#),
-        (t0 + 10, "api_key.use", "success", "service_account:sa1", "10.0.0.1", "rq-B", r#"{"scope":"read"}"#),
-        (t0 + 20, "login", "failure", "user:users/u1", "10.0.0.2", "rq-C", r#"{"reason":"bad_password"}"#),
-        (t0 + 25, "mfa.verify", "failure", "user:users/u1", "10.0.0.2", "rq-C", r#"{"reason":"bad_code"}"#),
-        (t0 + 30, "login", "success", "user:users/u1", "10.0.0.2", "rq-D", r#"{}"#),
-        (t0 + 4000, "login", "success", "admin:a1", "10.0.0.9", "rq-E", r#"{"note":"late, \"quoted\""}"#),
+        (
+            t0,
+            "api_key.create",
+            "success",
+            "service_account:sa1",
+            "10.0.0.1",
+            "rq-A",
+            r#"{"name":"deploy-key"}"#,
+        ),
+        (
+            t0 + 10,
+            "api_key.use",
+            "success",
+            "service_account:sa1",
+            "10.0.0.1",
+            "rq-B",
+            r#"{"scope":"read"}"#,
+        ),
+        (
+            t0 + 20,
+            "login",
+            "failure",
+            "user:users/u1",
+            "10.0.0.2",
+            "rq-C",
+            r#"{"reason":"bad_password"}"#,
+        ),
+        (
+            t0 + 25,
+            "mfa.verify",
+            "failure",
+            "user:users/u1",
+            "10.0.0.2",
+            "rq-C",
+            r#"{"reason":"bad_code"}"#,
+        ),
+        (
+            t0 + 30,
+            "login",
+            "success",
+            "user:users/u1",
+            "10.0.0.2",
+            "rq-D",
+            r#"{}"#,
+        ),
+        (
+            t0 + 4000,
+            "login",
+            "success",
+            "admin:a1",
+            "10.0.0.9",
+            "rq-E",
+            r#"{"note":"late, \"quoted\""}"#,
+        ),
     ];
     for (at, event, outcome, actor, ip, rid, detail) in rows {
         audit_row(&env, at, event, outcome, actor, ip, rid, detail).await;
     }
-    let range = format!("from={}&to={}", forgebase_insights::iso(t0 * 1000), forgebase_insights::iso((t0 + 5000) * 1000));
+    let range = format!(
+        "from={}&to={}",
+        forgebase_insights::iso(t0 * 1000),
+        forgebase_insights::iso((t0 + 5000) * 1000)
+    );
     let count = |j: &Json| j["items"].as_array().unwrap().len();
     let q = |extra: &str| format!("/api/v1/insights/audit?{range}&{extra}");
     assert_eq!(count(&ok_json(&env, &admin, &q("limit=100")).await), 6);
@@ -682,13 +900,34 @@ async fn audit_search_pages_exports_and_relates_events() {
     assert_eq!(count(&ok_json(&env, &admin, &q("actor_type=user")).await), 3);
     assert_eq!(count(&ok_json(&env, &admin, &q("actor_type=admin")).await), 1);
     assert_eq!(count(&ok_json(&env, &admin, &q("action=api_key.")).await), 2);
-    assert_eq!(count(&ok_json(&env, &admin, &q("action=login&outcome=failure")).await), 1);
+    assert_eq!(
+        count(&ok_json(&env, &admin, &q("action=login&outcome=failure")).await),
+        1
+    );
     assert_eq!(count(&ok_json(&env, &admin, &q("ip=10.0.0.2")).await), 3);
     assert_eq!(count(&ok_json(&env, &admin, &q("request_id=rq-C")).await), 2);
-    assert_eq!(count(&ok_json(&env, &admin, &q("resource_type=user&collection=users&resource_id=res-1")).await), 6);
-    assert_eq!(count(&ok_json(&env, &admin, &q("q=DEPLOY-key")).await), 1, "free text is case-insensitive");
+    assert_eq!(
+        count(
+            &ok_json(
+                &env,
+                &admin,
+                &q("resource_type=user&collection=users&resource_id=res-1")
+            )
+            .await
+        ),
+        6
+    );
+    assert_eq!(
+        count(&ok_json(&env, &admin, &q("q=DEPLOY-key")).await),
+        1,
+        "free text is case-insensitive"
+    );
     assert_eq!(count(&ok_json(&env, &admin, &q("q=bad_")).await), 2);
-    assert_eq!(count(&ok_json(&env, &admin, &q("q=100%25")).await), 0, "% is not a wildcard");
+    assert_eq!(
+        count(&ok_json(&env, &admin, &q("q=100%25")).await),
+        0,
+        "% is not a wildcard"
+    );
     let narrow = format!(
         "/api/v1/insights/audit?from={}&to={}",
         forgebase_insights::iso(t0 * 1000),
@@ -719,17 +958,43 @@ async fn audit_search_pages_exports_and_relates_events() {
     // Related events: the same request, and the same actor around it.
     let c1 = ok_json(&env, &admin, &q("request_id=rq-C&order=asc")).await;
     let id = c1["items"][0]["id"].as_i64().unwrap();
-    let rel = ok_json(&env, &admin, &format!("/api/v1/insights/audit/{id}/related?window_secs=60")).await;
+    let rel = ok_json(
+        &env,
+        &admin,
+        &format!("/api/v1/insights/audit/{id}/related?window_secs=60"),
+    )
+    .await;
     assert_eq!(rel["event"]["id"], id);
     assert_eq!(rel["same_request"].as_array().unwrap().len(), 1);
     assert_eq!(rel["same_request"][0]["event"], "mfa.verify");
-    assert_eq!(rel["same_actor"].as_array().unwrap().len(), 1, "login success 10 s later, same actor: {rel}");
+    assert_eq!(
+        rel["same_actor"].as_array().unwrap().len(),
+        1,
+        "login success 10 s later, same actor: {rel}"
+    );
     assert_eq!(rel["same_actor"][0]["request_id"], "rq-D");
-    let wide = ok_json(&env, &admin, &format!("/api/v1/insights/audit/{id}/related?window_secs=3600")).await;
-    assert_eq!(wide["same_actor"].as_array().unwrap().len(), 1, "the other actors' rows never match");
-    assert_eq!(get(&env, &admin, &format!("/api/v1/insights/audit/{id}")).await.json()["actor"], "user:users/u1");
+    let wide = ok_json(
+        &env,
+        &admin,
+        &format!("/api/v1/insights/audit/{id}/related?window_secs=3600"),
+    )
+    .await;
+    assert_eq!(
+        wide["same_actor"].as_array().unwrap().len(),
+        1,
+        "the other actors' rows never match"
+    );
+    assert_eq!(
+        get(&env, &admin, &format!("/api/v1/insights/audit/{id}")).await.json()["actor"],
+        "user:users/u1"
+    );
     assert_eq!(get(&env, &admin, "/api/v1/insights/audit/999999999").await.status, 404);
-    assert_eq!(get(&env, &admin, "/api/v1/insights/audit/999999999/related").await.status, 404);
+    assert_eq!(
+        get(&env, &admin, "/api/v1/insights/audit/999999999/related")
+            .await
+            .status,
+        404
+    );
 
     // Summary.
     let sum = ok_json(&env, &admin, &format!("/api/v1/insights/audit/summary?{range}")).await;
@@ -739,18 +1004,32 @@ async fn audit_search_pages_exports_and_relates_events() {
 
     // CSV export, streamed in pages: header plus one record per entry, and a
     // user agent that looks like a formula is neutralised.
-    let csv = env.as_(&admin, "GET", &format!("/api/v1/insights/audit/export?{range}&format=csv"), &[], None).await;
+    let csv = env
+        .as_(
+            &admin,
+            "GET",
+            &format!("/api/v1/insights/audit/export?{range}&format=csv"),
+            &[],
+            None,
+        )
+        .await;
     assert_eq!(csv.status, 200);
     assert!(csv.header("content-type").unwrap().starts_with("text/csv"));
     assert!(csv.header("content-disposition").unwrap().contains("attachment"));
     let text = csv.text();
     assert!(text.starts_with("id,at,event,outcome,actor,resource_type,collection,resource_id,ip,user_agent,request_id,impersonator,detail\r\n"));
-    assert_eq!(text.matches("\r\n").count(), 1 + 6 + text.matches("late, \"\"quoted").count() * 0, "{text}");
+    assert_eq!(text.matches("\r\n").count(), 1 + 6, "{text}");
     assert!(text.contains("\"'=cmd|"), "formula neutralised: {text}");
     assert!(text.contains("api_key.create,success,service_account:sa1"), "{text}");
     // JSON lines: one object per line, filters apply, oldest first.
     let jl = env
-        .as_(&admin, "GET", &format!("/api/v1/insights/audit/export?{range}&format=jsonl&actor=user:users/u1"), &[], None)
+        .as_(
+            &admin,
+            "GET",
+            &format!("/api/v1/insights/audit/export?{range}&format=jsonl&actor=user:users/u1"),
+            &[],
+            None,
+        )
         .await;
     assert_eq!(jl.status, 200);
     let lines: Vec<Json> = jl.text().lines().map(|l| serde_json::from_str(l).unwrap()).collect();
@@ -758,10 +1037,21 @@ async fn audit_search_pages_exports_and_relates_events() {
     assert!(lines.windows(2).all(|w| w[0]["id"].as_i64() < w[1]["id"].as_i64()));
     assert_eq!(lines[0]["detail"]["reason"], "bad_password");
     let capped = env
-        .as_(&admin, "GET", &format!("/api/v1/insights/audit/export?{range}&format=jsonl&max_rows=2"), &[], None)
+        .as_(
+            &admin,
+            "GET",
+            &format!("/api/v1/insights/audit/export?{range}&format=jsonl&max_rows=2"),
+            &[],
+            None,
+        )
         .await;
     assert_eq!(capped.text().lines().count(), 2);
-    assert_eq!(get(&env, &admin, "/api/v1/insights/audit/export?format=xml").await.status, 400);
+    assert_eq!(
+        get(&env, &admin, "/api/v1/insights/audit/export?format=xml")
+            .await
+            .status,
+        400
+    );
     tokio::time::sleep(Duration::from_millis(1)).await;
     env.shutdown().await;
 }

@@ -87,7 +87,11 @@ impl Acc {
             backend: self.backend.clone(),
             calls: self.calls,
             errors: self.errors,
-            error_rate: r3(if self.calls == 0 { 0.0 } else { self.errors as f64 / self.calls as f64 }),
+            error_rate: r3(if self.calls == 0 {
+                0.0
+            } else {
+                self.errors as f64 / self.calls as f64
+            }),
             writes: self.writes,
             slow: self.slow,
             rows: self.rows,
@@ -509,7 +513,9 @@ impl InsightsService {
         for r in &rows.rows {
             let hour = int(r, 13).div_euclid(HOUR) * HOUR;
             let a = acc_from_row(r);
-            let m = merged.entry((hour, a.fingerprint.clone(), a.backend.clone())).or_default();
+            let m = merged
+                .entry((hour, a.fingerprint.clone(), a.backend.clone()))
+                .or_default();
             m.fingerprint.clone_from(&a.fingerprint);
             m.backend.clone_from(&a.backend);
             m.area.clone_from(&a.area);
@@ -544,7 +550,8 @@ impl InsightsService {
     /// # Errors
     /// A database error.
     pub async fn statement_status(&self) -> Result<StatementStatus> {
-        let c = |sql: &'static str| async move { Ok::<_, InsightsError>(int(&self.fetch(sql, vec![]).await?.rows[0], 0)) };
+        let c =
+            |sql: &'static str| async move { Ok::<_, InsightsError>(int(&self.fetch(sql, vec![]).await?.rows[0], 0)) };
         Ok(StatementStatus {
             enabled: self.inner.stats.enabled(),
             slow_query_ms: self.inner.cfg.slow_query_ms,
@@ -560,7 +567,13 @@ impl InsightsService {
 
     /// Stored buckets starting in `[from, to)` plus, when the range reaches
     /// now, what is still in memory.
-    async fn collect(&self, from: i64, to: i64, area: Option<&str>, backend: Option<&str>) -> Result<Vec<(i64, i64, Acc)>> {
+    async fn collect(
+        &self,
+        from: i64,
+        to: i64,
+        area: Option<&str>,
+        backend: Option<&str>,
+    ) -> Result<Vec<(i64, i64, Acc)>> {
         let rows = self
             .fetch(
                 &format!(
@@ -569,10 +582,19 @@ impl InsightsService {
                        AND (CAST(?3 AS TEXT) IS NULL OR area = ?3) AND (CAST(?4 AS TEXT) IS NULL OR backend = ?4)
                      ORDER BY bucket_start LIMIT {MAX_ROWS}"
                 ),
-                vec![from.into(), to.into(), area.map(str::to_owned).into(), backend.map(str::to_owned).into()],
+                vec![
+                    from.into(),
+                    to.into(),
+                    area.map(str::to_owned).into(),
+                    backend.map(str::to_owned).into(),
+                ],
             )
             .await?;
-        let mut out: Vec<(i64, i64, Acc)> = rows.rows.iter().map(|r| (int(r, 13), int(r, 14), acc_from_row(r))).collect();
+        let mut out: Vec<(i64, i64, Acc)> = rows
+            .rows
+            .iter()
+            .map(|r| (int(r, 13), int(r, 14), acc_from_row(r)))
+            .collect();
         let live_start = self.inner.last_flush_ms.load(Ordering::Relaxed);
         if live_start < to && now_ms() >= from {
             for a in self.inner.stats.peek() {
@@ -591,14 +613,30 @@ impl InsightsService {
     /// A database error, or `invalid_parameter` for an unknown sort.
     pub async fn statement_stats(&self, range: Range, q: &StatementQuery) -> Result<StatementList> {
         let sort = q.sort.as_deref().unwrap_or("total_time");
-        if !["total_time", "calls", "mean", "max", "p50", "p95", "p99", "errors", "rows", "slow"].contains(&sort) {
+        if ![
+            "total_time",
+            "calls",
+            "mean",
+            "max",
+            "p50",
+            "p95",
+            "p99",
+            "errors",
+            "rows",
+            "slow",
+        ]
+        .contains(&sort)
+        {
             return Err(InsightsError::invalid(
                 "invalid_parameter",
                 "sort must be total_time, calls, mean, max, p50, p95, p99, errors, rows or slow",
             ));
         }
         let mut by: HashMap<(String, String), Acc> = HashMap::new();
-        for (_, _, a) in self.collect(range.from_ms, range.to_ms, q.area.as_deref(), q.backend.as_deref()).await? {
+        for (_, _, a) in self
+            .collect(range.from_ms, range.to_ms, q.area.as_deref(), q.backend.as_deref())
+            .await?
+        {
             let m = by.entry((a.fingerprint.clone(), a.backend.clone())).or_default();
             m.fingerprint.clone_from(&a.fingerprint);
             m.backend.clone_from(&a.backend);
@@ -626,7 +664,11 @@ impl InsightsService {
                 _ => s.total_ms,
             }
         };
-        stats.sort_by(|a, b| key(b).total_cmp(&key(a)).then_with(|| a.fingerprint.cmp(&b.fingerprint)));
+        stats.sort_by(|a, b| {
+            key(b)
+                .total_cmp(&key(a))
+                .then_with(|| a.fingerprint.cmp(&b.fingerprint))
+        });
         let total = stats.len();
         let limit = q.limit.clamp(1, 200);
         let items = stats.into_iter().skip(q.offset).take(limit).collect();
@@ -715,7 +757,11 @@ impl InsightsService {
             }
             let (rs, bs) = (WindowStat::of(r), WindowStat::of(b));
             let delta_ms = r3(rs.p95_ms - bs.p95_ms);
-            let ratio = if bs.p95_ms > 0.0 { r3(rs.p95_ms / bs.p95_ms) } else { f64::INFINITY };
+            let ratio = if bs.p95_ms > 0.0 {
+                r3(rs.p95_ms / bs.p95_ms)
+            } else {
+                f64::INFINITY
+            };
             let extra_ms = r3(delta_ms * r.calls as f64);
             let make = |kind: &'static str, ratio: f64| Regression {
                 kind,
@@ -739,7 +785,11 @@ impl InsightsService {
                 items.push(e);
             }
         }
-        items.sort_by(|a, b| b.extra_ms.total_cmp(&a.extra_ms).then_with(|| a.fingerprint.cmp(&b.fingerprint)));
+        items.sort_by(|a, b| {
+            b.extra_ms
+                .total_cmp(&a.extra_ms)
+                .then_with(|| a.fingerprint.cmp(&b.fingerprint))
+        });
         items.truncate(200);
         metrics::gauge!("forgebase_db_regressions").set(items.iter().filter(|i| i.kind == "latency").count() as f64);
         Ok(RegressionReport {

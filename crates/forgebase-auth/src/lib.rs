@@ -69,9 +69,9 @@ pub use password::{Argon2Config, PasswordHasher};
 pub use scopes::Scope;
 pub use service::{
     AUDIT_PAGE_MAX, AdminScope, AdminView, ApiKeyView, AuditEntry, AuditPage, AuditQuery, AuditRelated, AuditSearch,
-    AuditSummary, AuthService, BoundKey, ClientInfo, CreatedKey,
-    IDENTITY_ADMIN, ImpersonationGrant, ImpersonationView, KeyOptions, LoginOptions, LoginOutcome, RealmAdminCheck,
-    ServiceAccountView, SessionTokens, SessionView, TotpSetup, UserView,
+    AuditSummary, AuthService, BoundKey, ClientInfo, CreatedKey, IDENTITY_ADMIN, ImpersonationGrant, ImpersonationView,
+    KeyOptions, LoginOptions, LoginOutcome, RealmAdminCheck, ServiceAccountView, SessionTokens, SessionView, TotpSetup,
+    UserView,
 };
 
 /// Collection name FB-20 used for service-account principals before the data

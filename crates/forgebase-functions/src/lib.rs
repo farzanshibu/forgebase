@@ -54,8 +54,8 @@ pub use http::{extension, openapi, router};
 pub use jobs::{INVOKE_JOB, register_jobs};
 pub use model::{
     CAPABILITIES, DeployRequest, Deployed, ExecutionLog, FunctionInfo, FunctionRuntime, HookEvent, HookSpec,
-    InvocationDetail, InvokeAccess, KvAccess, KvRule, Language, Limits, LimitsInput, LogLine, Outcome, SERVICE_ROLE, SecretInfo, Trigger,
-    VersionConfig, VersionInfo, VersionSource,
+    InvocationDetail, InvokeAccess, KvAccess, KvRule, Language, Limits, LimitsInput, LogLine, Outcome, SERVICE_ROLE,
+    SecretInfo, Trigger, VersionConfig, VersionInfo, VersionSource,
 };
 pub use services::{QueueMessage, QueuePublisher, ServiceError, Services};
 

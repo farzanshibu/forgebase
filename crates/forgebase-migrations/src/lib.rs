@@ -241,8 +241,16 @@ pub static SYSTEM_MIGRATIONS: &[Migration] = &[
         "billing_webhook_deliveries",
         include_str!("../../../migrations/system/0053_billing_webhook_deliveries.sql"),
     ),
-    Migration::new(60, "insights", include_str!("../../../migrations/system/0060_insights.sql")),
-    Migration::new(61, "audit_search", include_str!("../../../migrations/system/0061_audit_search.sql")),
+    Migration::new(
+        60,
+        "insights",
+        include_str!("../../../migrations/system/0060_insights.sql"),
+    ),
+    Migration::new(
+        61,
+        "audit_search",
+        include_str!("../../../migrations/system/0061_audit_search.sql"),
+    ),
 ];
 
 /// A migration recorded as applied in the database.

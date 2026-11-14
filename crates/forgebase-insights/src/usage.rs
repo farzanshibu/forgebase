@@ -38,7 +38,13 @@ use crate::error::{InsightsError, Result};
 use crate::util::{Range, day_of, int, iso, now_ms, opt_text, text};
 
 /// Resource snapshots: the value of the last day in a period is shown, with the peak.
-const GAUGES: &[&str] = &["storage.bytes", "storage.objects", "kv.keys", "kv.bytes", "vector.items"];
+const GAUGES: &[&str] = &[
+    "storage.bytes",
+    "storage.objects",
+    "kv.keys",
+    "kv.bytes",
+    "vector.items",
+];
 
 /// What a built-in metric is.
 #[derive(Debug, Clone, Serialize, ToSchema)]
@@ -66,18 +72,84 @@ pub fn builtin_metrics() -> Vec<MetricInfo> {
         source,
     };
     vec![
-        m("storage.bytes", "gauge", "bytes", "Bytes of current objects in the environment's buckets", "daily rollup"),
-        m("storage.objects", "gauge", "objects", "Current objects in the environment's buckets", "daily rollup"),
+        m(
+            "storage.bytes",
+            "gauge",
+            "bytes",
+            "Bytes of current objects in the environment's buckets",
+            "daily rollup",
+        ),
+        m(
+            "storage.objects",
+            "gauge",
+            "objects",
+            "Current objects in the environment's buckets",
+            "daily rollup",
+        ),
         m("kv.keys", "gauge", "keys", "Live key-value entries", "daily rollup"),
-        m("kv.bytes", "gauge", "bytes", "Bytes of live key-value data (JSON text)", "daily rollup"),
-        m("vector.items", "gauge", "items", "Vector items in the environment's collections", "daily rollup"),
-        m("queue.messages", "counter", "messages", "Messages published to the environment's topics (still retained)", "daily rollup"),
-        m("queue.bytes", "counter", "bytes", "Bytes of those messages", "daily rollup"),
-        m("jobs.created", "counter", "jobs", "Background jobs created for the environment", "daily rollup"),
-        m("functions.invocations", "counter", "invocations", "Function executions on behalf of the environment", "function profiler"),
-        m("functions.compute_ms", "counter", "ms", "Wall time of those executions", "function profiler"),
-        m("functions.fuel", "counter", "fuel", "WebAssembly fuel those executions used", "function profiler"),
-        m("usage.<feature>", "counter", "feature unit", "Units metered for a feature (ADR-0010) for an organization or principal", "metering events"),
+        m(
+            "kv.bytes",
+            "gauge",
+            "bytes",
+            "Bytes of live key-value data (JSON text)",
+            "daily rollup",
+        ),
+        m(
+            "vector.items",
+            "gauge",
+            "items",
+            "Vector items in the environment's collections",
+            "daily rollup",
+        ),
+        m(
+            "queue.messages",
+            "counter",
+            "messages",
+            "Messages published to the environment's topics (still retained)",
+            "daily rollup",
+        ),
+        m(
+            "queue.bytes",
+            "counter",
+            "bytes",
+            "Bytes of those messages",
+            "daily rollup",
+        ),
+        m(
+            "jobs.created",
+            "counter",
+            "jobs",
+            "Background jobs created for the environment",
+            "daily rollup",
+        ),
+        m(
+            "functions.invocations",
+            "counter",
+            "invocations",
+            "Function executions on behalf of the environment",
+            "function profiler",
+        ),
+        m(
+            "functions.compute_ms",
+            "counter",
+            "ms",
+            "Wall time of those executions",
+            "function profiler",
+        ),
+        m(
+            "functions.fuel",
+            "counter",
+            "fuel",
+            "WebAssembly fuel those executions used",
+            "function profiler",
+        ),
+        m(
+            "usage.<feature>",
+            "counter",
+            "feature unit",
+            "Units metered for a feature (ADR-0010) for an organization or principal",
+            "metering events",
+        ),
     ]
 }
 
@@ -287,24 +359,41 @@ impl Tree {
         for r in svc.fetch("SELECT id, name FROM _forgebase_realms", vec![]).await?.rows {
             t.realms.insert(text(&r, 0), text(&r, 1));
         }
-        for r in svc.fetch("SELECT id, realm_id, name FROM _forgebase_orgs", vec![]).await?.rows {
-            t.orgs.insert(text(&r, 0), (text(&r, 1), text(&r, 2)));
-        }
         for r in svc
-            .fetch("SELECT id, realm_id, org_id, owner_user, name FROM _forgebase_projects", vec![])
+            .fetch("SELECT id, realm_id, name FROM _forgebase_orgs", vec![])
             .await?
             .rows
         {
-            t.projects.insert(text(&r, 0), (text(&r, 1), opt_text(&r, 2), opt_text(&r, 3), text(&r, 4)));
+            t.orgs.insert(text(&r, 0), (text(&r, 1), text(&r, 2)));
         }
-        for r in svc.fetch("SELECT id, project_id, name FROM _forgebase_environments", vec![]).await?.rows {
+        for r in svc
+            .fetch(
+                "SELECT id, realm_id, org_id, owner_user, name FROM _forgebase_projects",
+                vec![],
+            )
+            .await?
+            .rows
+        {
+            t.projects.insert(
+                text(&r, 0),
+                (text(&r, 1), opt_text(&r, 2), opt_text(&r, 3), text(&r, 4)),
+            );
+        }
+        for r in svc
+            .fetch("SELECT id, project_id, name FROM _forgebase_environments", vec![])
+            .await?
+            .rows
+        {
             t.envs.insert(text(&r, 0), (text(&r, 1), text(&r, 2)));
         }
         Ok(t)
     }
 
     fn realm(&self, id: &str) -> Option<(String, String)> {
-        Some((id.to_owned(), self.realms.get(id).cloned().unwrap_or_else(|| id.to_owned())))
+        Some((
+            id.to_owned(),
+            self.realms.get(id).cloned().unwrap_or_else(|| id.to_owned()),
+        ))
     }
 
     /// The tree position of a scope string.
@@ -320,7 +409,10 @@ impl Tree {
                 c.project = Some((pid.clone(), pname.clone()));
                 c.realm = self.realm(realm);
                 c.org = match (org, owner) {
-                    (Some(o), _) => Some((o.clone(), self.orgs.get(o).map_or_else(|| o.clone(), |(_, n)| n.clone()))),
+                    (Some(o), _) => Some((
+                        o.clone(),
+                        self.orgs.get(o).map_or_else(|| o.clone(), |(_, n)| n.clone()),
+                    )),
                     (None, Some(u)) => Some((format!("user:{u}"), format!("user:{u}"))),
                     _ => None,
                 };
@@ -374,7 +466,10 @@ impl InsightsService {
         let end = start + 86_400_000;
         let now = now_ms();
         let mut values: BTreeMap<(String, &'static str), i64> = BTreeMap::new();
-        let scope = |t: Option<String>| t.filter(|t| !t.is_empty()).map_or_else(String::new, |t| format!("env:{t}"));
+        let scope = |t: Option<String>| {
+            t.filter(|t| !t.is_empty())
+                .map_or_else(String::new, |t| format!("env:{t}"))
+        };
         for db in self.tenant_backends() {
             let queries: [(&str, Vec<Value>, &[&'static str]); 5] = [
                 (
@@ -481,7 +576,10 @@ impl InsightsService {
                 book.entry(f).or_default().push(p);
             }
         }
-        let default = currencies.into_iter().max_by(|a, b| a.1.cmp(&b.1).then_with(|| b.0.cmp(&a.0))).map(|c| c.0);
+        let default = currencies
+            .into_iter()
+            .max_by(|a, b| a.1.cmp(&b.1).then_with(|| b.0.cmp(&a.0)))
+            .map(|c| c.0);
         (book, default)
     }
 
@@ -600,9 +698,13 @@ impl InsightsService {
                     None => (c.own.0.clone(), c.own.1.clone(), c.own.2.clone(), false),
                 },
             };
-            if q.realm.as_ref().is_some_and(|r| c.realm.as_ref().map(|x| &x.0) != Some(r))
+            if q.realm
+                .as_ref()
+                .is_some_and(|r| c.realm.as_ref().map(|x| &x.0) != Some(r))
                 || q.org.as_ref().is_some_and(|o| c.org.as_ref().map(|x| &x.0) != Some(o))
-                || q.project.as_ref().is_some_and(|p| c.project.as_ref().map(|x| &x.0) != Some(p))
+                || q.project
+                    .as_ref()
+                    .is_some_and(|p| c.project.as_ref().map(|x| &x.0) != Some(p))
             {
                 continue;
             }
@@ -661,7 +763,11 @@ impl InsightsService {
         // Sort and page.
         let sort = q.sort.clone().unwrap_or_else(|| {
             let mut seen: HashSet<&String> = HashSet::new();
-            let mut names: Vec<&String> = rows.iter().flat_map(|r| r.metrics.keys()).filter(|k| seen.insert(k)).collect();
+            let mut names: Vec<&String> = rows
+                .iter()
+                .flat_map(|r| r.metrics.keys())
+                .filter(|k| seen.insert(k))
+                .collect();
             names.sort();
             names.first().map_or_else(|| "cost".to_owned(), |s| (*s).clone())
         });
@@ -681,7 +787,12 @@ impl InsightsService {
                 r.metrics.get(&sort).map_or(0, |m| m.value)
             }
         };
-        rows.sort_by(|a, b| key(b).cmp(&key(a)).then_with(|| a.level.cmp(&b.level)).then_with(|| a.id.cmp(&b.id)));
+        rows.sort_by(|a, b| {
+            key(b)
+                .cmp(&key(a))
+                .then_with(|| a.level.cmp(&b.level))
+                .then_with(|| a.id.cmp(&b.id))
+        });
         let total = rows.len();
         let limit = q.limit.clamp(1, 500);
         let items = rows.into_iter().skip(q.offset).take(limit).collect();
@@ -709,7 +820,11 @@ impl InsightsService {
             .fetch(
                 "SELECT day, metric, value FROM _forgebase_tenant_usage_daily
                  WHERE scope = ?1 AND day >= ?2 AND day <= ?3 ORDER BY day",
-                vec![scope.to_owned().into(), day_of(range.from_ms).into(), day_of(range.to_ms - 1).into()],
+                vec![
+                    scope.to_owned().into(),
+                    day_of(range.from_ms).into(),
+                    day_of(range.to_ms - 1).into(),
+                ],
             )
             .await?;
         let mut metrics: BTreeMap<String, Vec<(String, i64)>> = BTreeMap::new();

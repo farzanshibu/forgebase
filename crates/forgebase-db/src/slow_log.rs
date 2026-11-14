@@ -42,8 +42,16 @@ impl SlowLog {
     /// Counts a statement that failed (ADR-0036); it has no row count.
     pub(crate) fn record_error(&self, stmt: &Statement, elapsed: Duration, write: bool) {
         let slow = elapsed.as_micros() as u64 >= self.threshold_us.load(Ordering::Relaxed);
-        self.stats
-            .record(self.backend, &stmt.sql, stmt.label.as_ref(), elapsed, 0, true, write, slow);
+        self.stats.record(
+            self.backend,
+            &stmt.sql,
+            stmt.label.as_ref(),
+            elapsed,
+            0,
+            true,
+            write,
+            slow,
+        );
     }
 
     /// Observes the statement latency (histogram `forgebase_db_query_duration_seconds`, label
@@ -52,8 +60,16 @@ impl SlowLog {
         metrics::histogram!(QUERY_DURATION_METRIC, "mode" => if write { "write" } else { "read" })
             .record(elapsed.as_secs_f64());
         let slow = elapsed.as_micros() as u64 >= self.threshold_us.load(Ordering::Relaxed);
-        self.stats
-            .record(self.backend, &stmt.sql, stmt.label.as_ref(), elapsed, rows, false, write, slow);
+        self.stats.record(
+            self.backend,
+            &stmt.sql,
+            stmt.label.as_ref(),
+            elapsed,
+            rows,
+            false,
+            write,
+            slow,
+        );
         if slow {
             let entry = SlowQuery {
                 sql: stmt.sql.clone(),

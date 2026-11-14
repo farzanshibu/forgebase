@@ -22,9 +22,7 @@ use serde_json::Value as Json_;
 use utoipa::{OpenApi, ToSchema};
 
 use crate::error::InsightsError;
-use crate::functions::{
-    FunctionDetail, FunctionPoint, FunctionStat, FunctionStatList, HostBreakdown, InvocationPage,
-};
+use crate::functions::{FunctionDetail, FunctionPoint, FunctionStat, FunctionStatList, HostBreakdown, InvocationPage};
 use crate::queries::{
     Regression, RegressionQuery, RegressionReport, SlowQuery, SlowStatementEntry, SlowStatementPage, StatementDetail,
     StatementList, StatementPoint, StatementQuery, StatementStat, StatementStatus, WindowStat,
@@ -50,7 +48,10 @@ fn time_param(q: &Query, name: &str) -> Result<Option<i64>, ApiError> {
     match q.get(name) {
         None | Some("") => Ok(None),
         Some(v) => parse_time(v).map(Some).ok_or_else(|| {
-            ApiError::bad_request("invalid_parameter", format!("{name} must be an RFC 3339 time or a date, YYYY-MM-DD"))
+            ApiError::bad_request(
+                "invalid_parameter",
+                format!("{name} must be an RFC 3339 time or a date, YYYY-MM-DD"),
+            )
         }),
     }
 }
@@ -87,7 +88,12 @@ fn usage_range(q: &Query) -> Result<Range, ApiError> {
         let start = match p {
             "day" => date,
             "month" => date.replace_day(1).unwrap_or(date),
-            _ => return Err(ApiError::bad_request("invalid_parameter", "period must be day or month")),
+            _ => {
+                return Err(ApiError::bad_request(
+                    "invalid_parameter",
+                    "period must be day or month",
+                ));
+            }
         };
         let end = if p == "day" {
             start.next_day().unwrap_or(start)
@@ -251,7 +257,12 @@ async fn queries(State(s): State<InsightsService>, Access(ctx): Access, q: Query
         ("to" = Option<String>, Query, description = "End, exclusive; default now"),
     ),
     responses((status = 200, description = "Statement", body = StatementDetail), (status = 404, description = "Nothing in the range")))]
-async fn query_detail(State(s): State<InsightsService>, Access(ctx): Access, Path(fp): Path<String>, q: Query) -> ApiResult {
+async fn query_detail(
+    State(s): State<InsightsService>,
+    Access(ctx): Access,
+    Path(fp): Path<String>,
+    q: Query,
+) -> ApiResult {
     insights(&s, &ctx)?;
     ok(s.statement_detail(&fp, range(&q, 86_400, 31)?).await.map_err(api)?)
 }
@@ -319,8 +330,12 @@ async fn slow_queries(State(s): State<InsightsService>, Access(ctx): Access, q: 
 fn usage_query(q: &Query, sort: Option<String>, limit: usize, offset: usize) -> Result<UsageQuery, ApiError> {
     let group_by = match q.get("group_by").filter(|g| !g.is_empty()) {
         None => Level::Environment,
-        Some(g) => Level::parse(g)
-            .ok_or_else(|| ApiError::bad_request("invalid_parameter", "group_by must be environment, project, org or realm"))?,
+        Some(g) => Level::parse(g).ok_or_else(|| {
+            ApiError::bad_request(
+                "invalid_parameter",
+                "group_by must be environment, project, org or realm",
+            )
+        })?,
     };
     Ok(UsageQuery {
         group_by,
@@ -335,7 +350,8 @@ fn usage_query(q: &Query, sort: Option<String>, limit: usize, offset: usize) -> 
     })
 }
 
-const USAGE_PARAMS: &str = "period=day|month with date (YYYY-MM-DD or YYYY-MM), or from/to; group_by=environment|project|org|realm";
+const USAGE_PARAMS: &str =
+    "period=day|month with date (YYYY-MM-DD or YYYY-MM), or from/to; group_by=environment|project|org|realm";
 
 /// Usage per tenant over a period (a day, a month or a custom range), grouped
 /// by environment, project, organization or realm, with an **estimated** cost:
@@ -417,7 +433,9 @@ async fn usage_metrics(State(s): State<InsightsService>, Access(ctx): Access) ->
 async fn usage_series(State(s): State<InsightsService>, Access(ctx): Access, q: Query) -> ApiResult {
     insights(&s, &ctx)?;
     let scope = opt(&q, "scope").ok_or_else(|| ApiError::bad_request("invalid_parameter", "scope is required"))?;
-    ok(s.usage_series(&scope, range(&q, 30 * 86_400, 400)?).await.map_err(api)?)
+    ok(s.usage_series(&scope, range(&q, 30 * 86_400, 400)?)
+        .await
+        .map_err(api)?)
 }
 
 /// Result of a rollup.
@@ -458,10 +476,13 @@ async fn usage_rollup(State(s): State<InsightsService>, Access(ctx): Access, q: 
     responses((status = 200, description = "Functions", body = FunctionStatList)))]
 async fn functions(State(s): State<InsightsService>, Access(ctx): Access, q: Query) -> ApiResult {
     insights(&s, &ctx)?;
-    ok(s
-        .function_stats(range(&q, 3600, 31)?, opt(&q, "function").as_deref(), int_param(&q, "version")?)
-        .await
-        .map_err(api)?)
+    ok(s.function_stats(
+        range(&q, 3600, 31)?,
+        opt(&q, "function").as_deref(),
+        int_param(&q, "version")?,
+    )
+    .await
+    .map_err(api)?)
 }
 
 /// One function: statistics per version and a time series.
@@ -472,7 +493,12 @@ async fn functions(State(s): State<InsightsService>, Access(ctx): Access, q: Que
         ("to" = Option<String>, Query, description = "End, exclusive"),
     ),
     responses((status = 200, description = "Function", body = FunctionDetail), (status = 404, description = "Nothing in the range")))]
-async fn function_detail(State(s): State<InsightsService>, Access(ctx): Access, Path(name): Path<String>, q: Query) -> ApiResult {
+async fn function_detail(
+    State(s): State<InsightsService>,
+    Access(ctx): Access,
+    Path(name): Path<String>,
+    q: Query,
+) -> ApiResult {
     insights(&s, &ctx)?;
     ok(s.function_detail(&name, range(&q, 86_400, 31)?).await.map_err(api)?)
 }
@@ -692,7 +718,8 @@ async fn audit_search(State(s): State<InsightsService>, Access(ctx): Access, q: 
     responses((status = 200, description = "Counts", body = AuditSummaryView)))]
 async fn audit_summary(State(s): State<InsightsService>, Access(ctx): Access, q: Query) -> ApiResult {
     let realm = audit_realm(&s, &ctx)?;
-    let secs = |name: &str| -> Result<Option<i64>, ApiError> { Ok(time_param(&q, name)?.map(|ms| ms.div_euclid(1000))) };
+    let secs =
+        |name: &str| -> Result<Option<i64>, ApiError> { Ok(time_param(&q, name)?.map(|ms| ms.div_euclid(1000))) };
     let sum = s
         .inner
         .deps
@@ -736,7 +763,12 @@ async fn audit_entry(State(s): State<InsightsService>, Access(ctx): Access, Path
         ("limit" = Option<u32>, Query, description = "At most this many of each (default 100, at most 500)"),
     ),
     responses((status = 200, description = "Entries", body = AuditRelatedView), (status = 404, description = "No such entry")))]
-async fn audit_related(State(s): State<InsightsService>, Access(ctx): Access, Path(id): Path<i64>, q: Query) -> ApiResult {
+async fn audit_related(
+    State(s): State<InsightsService>,
+    Access(ctx): Access,
+    Path(id): Path<i64>,
+    q: Query,
+) -> ApiResult {
     let realm = audit_realm(&s, &ctx)?;
     let window = i64::from(q.u32("window_secs")?.unwrap_or(300).min(3600));
     let limit = q.u32("limit")?.unwrap_or(100).clamp(1, 500);
@@ -786,7 +818,11 @@ fn csv_cell(s: &str, out: &mut String) {
 
 fn csv_row(e: &AuditEntry, out: &mut String) {
     let id = e.id.to_string();
-    let detail = if e.detail.is_null() { String::new() } else { e.detail.to_string() };
+    let detail = if e.detail.is_null() {
+        String::new()
+    } else {
+        e.detail.to_string()
+    };
     let cells: [&str; 13] = [
         &id,
         &e.at,
@@ -839,7 +875,12 @@ async fn audit_export(State(s): State<InsightsService>, Access(ctx): Access, q: 
     let csv = match q.get("format") {
         None | Some("" | "csv") => true,
         Some("jsonl" | "ndjson") => false,
-        Some(_) => return Err(ApiError::bad_request("invalid_parameter", "format must be csv or jsonl")),
+        Some(_) => {
+            return Err(ApiError::bad_request(
+                "invalid_parameter",
+                "format must be csv or jsonl",
+            ));
+        }
     };
     let mut search = search_of(&q)?;
     if q.get("order").is_none() {
@@ -867,8 +908,16 @@ async fn audit_export(State(s): State<InsightsService>, Access(ctx): Access, q: 
                 out.push_str(CSV_HEADER);
             }
         }
-        st.search.limit = Some(u32::try_from((st.max - st.sent).min(AUDIT_PAGE_MAX as usize)).unwrap_or(AUDIT_PAGE_MAX));
-        match st.svc.inner.deps.auth.audit_search(st.realm.as_deref(), &st.search).await {
+        st.search.limit =
+            Some(u32::try_from((st.max - st.sent).min(AUDIT_PAGE_MAX as usize)).unwrap_or(AUDIT_PAGE_MAX));
+        match st
+            .svc
+            .inner
+            .deps
+            .auth
+            .audit_search(st.realm.as_deref(), &st.search)
+            .await
+        {
             Ok(page) => {
                 for e in &page.items {
                     if st.csv {
@@ -892,15 +941,22 @@ async fn audit_export(State(s): State<InsightsService>, Access(ctx): Access, q: 
             }
         }
     });
-    let (mime, ext) = if csv { ("text/csv; charset=utf-8", "csv") } else { ("application/x-ndjson", "jsonl") };
+    let (mime, ext) = if csv {
+        ("text/csv; charset=utf-8", "csv")
+    } else {
+        ("application/x-ndjson", "jsonl")
+    };
     let mut res = Response::new(Body::from_stream(stream));
     *res.status_mut() = StatusCode::OK;
     let h = res.headers_mut();
     h.insert(header::CONTENT_TYPE, HeaderValue::from_static(mime));
     h.insert(
         header::CONTENT_DISPOSITION,
-        HeaderValue::from_str(&format!("attachment; filename=\"audit-{}.{ext}\"", crate::util::day_of(crate::util::now_ms())))
-            .unwrap_or_else(|_| HeaderValue::from_static("attachment")),
+        HeaderValue::from_str(&format!(
+            "attachment; filename=\"audit-{}.{ext}\"",
+            crate::util::day_of(crate::util::now_ms())
+        ))
+        .unwrap_or_else(|_| HeaderValue::from_static("attachment")),
     );
     h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     Ok(res)

@@ -321,3 +321,15 @@ to the billing audit log. Errors: `409 delivery_not_verified` (replay of a refus
 `409 delivery_already_verified` (re-verify of a verified one: replay it), `409 reverify_in_progress`,
 `409 body_not_stored` (dropped by the budget or cut at the size limit) and `409 not_reverifiable` (Google Play:
 its push token is not stored; Pub/Sub redelivers unacknowledged pushes).
+
+### 11.6 Operations insights (`/api/v1/insights`)
+
+Administrator-only reads for the dashboard ([ADR-0036](adr/0036-ops-insights.md), reference with response shapes in
+[observability.md](observability.md#insights)): statement statistics by shape (`/queries`, `/queries/{fingerprint}`,
+`/queries/regressions`), the redacted slow statement log (`/slow-queries`), per-tenant usage with estimated cost
+(`/usage`, `/usage/top`, `/usage/series`, `/usage/metrics`, `POST /usage/rollup`), function profiles
+(`/functions`, `/functions/{name}`, `/functions/invocations[/{id}]`) and audit investigation (`/audit`,
+`/audit/{id}`, `/audit/{id}/related`, `/audit/summary`, streamed `/audit/export?format=csv|jsonl`), plus
+`/status` and `POST /flush`. Operation ids start with `insights_`. Anonymous callers get `401`; signed-in callers
+without the `engine:read_insights` / `engine:read_audit` permission get `403`. Every list is paged (`limit`,
+`offset` or `cursor`) and bounded; ranges are `from`/`to` (RFC 3339 or `YYYY-MM-DD`, `to` exclusive).

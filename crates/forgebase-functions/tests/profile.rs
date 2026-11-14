@@ -42,19 +42,28 @@ async fn host_calls_cold_starts_fuel_and_memory_are_profiled() {
     // A deploy leaves the script cached: forget it, as a restart would.
     h.svc.evict_caches();
     for _ in 0..2 {
-        h.svc.invoke("prof", Trigger::Test, &json!({}), Some("req-1".into())).await.unwrap();
+        h.svc
+            .invoke("prof", Trigger::Test, &json!({}), Some("req-1".into()))
+            .await
+            .unwrap();
     }
     let live = h.svc.profiler().peek();
     assert_eq!(live.functions.len(), 1);
     let a = &live.functions[0];
-    assert_eq!((a.function.as_str(), a.invocations, a.errors, a.timeouts), ("prof", 2, 0, 0));
+    assert_eq!(
+        (a.function.as_str(), a.invocations, a.errors, a.timeouts),
+        ("prof", 2, 0, 0)
+    );
     assert_eq!(a.cold_starts, 1, "only the first execution loads the script");
     assert_eq!(a.host["db.create"].count, 2);
     assert_eq!(a.host["db.list"].count, 2);
     assert_eq!(a.host["kv"].count, 4);
     assert_eq!(a.host_calls, 8);
     assert!(a.host.values().all(|h| h.errors == 0), "{:?}", a.host);
-    assert!(a.fuel_total > 0 && a.fuel_max > 0 && a.fuel_max <= a.fuel_limit, "{a:?}");
+    assert!(
+        a.fuel_total > 0 && a.fuel_max > 0 && a.fuel_max <= a.fuel_limit,
+        "{a:?}"
+    );
     assert!(a.memory_max > 0 && a.memory_max <= a.memory_limit, "{a:?}");
     assert_eq!(a.sketch.count(), 2);
 
@@ -79,13 +88,22 @@ async fn host_calls_cold_starts_fuel_and_memory_are_profiled() {
     assert!(o["prepare_us"].as_u64().unwrap() > 0, "{o}");
     assert_eq!(n["host_calls"], 4);
     assert_eq!(n["host"]["kv"]["count"], 2);
-    let ops: Vec<&str> = n["timeline"].as_array().unwrap().iter().map(|e| e["op"].as_str().unwrap()).collect();
+    let ops: Vec<&str> = n["timeline"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["op"].as_str().unwrap())
+        .collect();
     assert_eq!(ops, ["db.create", "db.list", "kv", "kv"]);
     let t = n["timeline"].as_array().unwrap();
-    assert!(t.windows(2).all(|w| w[0]["at_us"].as_u64() <= w[1]["at_us"].as_u64()), "ordered in time");
-    assert!(n["fuel_used"].as_u64().unwrap() > 0 && n["fuel_limit"].as_u64().unwrap() > n["fuel_used"].as_u64().unwrap());
+    assert!(
+        t.windows(2).all(|w| w[0]["at_us"].as_u64() <= w[1]["at_us"].as_u64()),
+        "ordered in time"
+    );
+    assert!(
+        n["fuel_used"].as_u64().unwrap() > 0 && n["fuel_limit"].as_u64().unwrap() > n["fuel_used"].as_u64().unwrap()
+    );
     assert!(n["memory_peak_bytes"].as_u64().unwrap() > 0);
-
 }
 
 #[tokio::test]

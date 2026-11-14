@@ -183,7 +183,11 @@ fn stat_of(a: &FnAggregate) -> FunctionStat {
             total_ms: ms(h.total_us),
             mean_ms: ms(h.total_us.checked_div(h.count).unwrap_or(0)),
             max_ms: ms(h.max_us),
-            share: r3(if host_total == 0 { 0.0 } else { h.total_us as f64 / host_total as f64 }),
+            share: r3(if host_total == 0 {
+                0.0
+            } else {
+                h.total_us as f64 / host_total as f64
+            }),
         })
         .collect();
     host.sort_by(|x, y| y.total_ms.total_cmp(&x.total_ms).then_with(|| x.op.cmp(&y.op)));
@@ -203,7 +207,11 @@ fn stat_of(a: &FnAggregate) -> FunctionStat {
         fuel_mean: a.fuel_total / n,
         fuel_max: a.fuel_max,
         fuel_limit: a.fuel_limit,
-        fuel_utilisation: r3(if a.fuel_limit == 0 { 0.0 } else { a.fuel_max as f64 / a.fuel_limit as f64 }),
+        fuel_utilisation: r3(if a.fuel_limit == 0 {
+            0.0
+        } else {
+            a.fuel_max as f64 / a.fuel_limit as f64
+        }),
         memory_max_bytes: a.memory_max,
         memory_limit_bytes: a.memory_limit,
         host_calls_per_invocation: r3(a.host_calls as f64 / n as f64),
@@ -213,7 +221,9 @@ fn stat_of(a: &FnAggregate) -> FunctionStat {
 
 impl InsightsService {
     pub(crate) async fn flush_functions(&self, start_ms: i64, len_ms: i64) -> Result<usize> {
-        let Some(f) = &self.inner.deps.functions else { return Ok(0) };
+        let Some(f) = &self.inner.deps.functions else {
+            return Ok(0);
+        };
         let d = f.profiler().drain();
         let n = d.functions.len();
         self.ingest_functions(d, start_ms, len_ms).await?;
@@ -330,14 +340,21 @@ impl InsightsService {
     ///
     /// # Errors
     /// A database error.
-    pub async fn function_stats(&self, range: Range, function: Option<&str>, version: Option<i64>) -> Result<FunctionStatList> {
+    pub async fn function_stats(
+        &self,
+        range: Range,
+        function: Option<&str>,
+        version: Option<i64>,
+    ) -> Result<FunctionStatList> {
         let mut by: BTreeMap<(String, i64), FnAggregate> = BTreeMap::new();
         for (_, a) in self.function_buckets(range, function, version).await? {
-            let e = by.entry((a.function.clone(), a.version)).or_insert_with(|| FnAggregate {
-                function: a.function.clone(),
-                version: a.version,
-                ..FnAggregate::default()
-            });
+            let e = by
+                .entry((a.function.clone(), a.version))
+                .or_insert_with(|| FnAggregate {
+                    function: a.function.clone(),
+                    version: a.version,
+                    ..FnAggregate::default()
+                });
             e.merge(&a);
         }
         let mut items: Vec<FunctionStat> = by.values().map(stat_of).collect();
@@ -400,11 +417,16 @@ impl InsightsService {
     /// `unavailable` when functions are switched off.
     pub async fn invocations(&self, mut q: InvocationQuery) -> Result<InvocationPage> {
         let Some(f) = &self.inner.deps.functions else {
-            return Err(InsightsError::Unavailable("Functions are disabled on this server".into()));
+            return Err(InsightsError::Unavailable(
+                "Functions are disabled on this server".into(),
+            ));
         };
         let limit = q.limit.clamp(1, 500);
         q.limit = limit + 1;
-        let mut items = f.invocations(q).await.map_err(|e| InsightsError::Internal(e.to_string()))?;
+        let mut items = f
+            .invocations(q)
+            .await
+            .map_err(|e| InsightsError::Internal(e.to_string()))?;
         let more = items.len() > limit as usize;
         items.truncate(limit as usize);
         let next_cursor = if more { items.last().map(|i| i.log.id) } else { None };

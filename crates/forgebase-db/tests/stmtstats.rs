@@ -25,9 +25,16 @@ async fn run(db: &Database, sql: &str) {
 
 /// What the process-wide statistics hold for statements shaped like `sql`.
 fn live(db: &Database, sql: &str) -> Option<forgebase_db::stmtstats::StatementAggregate> {
-    let backend = if db.kind() == forgebase_db::BackendKind::Postgres { "postgres" } else { "sqlite" };
+    let backend = if db.kind() == forgebase_db::BackendKind::Postgres {
+        "postgres"
+    } else {
+        "sqlite"
+    };
     let id = fingerprint_id(backend, sql);
-    StatementStats::global().peek().into_iter().find(|a| a.fingerprint == id)
+    StatementStats::global()
+        .peek()
+        .into_iter()
+        .find(|a| a.fingerprint == id)
 }
 
 #[tokio::test]
@@ -37,7 +44,11 @@ async fn queries_that_differ_in_literals_are_one_fingerprint() {
     let db = t.database();
     ddl(db, "CREATE TABLE fp_items (id bigint PRIMARY KEY, name text)").await;
     for i in 0..5 {
-        run(db, &format!("SELECT name FROM fp_items WHERE id = {i} AND name = 'n{i}'")).await;
+        run(
+            db,
+            &format!("SELECT name FROM fp_items WHERE id = {i} AND name = 'n{i}'"),
+        )
+        .await;
     }
     run(db, "select name from fp_items where id=7 and name='x' -- hand written").await;
     db.fetch_all(&Statement::new(
@@ -81,18 +92,29 @@ async fn slow_statements_keep_no_literal_values_and_the_overhead_is_small() {
     // -- Slow capture ------------------------------------------------------
     stats.drain();
     db.set_slow_query_threshold(Duration::ZERO);
-    run(db, "SELECT id FROM fp_secrets WHERE token = 'hunter2-API-KEY' AND id > 12345").await;
+    run(
+        db,
+        "SELECT id FROM fp_secrets WHERE token = 'hunter2-API-KEY' AND id > 12345",
+    )
+    .await;
     db.set_slow_query_threshold(Duration::from_secs(3600));
     run(db, "SELECT id FROM fp_secrets WHERE token = 'fast-one' AND id > 7").await;
     let d = stats.drain();
     let mine: Vec<_> = d.slow.iter().filter(|s| s.text.contains("fp_secrets")).collect();
-    assert_eq!(mine.len(), 1, "only the statement over the threshold is listed: {:?}", d.slow);
+    assert_eq!(
+        mine.len(),
+        1,
+        "only the statement over the threshold is listed: {:?}",
+        d.slow
+    );
     let s = mine[0];
     assert_eq!(s.text, "select id from fp_secrets where token = ? and id > ?");
     assert!(!s.text.contains("hunter2") && !s.text.contains("12345"));
     assert!(s.duration_us > 0 || s.rows == 0);
     assert!(
-        d.aggregates.iter().all(|a| !a.text.contains("hunter2") && !a.text.contains("fast-one")),
+        d.aggregates
+            .iter()
+            .all(|a| !a.text.contains("hunter2") && !a.text.contains("fast-one")),
         "no aggregate text holds a value"
     );
     let a = d.aggregates.iter().find(|a| a.text.contains("fp_secrets")).unwrap();
@@ -121,12 +143,17 @@ async fn slow_statements_keep_no_literal_values_and_the_overhead_is_small() {
         }
     });
     let per_call_8 = t0.elapsed() / (8 * n);
-    eprintln!("statement statistics: {single:?}/statement on one thread, {per_call_8:?}/statement on eight (debug build)");
+    eprintln!(
+        "statement statistics: {single:?}/statement on one thread, {per_call_8:?}/statement on eight (debug build)"
+    );
     // Stated bound (unoptimised test build; release is several times lower):
     // 25 microseconds per statement on one thread, and eight threads sharing
     // one fingerprint do not serialise (per statement no worse than 4x).
     assert!(single < Duration::from_micros(25), "{single:?}");
-    assert!(per_call_8 < single * 4 + Duration::from_micros(5), "{per_call_8:?} vs {single:?}");
+    assert!(
+        per_call_8 < single * 4 + Duration::from_micros(5),
+        "{per_call_8:?} vs {single:?}"
+    );
     assert_eq!(local.peek()[0].calls, u64::from(9 * n));
 
     // (2) End to end: point lookups through the database with the statistics

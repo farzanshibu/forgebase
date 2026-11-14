@@ -100,9 +100,40 @@ struct Emitter<'a, S: Sink> {
 /// Words after which `(` opens a group or a list, not a call or a column list.
 fn is_keyword(w: &[u8]) -> bool {
     const KEYWORDS: &[&str] = &[
-        "as", "in", "on", "and", "or", "not", "exists", "from", "join", "where", "select", "union", "all", "any",
-        "values", "using", "over", "between", "then", "else", "when", "limit", "offset", "by", "set", "returning",
-        "except", "intersect", "case", "with", "having", "distinct", "conflict", "lateral",
+        "as",
+        "in",
+        "on",
+        "and",
+        "or",
+        "not",
+        "exists",
+        "from",
+        "join",
+        "where",
+        "select",
+        "union",
+        "all",
+        "any",
+        "values",
+        "using",
+        "over",
+        "between",
+        "then",
+        "else",
+        "when",
+        "limit",
+        "offset",
+        "by",
+        "set",
+        "returning",
+        "except",
+        "intersect",
+        "case",
+        "with",
+        "having",
+        "distinct",
+        "conflict",
+        "lateral",
     ];
     KEYWORDS.iter().any(|k| k.as_bytes() == w)
 }
@@ -368,7 +399,8 @@ fn scan<S: Sink>(sql: &[u8], sink: &mut S) {
                 }
                 let word = &sql[start..i];
                 // `E'..'`, `X'..'`, `B'..'`, `N'..'`: a prefixed literal.
-                if word.len() == 1 && sql.get(i) == Some(&b'\'') && matches!(word[0] | 0x20, b'e' | b'x' | b'b' | b'n') {
+                if word.len() == 1 && sql.get(i) == Some(&b'\'') && matches!(word[0] | 0x20, b'e' | b'x' | b'b' | b'n')
+                {
                     i = skip_string(sql, i + 1, word[0] | 0x20 == b'e');
                     e.param();
                     continue;
@@ -403,7 +435,12 @@ pub fn fingerprint_hash(sql: &str) -> u64 {
 /// The key a statement of `backend` has in the statistics: its fingerprint
 /// hash, salted per backend.
 pub fn fingerprint_key(backend: &str, sql: &str) -> u64 {
-    fingerprint_hash(sql) ^ if backend == "postgres" { 0x9e37_79b9_7f4a_7c15 } else { 0 }
+    fingerprint_hash(sql)
+        ^ if backend == "postgres" {
+            0x9e37_79b9_7f4a_7c15
+        } else {
+            0
+        }
 }
 
 /// The 16-hex-digit id of a statement in the statistics and the API.
@@ -872,12 +909,18 @@ mod tests {
         assert_eq!(fingerprint_hash(a), fingerprint_hash(b));
         assert_eq!(fingerprint_hash(a), fingerprint_hash(c));
         assert_eq!(fp(a), "select id, name from users where id = ? and name = ? limit ?");
-        assert_ne!(fingerprint_hash(a), fingerprint_hash("SELECT id FROM users WHERE id = 7"));
+        assert_ne!(
+            fingerprint_hash(a),
+            fingerprint_hash("SELECT id FROM users WHERE id = 7")
+        );
     }
 
     #[test]
     fn in_lists_and_comments_reduce() {
-        assert_eq!(fp("SELECT 1 FROM t WHERE a IN (1, 2, 3)"), fp("SELECT 1 FROM t WHERE a IN (?)"));
+        assert_eq!(
+            fp("SELECT 1 FROM t WHERE a IN (1, 2, 3)"),
+            fp("SELECT 1 FROM t WHERE a IN (?)")
+        );
         assert_eq!(
             fp("SELECT 1 FROM t WHERE a IN (?, ?, ?, ?) AND b = 1"),
             "select ? from t where a in (?) and b = ?"
@@ -900,9 +943,18 @@ mod tests {
             assert!(!n.contains("hunter2") && !n.contains("6875"), "{sql} -> {n}");
             assert_eq!(n, "insert into t(a) values (?)", "{sql}");
         }
-        assert_eq!(fp("SELECT a::int FROM t WHERE b = :name"), "select a::int from t where b = ?");
-        assert_eq!(fp("SELECT col1, \"Mixed Case\" FROM t2"), "select col1, \"Mixed Case\" from t2");
-        assert_eq!(fp("UPDATE t SET a = a + 1 WHERE b = -5"), "update t set a = a + ? where b = ?");
+        assert_eq!(
+            fp("SELECT a::int FROM t WHERE b = :name"),
+            "select a::int from t where b = ?"
+        );
+        assert_eq!(
+            fp("SELECT col1, \"Mixed Case\" FROM t2"),
+            "select col1, \"Mixed Case\" from t2"
+        );
+        assert_eq!(
+            fp("UPDATE t SET a = a + 1 WHERE b = -5"),
+            "update t set a = a + ? where b = ?"
+        );
     }
 
     #[test]
@@ -913,17 +965,56 @@ mod tests {
         assert_eq!(area_of("select ? from _forgebase_something_new", None), "system");
         assert_eq!(area_of("select ? from posts", Some(&QueryLabel::default())), "data");
         assert_eq!(area_of("select ? from posts", None), "other");
-        assert_eq!(area_of("insert into _forgebase_stmt_stats(a)values(?)", None), "insights");
+        assert_eq!(
+            area_of("insert into _forgebase_stmt_stats(a)values(?)", None),
+            "insights"
+        );
     }
 
     #[test]
     fn aggregates_count_and_drain() {
         let s = StatementStats::new();
         let ms = Duration::from_millis;
-        s.record("sqlite", "SELECT * FROM t WHERE id = 1", None, ms(1), 1, false, false, false);
-        s.record("sqlite", "SELECT * FROM t WHERE id = 2", None, ms(3), 1, false, false, false);
-        s.record("sqlite", "select * from t where id = ?", None, ms(9), 0, true, false, true);
-        s.record("sqlite", "INSERT INTO _forgebase_stmt_stats (a) VALUES (1)", None, ms(1), 1, false, true, false);
+        s.record(
+            "sqlite",
+            "SELECT * FROM t WHERE id = 1",
+            None,
+            ms(1),
+            1,
+            false,
+            false,
+            false,
+        );
+        s.record(
+            "sqlite",
+            "SELECT * FROM t WHERE id = 2",
+            None,
+            ms(3),
+            1,
+            false,
+            false,
+            false,
+        );
+        s.record(
+            "sqlite",
+            "select * from t where id = ?",
+            None,
+            ms(9),
+            0,
+            true,
+            false,
+            true,
+        );
+        s.record(
+            "sqlite",
+            "INSERT INTO _forgebase_stmt_stats (a) VALUES (1)",
+            None,
+            ms(1),
+            1,
+            false,
+            true,
+            false,
+        );
         let live = s.peek();
         assert_eq!(live.len(), 1, "insight tables are not counted: {live:?}");
         let d = s.drain();
@@ -942,11 +1033,24 @@ mod tests {
     fn memory_is_bounded() {
         let s = StatementStats::new();
         for i in 0..(MAX_FINGERPRINTS + 500) {
-            s.record("sqlite", &format!("SELECT c{i} FROM t"), None, Duration::from_micros(5), 0, false, false, false);
+            s.record(
+                "sqlite",
+                &format!("SELECT c{i} FROM t"),
+                None,
+                Duration::from_micros(5),
+                0,
+                false,
+                false,
+                false,
+            );
         }
         assert!(s.fingerprints() as usize <= MAX_FINGERPRINTS);
         let d = s.drain();
-        let other = d.aggregates.iter().find(|a| a.text == OVERFLOW_TEXT).expect("overflow entry");
+        let other = d
+            .aggregates
+            .iter()
+            .find(|a| a.text == OVERFLOW_TEXT)
+            .expect("overflow entry");
         assert_eq!(other.calls, 500);
     }
 
@@ -954,11 +1058,24 @@ mod tests {
     fn slow_statements_are_sampled_per_drain() {
         let s = StatementStats::new();
         for _ in 0..(MAX_SLOW_PER_DRAIN as usize + 30) {
-            s.record("sqlite", "SELECT 1", None, Duration::from_secs(1), 0, false, false, true);
+            s.record(
+                "sqlite",
+                "SELECT 1",
+                None,
+                Duration::from_secs(1),
+                0,
+                false,
+                false,
+                true,
+            );
         }
         let d = s.drain();
         assert_eq!(d.slow.len() as i64, MAX_SLOW_PER_DRAIN);
         assert_eq!(d.slow_dropped, 30);
-        assert_eq!(d.aggregates[0].slow as i64, MAX_SLOW_PER_DRAIN + 30, "the counter still sees them all");
+        assert_eq!(
+            d.aggregates[0].slow as i64,
+            MAX_SLOW_PER_DRAIN + 30,
+            "the counter still sees them all"
+        );
     }
 }
