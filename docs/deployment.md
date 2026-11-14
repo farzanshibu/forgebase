@@ -17,6 +17,9 @@ and do not publish the Redis port.
 | systemd service | Linux host, no containers. Hardened unit file included. | [§2.3](#23-systemd) |
 
 ForgeBase is single-node. There is no clustering in this release.
+Choosing SQLite or PostgreSQL, when to add replicas or shards, and how big a
+server to run: [choosing-a-backend.md](choosing-a-backend.md) and
+[capacity-planning.md](capacity-planning.md).
 
 ## 2. Install
 

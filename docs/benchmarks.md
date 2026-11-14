@@ -37,17 +37,18 @@ Caveats that matter when reading the numbers:
 
 ## 2. Method
 
-Three tools, all in the new dev-only crate `crates/forgebase-bench` (nothing in
-the server depends on it; the only new dependency is `criterion`, dev-only,
-MIT/Apache-2.0).
+Three tools (§9 adds benches, scenarios and a CI job to them), all in the
+dev-only crate `crates/forgebase-bench` (nothing in the server depends on it;
+the only new dependency is `criterion`, dev-only, MIT/Apache-2.0).
 
 1. **Criterion benches** (`cargo bench -p forgebase-bench`), in-process, real
    SQLite in a temp directory, production pragmas and migrations. One file per
-   area: `db`, `records`, `auth_policy`, `kv`, `vector`, `queue_jobs`
-   (queue and jobs run through `forgebase_server::start`, the real lifecycle).
+   area: `db`, `records`, `auth_policy`, `kv`, `vector`, `queue_jobs` (and
+   `storage`, `graph`, `sql`, `fuzzy` since §9; queue and jobs run through
+   `forgebase_server::start`, the real lifecycle).
    Values below are the Criterion median (middle of the three numbers). Run with
    `TMPDIR=<dir on the disk under test>`.
-2. **HTTP load harness** `fb-load` (`crates/forgebase-bench/src/bin/fb-load.rs`,
+2. **HTTP load harness** `fb-load` (`crates/forgebase-bench/src/bin/fb-load/`,
    raw HTTP/1.1 keep-alive, no client library) against the release binary.
    `crates/forgebase-bench/run-load.sh <forgebase> <fb-load> <empty dir> [concurrency] [seconds]`
    creates a project and an administrator, starts the server, and runs
@@ -139,8 +140,8 @@ shows 235 slow-query warnings for simple outbox reads). That is the disk, not th
 server; see §1.
 
 Resource use: the release server was at 82 MB resident memory after the full load
-run (external-disk run, `ps`). CPU per scenario and disk I/O were not sampled;
-see §7.
+run (external-disk run, `ps`). CPU per scenario and disk usage were not sampled
+in this run; `fb-load` now samples them (§9.1).
 
 ### 4.3 Recovery after `kill -9`
 
@@ -188,9 +189,9 @@ inside the flush window are not durable and were not tested).
 | API throughput | 8.7 k requests/s mixed records CRUD on 16 connections | > 1 k/s | Pass |
 | Recovery time | 0.55 s, 0 acknowledged writes lost | < 5 s; 0 lost | Pass |
 | Queue pull + ack | 27.5 ms before FIX-9; 0.93 ms after, 10 messages in process | < 10 ms | Pass |
-| Object uploads and downloads | not measured | n/a | Not measured |
-| Graph traversals | not measured | n/a | Not measured |
-| CPU, disk I/O, index size | not sampled | n/a | Not measured |
+| Object uploads and downloads | benches and `fb-load` scenario exist (§9); Linux run pending | n/a | Not measured yet |
+| Graph traversals | benches and `fb-load` scenario exist (§9); Linux run pending | n/a | Not measured yet |
+| CPU, disk, memory, fds | sampled by `fb-load` since §9; Linux run pending | n/a | Not measured yet |
 
 ## 6. Misses and findings (for god; nothing was changed)
 
@@ -237,11 +238,12 @@ inside the flush window are not durable and were not tested).
 
 ## 7. Not done and limits
 
-- Not measured: object uploads and downloads, graph traversals, SQL endpoint,
-  CPU and disk I/O over time, index size on disk. The harness has room for them
-  (`fb-load` scenarios are small functions) but they were out of the time given.
+- Not measured in the run above: object uploads and downloads, graph
+  traversals, the SQL endpoint, fuzzy search, CPU and disk over time, replicas.
+  The tooling for all of them now exists (§9) and a Linux run produces the
+  numbers; none have been recorded yet.
 - Results are one run on a busy shared laptop; no repeated runs, no confidence
-  intervals beyond Criterion's. Linux numbers are missing.
+  intervals beyond Criterion's. Linux numbers are missing (§9).
 - The recovery test uses the debug-profile binary. Recovery cost is dominated by
   WAL replay and migrations check, so release should be no slower.
 
@@ -254,3 +256,238 @@ cargo build --release -p forgebase-cli -p forgebase-bench --bins
 crates/forgebase-bench/run-load.sh target/release/forgebase target/release/fb-load /path/work 16 10
 cargo test -p forgebase-cli --test recovery -- --nocapture --test-threads=1
 ```
+
+On Linux, with both backends, the new benches and the JSON and resource output:
+§9 (`.github/workflows/bench.yml`).
+
+## 9. Linux scale validation (the `bench` workflow)
+
+Everything above was measured on one shared Mac laptop and covers SQLite only.
+This section is the method for the Linux numbers and what was added to produce
+them. **No Linux result is recorded in this document yet**: the workflow exists
+and its pieces were smoke-run, but a real run needs a Linux runner (see §9.6).
+Where a number is needed before then, [capacity-planning.md](capacity-planning.md)
+quotes §4 above and labels it "measured on M4 laptop; Linux TBD".
+
+### 9.1 What changed
+
+| Area | Before | Now |
+|---|---|---|
+| Criterion benches | `db`, `records`, `auth_policy`, `kv`, `vector`, `queue_jobs` | adds `storage`, `graph`, `sql`, `fuzzy` (below); all of them run on SQLite and on the bundled PostgreSQL (`FORGEBASE_TEST_BACKEND=postgres`) |
+| `fb-load` scenarios | `records`, `auth`, `queue`, `realtime` | adds `storage`, `graph`, `sql`, and the two topology scenarios `topology-setup` and `topology` |
+| Server resources | resident memory by hand with `ps` | `--pid`/`--data-dir`: CPU %, RSS, open fds and data-directory disk usage of the server **process tree** (the bundled PostgreSQL included) once a second, per scenario, as p50 and max |
+| Output | `RESULT` lines on stdout | the same lines, and `--json <file>`: one document per run (format 1, `crates/forgebase-bench/src/report.rs`) that CI stores and compares |
+| CI | none for benchmarks | `.github/workflows/bench.yml` (§9.3) |
+| Comparison | by eye | `crates/forgebase-bench/scripts/bench_report.py` against `baseline/linux.json` (§9.4) |
+
+The new Criterion benches, all in process with real persistence (a temp
+directory, production pragmas and migrations):
+
+- **`storage`** (local driver): put and get of 4 KiB, 1 MiB and 16 MiB objects
+  (each put has unique content, so deduplication does not hide the write), a
+  multipart upload of four 4 MiB parts, and listing (a delimiter at the root,
+  a prefix page of 100, paging through one folder by cursor) over 5 000
+  objects.
+- **`graph`**: 10 000 nodes and 50 000 edges (a ring plus pseudo-random `KNOWS`
+  edges from a fixed seed, bulk-loaded). Traversal at depth 1 to 4, neighbours,
+  shortest path (max depth 8) and openCypher on the portable engine (ADR-0034).
+  On PostgreSQL with Apache AGE installed it then materialises the derived
+  graph and runs the same three queries again as `cypher_age_*`; without AGE
+  that half is skipped and says so.
+- **`sql`**: the SQL editor's data layer (`DataService::execute_sql`, the code
+  behind `POST /api/v1/sql`) on `customers` (10 000 rows) and `orders` (50 000
+  rows): point lookup by primary key and by secondary index, an indexed range
+  scan, an aggregate over the whole table and over one customer, a join of the
+  two tables, a single insert and a batch of 100.
+- **`fuzzy`**: a `fuzzy` list query on a trigram index (portable engine) at
+  10 000 and at 100 000 rows, a one-word typo and a two-word query, plus an
+  insert with trigram maintenance. The bench prints the engine in use.
+
+`cargo bench` runs them at full scale. `cargo test -p forgebase-bench --benches`
+runs each once at a small scale (a few hundred rows; `FB_BENCH_SCALE=full|smoke`
+overrides), which is how they are checked on a machine that must not do a
+release build.
+
+### 9.2 Method on Linux, and the disk-flush caveat
+
+- Runner: `ubuntu-24.04` (GitHub-hosted: 4 vCPU, 16 GiB, one shared SSD, no
+  isolation from neighbours). Release build, the same profile as §1. A
+  self-hosted runner gives steadier numbers; the workflow does not care.
+- Both backends, as two matrix jobs. PostgreSQL uses the engine `engine.lock`
+  pins, downloaded and verified like the other workflows do
+  (`FORGEBASE_PG_ENGINE_DIR`).
+- The job records the machine and a **fsync probe** (300 times 4 KiB write plus
+  `fsync` in the work directory, p50, p95 and max) next to the results, so a
+  number can be read against the disk it came from.
+- Scale is full: the data sets above, 16 connections and 30 s per `fb-load`
+  scenario by default (workflow inputs `duration` and `concurrency`).
+- Client and server share the machine, as in §1. HTTP numbers are a lower
+  bound for the server.
+
+**Disk-flush caveat: Linux versus macOS.** This is the biggest reason the Mac
+write numbers do not carry over.
+
+| | macOS (the §4 numbers) | Linux (this workflow) |
+|---|---|---|
+| What SQLite's `synchronous = FULL` calls | plain `fsync`, which does **not** flush the drive's write cache | `fsync`, which does: the commit waits for the device |
+| Cost of one durable commit | about 65 µs (internal SSD) | the device's flush latency: typically hundreds of µs on a local NVMe, milliseconds on network-attached or virtualised disks |
+| What it makes slow | nothing visible | every single-row commit: `db/writer_commit_1_row`, `records/create`, `sql/insert_1`, queue publish, jobs enqueue, `fb-load` `records` create/update/delete |
+| What it does not touch | | reads, KV, vector search, auth verify, policy checks, traversals |
+| PostgreSQL | `fsync` too, so the same cheap flush | `fsync` and WAL flush at each commit (`synchronous_commit = on`): the same device cost per commit, plus WAL volume |
+
+Consequences when reading results: (1) write-bound rows will be far slower than
+§4.1 and that is the honest figure, not a regression; (2) batching (100 rows in
+one transaction) amortises the flush, so compare `commit_1_row` with
+`commit_100_rows` to see how much of a number is the device; (3) a GitHub
+runner's disk is shared and virtual, so its flush latency varies from run to
+run and the fsync probe line is the first place to look when a write row moves;
+(4) never compare a macOS write number with a Linux one. Power-loss durability
+is only true of the Linux figures (§4.3).
+
+### 9.3 The CI job
+
+`.github/workflows/bench.yml` runs on `workflow_dispatch` (inputs: `duration`,
+`concurrency`, `topology`) and weekly (Sunday 04:21 UTC). Not on pull
+requests: a full run takes about an hour per backend.
+
+| Job | Steps | Artifacts (`bench-sqlite`, `bench-postgres`, `bench-topology`) |
+|---|---|---|
+| `bench (sqlite)` and `bench (postgres)` | build release; machine and fsync probe; `cargo bench -p forgebase-bench --benches` at full scale; `fb-load` (`records`, `queue`, `realtime`, `auth`, `storage`, `graph`, `sql`) against a release server through `run-load.sh`; comparison | `criterion-<backend>.json` (medians), `criterion-<backend>-data.tar.gz` (the whole `target/criterion` tree), `fb-load-<backend>.json` and `.log`, `system-<backend>.txt`, `comparison-<backend>.md`, `server-<backend>.log` |
+| `topology load` (PostgreSQL) | the topology scenario below | `fb-load-topology.json` and `.log`, `server-topology.log`; the lag and read-distribution tables are also in the step summary |
+
+**Topology scenario** (`run-topology.sh`, then `fb-load --scenario topology`):
+a bundled-PostgreSQL primary with two read replicas and two shards, six tenants
+spread over the shards, driven through the public API.
+
+1. `run-topology.sh` starts the server, then `fb-load --scenario
+   topology-setup` adds the replicas (`POST /api/system/database/nodes`,
+   `kind: local`) and the shards (separate PostgreSQL clusters started with the
+   engine's `initdb` and `pg_ctl`, added with `POST /api/system/database/shards`)
+   and waits for every operation and for the replicas to enter the read
+   rotation. The server takes replicas up when it opens its router, so the
+   script restarts it.
+2. `fb-load --scenario topology` runs writers (30 % of the connections by
+   default) and readers for the duration. Writers `POST` records into a
+   tenant-scoped collection (each request names one of the tenants, so the
+   writes spread over the shards). Readers rotate between a list at eventual
+   consistency, a list with the latest commit token (`X-ForgeBase-Read-After`,
+   read-your-writes) and a SQL probe with `read_from_replica` that returns the
+   node it ran on.
+3. Once a second a sampler reads `GET /api/system/database/topology`: each
+   replica's `lag_ms`, `lag_bytes`, state and rotation.
+
+The report (`extra.topology` in the JSON, `RESULT scenario=topology` lines) has
+the latency of each operation, per-replica lag (p50, p95, max, and seconds out
+of rotation), the share of probes each node served (`primary`, `replica-1`,
+...: named in order of the postmaster start time, not the topology names),
+`replica_fallbacks_delta` (the `forgebase_db_replica_fallbacks_total` counter
+before and after: reads that fell back to the primary) and the placement of the
+tenants.
+
+Reading the topology numbers:
+
+- The API holds back a read until a replica has replayed the caller's own
+  writes (ADR-0029 §2.6), so a client never *sees* replica lag. The lag figures
+  are the replicas' apply lag, and what lag costs you is a lower replica share
+  and more fallbacks. A healthy run has lag in the low milliseconds and a share
+  close to the replicas' weight.
+- Primary, replicas and shards share one 4-core machine: the run measures the
+  routing, the replication stream and the lag under load, **not** the extra
+  capacity separate hosts would add. Expect write throughput to be lower than a
+  single primary alone (the replicas replay it on the same cores).
+- `wal_level = logical` costs about 1.4 % more WAL (ADR-0029 addendum).
+
+Run it by hand: `crates/forgebase-bench/run-topology.sh <forgebase> <fb-load>
+<empty dir> [connections] [seconds] [replicas] [shards] [tenants]`. It needs
+`FORGEBASE_PG_ENGINE_DIR` for the shards (and for a binary built without the
+embedded engine).
+
+### 9.4 Reading and comparing results
+
+**The JSON** (`fb-load --json`, format 1):
+
+```json
+{
+  "format": 1, "tool": "fb-load", "label": "linux-postgres", "backend": "postgres",
+  "host": {"os": "linux", "arch": "x86_64", "cpus": 4},
+  "config": {"concurrency": 16, "duration_secs": 30},
+  "results": [{"scenario": "records", "op": "create", "n": 1, "errors": 0, "rps": 1,
+               "p50_us": 1, "p95_us": 1, "p99_us": 1}],
+  "resources": [{"scenario": "records", "samples": 30,
+                 "cpu_pct": {"p50": 1, "max": 1}, "rss_mb": {"p50": 1, "max": 1},
+                 "open_fds": {"p50": 1, "max": 1},
+                 "disk_mb": {"start": 1, "p50": 1, "max": 1, "end": 1}, "procs_max": 1}],
+  "extra": {"topology": {}}
+}
+```
+
+Rows are keyed `scenario/op`. Storage rows also carry `mib_per_s`; graph, SQL
+and topology rows carry the data size. CPU is a percentage of **one core** (200
+is two busy cores) over the process tree, so a PostgreSQL run counts the
+engine's processes too. Open descriptors come from `/proc` on Linux; off Linux
+they are a best-effort `lsof` count that includes memory maps and overstates.
+Rows with errors are not used for comparisons.
+
+**Criterion** values are the median, as in §2, in `criterion-<backend>.json`
+(`benches["<group>/<bench>"].median_ns`); the full data is in the tar.
+
+**Comparing.** `bench_report.py compare` reads one or more run files and the
+baseline and prints a table of metrics more than 20 % worse (and better); for
+each regression it prints a GitHub `::warning` annotation and it appends the
+table to the step summary. It **never fails** the job: shared runners are noisy
+and an unrecorded baseline must not turn a run red. Metrics compared: Criterion
+median (lower is better), `rps` (higher), `p95_us` and `p99_us` (lower), and
+per scenario `rss_mb.max` and `cpu_pct.p50` (lower). Latency changes smaller
+than 50 µs are ignored (`--noise-floor-us`).
+
+**The baseline** is `crates/forgebase-bench/baseline/linux.json`. Its format
+(documented in `bench_report.py`) is committed with every value `null` and a
+note: **TBD, no Linux run is recorded.** A `null` is "not recorded": it is
+listed as unbaselined and never warns. To record one:
+
+1. Run the workflow (Actions, bench, Run workflow) on a commit you want as the
+   reference, with the default `duration` and `concurrency`.
+2. Download `bench-sqlite`, `bench-postgres` and `bench-topology`.
+3. `python3 crates/forgebase-bench/scripts/bench_report.py baseline --out
+   crates/forgebase-bench/baseline/linux.json --runner "ubuntu-24.04 (GitHub-hosted, 4 vCPU)"
+   --commit <sha> --recorded-at <date> criterion-*.json fb-load-*.json` and
+   commit the file.
+4. Re-record after a deliberate performance change, or when the runner type
+   changes; keep the old file in history. One run is a weak baseline: record
+   from the median of three runs when the numbers will gate decisions.
+
+To compare two runs of your own (a branch against `main`), record the first
+with `baseline --out a.json` and run `compare --baseline a.json` on the second.
+
+### 9.5 Local smoke runs (not benchmarks)
+
+```sh
+export CARGO_INCREMENTAL=0 TMPDIR=/path/on/the/disk/under/test
+cargo test -p forgebase-bench --benches                       # every bench once, small data, SQLite
+FORGEBASE_TEST_BACKEND=postgres FORGEBASE_PG_ENGINE_DIR=<engine> \
+  cargo test -p forgebase-bench --benches                     # the same on PostgreSQL
+cargo build -p forgebase-cli -p forgebase-bench               # debug binaries
+SCENARIOS=storage,graph,sql JSON_OUT=/tmp/smoke.json \
+  LOAD_ARGS="--graph-nodes 300 --graph-edges 1500 --sql-customers 200 --sql-orders 1000 --storage-large-mib 2" \
+  crates/forgebase-bench/run-load.sh target/debug/forgebase target/debug/fb-load /tmp/work 4 3 sqlite
+crates/forgebase-bench/run-topology.sh target/debug/forgebase target/debug/fb-load /tmp/topo 6 8 2 1 3
+python3 -m unittest discover -s crates/forgebase-bench/scripts -p 'test_*.py'
+```
+
+These check that the code paths work (no errors in any scenario; replicas and a
+shard come up and receive reads and tenants). The figures they print come from
+a debug build on a busy laptop: do not quote them.
+
+### 9.6 What still needs a real Linux run
+
+- Every number in the new benches and scenarios (storage, graph, SQL, fuzzy,
+  resource use, topology). The code was checked to compile and to run clean on
+  macOS with SQLite and PostgreSQL; nothing was timed in a release build.
+- The AGE half of the `graph` bench has not run anywhere yet: the macOS test
+  engine has no AGE. The pinned engine has it, so the Linux PostgreSQL job will
+  show the portable-versus-AGE comparison, or skip it with a message if the
+  derived graph cannot be set up from the bench's database handle.
+- `bench.yml` passed `actionlint`; it has not run on GitHub.
+- Replica lag and read distribution on separate hosts, and a network between
+  primary and replica, are not covered by any job.
+- The baseline (§9.4).

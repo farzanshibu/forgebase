@@ -5,164 +5,79 @@
 //!
 //! ```text
 //! fb-load --addr 127.0.0.1:8090 --email root@example.com --password "root password 1" \
-//!         --scenario records|auth|realtime|queue|all [--concurrency 32] [--duration 10] [--subscribers 100]
+//!         --scenario records,auth,realtime,queue,storage,graph,sql|all|topology-setup|topology \
+//!         [--concurrency 32] [--duration 10] [--subscribers 100] \
+//!         [--json out.json --backend postgres --label linux-postgres] \
+//!         [--pid <server pid> --data-dir <server data dir>]
 //! ```
 //!
 //! Every scenario prints one line per operation:
 //! `RESULT scenario=<s> op=<o> n=<count> errors=<e> rps=<r> p50_us=<..> p95_us=<..> p99_us=<..>`.
+//!
+//! * `--json <file>`: also writes the whole run as one JSON document
+//!   (`forgebase_bench::report`), the file CI stores and compares.
+//! * `--pid` (and `--data-dir`): samples the server's process tree once a
+//!   second during each scenario (CPU %, RSS, open fds, data directory disk
+//!   usage; `forgebase_bench::resources`) and prints `RESOURCES` lines and
+//!   a `resources` array in the JSON.
+//! * Scenario sizes: `--graph-nodes/--graph-edges`, `--sql-customers/
+//!   --sql-orders`, `--storage-large-mib` (0 skips the large objects).
+//! * `topology-setup` adds `--replicas N` local replicas and the shards of
+//!   `--shard-urls u1,u2` through `/api/system/database/*`; restart the
+//!   server, then `topology` runs a mixed read/write load and reports replica
+//!   lag, the share of reads each node served and fallbacks to the primary
+//!   (`run-topology.sh` does all of it).
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+mod graph;
+mod http;
+mod sql;
+mod stats;
+mod storage;
+mod topology;
+
 use forgebase_bench::percentile;
 use futures_util::{SinkExt, StreamExt};
+use http::Conn;
 use serde_json::{Value, json};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use stats::{Stats, emit};
 use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
-/// One keep-alive HTTP/1.1 connection.
-struct Conn {
-    addr: String,
-    stream: Option<TcpStream>,
-    buf: Vec<u8>,
-}
-
-impl Conn {
-    fn new(addr: &str) -> Self {
-        Self {
-            addr: addr.to_owned(),
-            stream: None,
-            buf: Vec::with_capacity(8192),
-        }
-    }
-
-    /// Sends a request and returns (status, body). Reconnects once when the
-    /// server closed the idle connection.
-    async fn call(&mut self, method: &str, path: &str, token: Option<&str>, body: Option<&Value>) -> (u16, Vec<u8>) {
-        for attempt in 0..2 {
-            if self.stream.is_none() {
-                let s = TcpStream::connect(&self.addr).await.expect("connect");
-                s.set_nodelay(true).ok();
-                self.stream = Some(s);
-            }
-            match self.try_call(method, path, token, body).await {
-                Ok(r) => return r,
-                Err(_) => {
-                    self.stream = None;
-                    if attempt == 1 {
-                        return (0, Vec::new());
-                    }
-                }
-            }
-        }
-        (0, Vec::new())
-    }
-
-    async fn try_call(
-        &mut self,
-        method: &str,
-        path: &str,
-        token: Option<&str>,
-        body: Option<&Value>,
-    ) -> std::io::Result<(u16, Vec<u8>)> {
-        let payload = body.map(Value::to_string).unwrap_or_default();
-        let mut req = format!("{method} {path} HTTP/1.1\r\nHost: {}\r\n", self.addr);
-        if let Some(t) = token {
-            req.push_str(&format!("Authorization: Bearer {t}\r\n"));
-        }
-        if body.is_some() {
-            req.push_str(&format!(
-                "Content-Type: application/json\r\nContent-Length: {}\r\n",
-                payload.len()
-            ));
-        }
-        req.push_str("\r\n");
-        req.push_str(&payload);
-        let s = self.stream.as_mut().expect("stream");
-        s.write_all(req.as_bytes()).await?;
-        self.buf.clear();
-        let mut chunk = [0_u8; 8192];
-        let (head_end, content_length) = loop {
-            let n = s.read(&mut chunk).await?;
-            if n == 0 {
-                return Err(std::io::ErrorKind::UnexpectedEof.into());
-            }
-            self.buf.extend_from_slice(&chunk[..n]);
-            if let Some(pos) = self.buf.windows(4).position(|w| w == b"\r\n\r\n") {
-                let head = String::from_utf8_lossy(&self.buf[..pos]).to_lowercase();
-                let len = head
-                    .lines()
-                    .find_map(|l| l.strip_prefix("content-length:"))
-                    .and_then(|v| v.trim().parse::<usize>().ok())
-                    .unwrap_or(0);
-                break (pos + 4, len);
-            }
-        };
-        while self.buf.len() < head_end + content_length {
-            let n = s.read(&mut chunk).await?;
-            if n == 0 {
-                return Err(std::io::ErrorKind::UnexpectedEof.into());
-            }
-            self.buf.extend_from_slice(&chunk[..n]);
-        }
-        let head = String::from_utf8_lossy(&self.buf[..head_end]).to_string();
-        let status = head
-            .lines()
-            .next()
-            .and_then(|l| l.split_whitespace().nth(1))
-            .and_then(|c| c.parse().ok())
-            .unwrap_or(0);
-        if head.to_lowercase().contains("connection: close") {
-            self.stream = None;
-        }
-        Ok((status, self.buf[head_end..head_end + content_length].to_vec()))
-    }
-
-    async fn json(&mut self, method: &str, path: &str, token: Option<&str>, body: Option<&Value>) -> (u16, Value) {
-        let (s, b) = self.call(method, path, token, body).await;
-        (s, serde_json::from_slice(&b).unwrap_or(Value::Null))
-    }
-}
-
-/// Latency samples of one operation across all workers.
-#[derive(Default)]
-struct Stats {
-    us: Vec<u64>,
-    errors: u64,
-}
-
-impl Stats {
-    fn merge(&mut self, o: Stats) {
-        self.us.extend(o.us);
-        self.errors += o.errors;
-    }
-    fn report(mut self, scenario: &str, op: &str, secs: f64) {
-        let n = self.us.len() as u64;
-        let (p50, p95, p99) = (
-            percentile(&mut self.us, 0.50),
-            percentile(&mut self.us, 0.95),
-            percentile(&mut self.us, 0.99),
-        );
-        println!(
-            "RESULT scenario={scenario} op={op} n={n} errors={} rps={:.0} p50_us={p50} p95_us={p95} p99_us={p99}",
-            self.errors,
-            n as f64 / secs
-        );
-    }
-}
-
-struct Args {
-    addr: String,
-    email: String,
-    password: String,
-    scenario: String,
-    concurrency: usize,
-    duration: u64,
-    subscribers: usize,
+pub(crate) struct Args {
+    pub(crate) addr: String,
+    pub(crate) email: String,
+    pub(crate) password: String,
+    pub(crate) scenario: String,
+    pub(crate) concurrency: usize,
+    pub(crate) duration: u64,
+    pub(crate) subscribers: usize,
+    /// `--json`: where to write the report.
+    pub(crate) json: Option<String>,
+    /// `--backend` and `--label`: free text for the report.
+    pub(crate) backend: String,
+    pub(crate) label: String,
+    /// `--pid` and `--data-dir`: what to sample.
+    pub(crate) pid: Option<u32>,
+    pub(crate) data_dir: Option<String>,
+    pub(crate) sample_interval_ms: u64,
+    pub(crate) graph_nodes: usize,
+    pub(crate) graph_edges: usize,
+    pub(crate) sql_customers: usize,
+    pub(crate) sql_orders: usize,
+    pub(crate) storage_large_mib: usize,
+    /// `topology-setup`: local replicas to add and shard URLs to add.
+    pub(crate) replicas: usize,
+    pub(crate) shard_urls: Vec<String>,
+    /// `topology`: tenants to spread the load over (0: none).
+    pub(crate) tenants: usize,
+    /// `topology`: share of the workers that write, percent.
+    pub(crate) write_pct: usize,
 }
 
 fn args() -> Args {
@@ -174,30 +89,61 @@ fn args() -> Args {
         concurrency: 32,
         duration: 10,
         subscribers: 100,
+        json: None,
+        backend: "unknown".into(),
+        label: String::new(),
+        pid: None,
+        data_dir: None,
+        sample_interval_ms: 1000,
+        graph_nodes: 10_000,
+        graph_edges: 50_000,
+        sql_customers: 5_000,
+        sql_orders: 25_000,
+        storage_large_mib: 16,
+        replicas: 0,
+        shard_urls: Vec::new(),
+        tenants: 0,
+        write_pct: 30,
     };
     let mut it = std::env::args().skip(1);
     while let Some(k) = it.next() {
         let v = it.next().unwrap_or_default();
+        let num = |name: &str| v.parse::<usize>().unwrap_or_else(|_| panic!("{name} needs a number"));
         match k.as_str() {
             "--addr" => a.addr = v,
             "--email" => a.email = v,
             "--password" => a.password = v,
             "--scenario" => a.scenario = v,
-            "--concurrency" => a.concurrency = v.parse().expect("--concurrency"),
+            "--concurrency" => a.concurrency = num("--concurrency"),
             "--duration" => a.duration = v.parse().expect("--duration"),
-            "--subscribers" => a.subscribers = v.parse().expect("--subscribers"),
+            "--subscribers" => a.subscribers = num("--subscribers"),
+            "--json" => a.json = Some(v),
+            "--backend" => a.backend = v,
+            "--label" => a.label = v,
+            "--pid" => a.pid = Some(v.parse().expect("--pid")),
+            "--data-dir" => a.data_dir = Some(v),
+            "--sample-interval-ms" => a.sample_interval_ms = v.parse().expect("--sample-interval-ms"),
+            "--graph-nodes" => a.graph_nodes = num("--graph-nodes"),
+            "--graph-edges" => a.graph_edges = num("--graph-edges"),
+            "--sql-customers" => a.sql_customers = num("--sql-customers"),
+            "--sql-orders" => a.sql_orders = num("--sql-orders"),
+            "--storage-large-mib" => a.storage_large_mib = num("--storage-large-mib"),
+            "--replicas" => a.replicas = num("--replicas"),
+            "--shard-urls" => a.shard_urls = v.split(',').filter(|u| !u.is_empty()).map(str::to_owned).collect(),
+            "--tenants" => a.tenants = num("--tenants"),
+            "--write-pct" => a.write_pct = num("--write-pct"),
             other => panic!("unknown argument {other}"),
         }
     }
     a
 }
 
-fn now_ns() -> u64 {
+pub(crate) fn now_ns() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos() as u64
 }
 
 /// Runs `body` on `workers` tasks until the deadline; each returns its per-op stats.
-async fn run_workers<F, Fut>(workers: usize, secs: u64, ops: usize, body: F) -> (Vec<Stats>, f64)
+pub(crate) async fn run_workers<F, Fut>(workers: usize, secs: u64, ops: usize, body: F) -> (Vec<Stats>, f64)
 where
     F: Fn(usize, Arc<AtomicBool>) -> Fut + Send + Sync + 'static,
     Fut: std::future::Future<Output = Vec<Stats>> + Send + 'static,
@@ -222,7 +168,7 @@ where
     (total, start.elapsed().as_secs_f64())
 }
 
-async fn timed(
+pub(crate) async fn timed(
     conn: &mut Conn,
     st: &mut Stats,
     method: &str,
@@ -240,7 +186,7 @@ async fn timed(
     v
 }
 
-async fn admin_token(a: &Args) -> String {
+pub(crate) async fn admin_token(a: &Args) -> String {
     let mut c = Conn::new(&a.addr);
     let (s, j) = c
         .json(
@@ -483,10 +429,14 @@ async fn queue(a: &Args, token: &str) {
         }
         st.us.push(t.elapsed().as_micros() as u64);
     }
-    println!(
-        "RESULT scenario=queue op=drain_msgs_per_s n={pulled} errors={} rps={:.0}",
-        st.errors,
-        pulled as f64 / t0.elapsed().as_secs_f64()
+    emit(
+        "queue",
+        "drain_msgs_per_s",
+        &[
+            ("n", json!(pulled)),
+            ("errors", json!(st.errors)),
+            ("rps", json!((pulled as f64 / t0.elapsed().as_secs_f64()).round())),
+        ],
     );
     st.report("queue", "pull_ack_100_roundtrip", t0.elapsed().as_secs_f64());
 }
@@ -586,33 +536,77 @@ async fn realtime(a: &Args, token: &str) {
     let published = stats[0].us.len() as u64;
     let got = received.load(Ordering::Relaxed);
     let mut lat = samples.lock().await.clone();
-    println!(
-        "RESULT scenario=realtime op=fanout subscribers={} published={published} delivered={got} expected={} publish_rps={:.0} delivered_per_s={:.0} p50_us={} p95_us={} p99_us={}",
-        a.subscribers,
-        published * a.subscribers as u64,
-        published as f64 / secs,
-        got as f64 / secs,
-        percentile(&mut lat, 0.50),
-        percentile(&mut lat, 0.95),
-        percentile(&mut lat, 0.99),
+    emit(
+        "realtime",
+        "fanout",
+        &[
+            ("subscribers", json!(a.subscribers)),
+            ("published", json!(published)),
+            ("delivered", json!(got)),
+            ("expected", json!(published * a.subscribers as u64)),
+            ("publish_rps", json!((published as f64 / secs).round())),
+            ("delivered_per_s", json!((got as f64 / secs).round())),
+            ("p50_us", json!(percentile(&mut lat, 0.50))),
+            ("p95_us", json!(percentile(&mut lat, 0.95))),
+            ("p99_us", json!(percentile(&mut lat, 0.99))),
+        ],
     );
+}
+
+const DEFAULT_SCENARIOS: [&str; 7] = ["records", "auth", "queue", "realtime", "storage", "graph", "sql"];
+
+async fn run_scenario(name: &str, a: &Args, token: &str) {
+    match name {
+        "records" => records(a, token).await,
+        "auth" => auth(a).await,
+        "queue" => queue(a, token).await,
+        "realtime" => realtime(a, token).await,
+        "storage" => storage::run(a, token).await,
+        "graph" => graph::run(a, token).await,
+        "sql" => sql::run(a, token).await,
+        "topology-setup" => topology::setup(a, token).await,
+        "topology" => topology::run(a, token).await,
+        other => panic!("unknown scenario {other}"),
+    }
 }
 
 #[tokio::main]
 async fn main() {
     let a = args();
     let token = admin_token(&a).await;
-    let all = a.scenario == "all";
-    if all || a.scenario == "records" {
-        records(&a, &token).await;
+    let names: Vec<String> = if a.scenario == "all" {
+        DEFAULT_SCENARIOS.iter().map(|s| (*s).to_owned()).collect()
+    } else {
+        a.scenario
+            .split(',')
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned)
+            .collect()
+    };
+    for name in names {
+        let sampler = a.pid.map(|pid| {
+            forgebase_bench::resources::Sampler::start(
+                pid,
+                a.data_dir.as_ref().map(std::path::PathBuf::from),
+                Duration::from_millis(a.sample_interval_ms),
+            )
+        });
+        run_scenario(&name, &a, &token).await;
+        if let Some(sampler) = sampler {
+            let summary = sampler.finish().await;
+            println!("{}", summary.line(&name));
+            stats::REPORT.lock().unwrap().resource(summary.to_json(&name));
+        }
     }
-    if all || a.scenario == "auth" {
-        auth(&a).await;
-    }
-    if all || a.scenario == "queue" {
-        queue(&a, &token).await;
-    }
-    if all || a.scenario == "realtime" {
-        realtime(&a, &token).await;
+    if let Some(path) = &a.json {
+        let config = json!({
+            "addr": a.addr, "scenario": a.scenario, "concurrency": a.concurrency, "duration_secs": a.duration,
+            "subscribers": a.subscribers, "graph_nodes": a.graph_nodes, "graph_edges": a.graph_edges,
+            "sql_customers": a.sql_customers, "sql_orders": a.sql_orders, "storage_large_mib": a.storage_large_mib,
+            "sampled_pid": a.pid, "sample_interval_ms": a.sample_interval_ms,
+        });
+        let doc = stats::REPORT.lock().unwrap().document(&a.label, &a.backend, config);
+        std::fs::write(path, serde_json::to_string_pretty(&doc).unwrap()).expect("write --json");
+        println!("REPORT written to {path}");
     }
 }

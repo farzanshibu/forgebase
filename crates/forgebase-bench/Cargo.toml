@@ -12,12 +12,16 @@ forgebase-auth.workspace = true
 forgebase-core.workspace = true
 forgebase-data.workspace = true
 forgebase-db.workspace = true
+forgebase-entitlements.workspace = true
+forgebase-graph.workspace = true
+forgebase-storage.workspace = true
 forgebase-kv.workspace = true
 forgebase-policy.workspace = true
 forgebase-queue.workspace = true
 forgebase-jobs.workspace = true
 forgebase-vector.workspace = true
 forgebase-server.workspace = true
+bytes = "1.12.1"
 futures-util = { workspace = true, features = ["sink"] }
 serde_json.workspace = true
 tempfile.workspace = true
@@ -30,7 +34,7 @@ criterion = { version = "0.8.2", default-features = false, features = ["cargo_be
 
 [[bin]]
 name = "fb-load"
-path = "src/bin/fb-load.rs"
+path = "src/bin/fb-load/main.rs"
 
 [[bench]]
 name = "db"
@@ -54,6 +58,22 @@ harness = false
 
 [[bench]]
 name = "queue_jobs"
+harness = false
+
+[[bench]]
+name = "storage"
+harness = false
+
+[[bench]]
+name = "graph"
+harness = false
+
+[[bench]]
+name = "sql"
+harness = false
+
+[[bench]]
+name = "fuzzy"
 harness = false
 
 [lints]

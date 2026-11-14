@@ -1,0 +1,312 @@
+name: bench
+
+# Scale validation on Linux (FB-81 follow-up, docs/benchmarks.md §9). The Mac numbers in
+# docs/benchmarks.md came from a shared laptop; this workflow produces the Linux ones:
+#
+#   * bench (sqlite, postgres): the Criterion benches (db, records, auth_policy, kv, vector,
+#     queue_jobs, storage, graph, sql, fuzzy) at full scale, then the fb-load HTTP scenarios
+#     (records, queue, realtime, auth, storage, graph, sql) against a release server, with the
+#     server's CPU, memory, open fds and data-directory disk usage sampled every second;
+#   * topology: a bundled-PostgreSQL primary with two read replicas and two shards under a
+#     sustained mixed load, with replica lag and the read distribution (run-topology.sh).
+#
+# Each job uploads its JSON and the Criterion data as artifacts, and compares them with the
+# committed baseline (crates/forgebase-bench/baseline/linux.json). The comparison WARNS about
+# anything more than 20 % worse and never fails the run: shared runners are noisy, and a
+# baseline needs a recorded run first (see the baseline's note and docs/benchmarks.md §9.4).
+#
+# On demand and weekly, not on pull requests: a full run takes about an hour per backend.
+
+on:
+  workflow_dispatch:
+    inputs:
+      duration:
+        description: "fb-load seconds per scenario"
+        default: "30"
+      concurrency:
+        description: "fb-load connections"
+        default: "16"
+      topology:
+        description: "also run the topology job (replicas and shards)"
+        type: boolean
+        default: true
+  schedule:
+    - cron: "21 4 * * 0"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bench-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  # Real numbers: the full data sets of the benches (smoke scale is for `cargo test --benches`).
+  FB_BENCH_SCALE: full
+  LOAD_SECONDS: ${{ inputs.duration || '30' }}
+  LOAD_CONNECTIONS: ${{ inputs.concurrency || '16' }}
+
+jobs:
+  bench:
+    name: bench (${{ matrix.backend }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        backend: [sqlite, postgres]
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TARGET: x86_64-unknown-linux-musl
+      FORGEBASE_TEST_BACKEND: ${{ matrix.backend }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: dashboard/package-lock.json
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: bench-${{ matrix.backend }}
+
+      # Short paths: the engine's Unix-socket path is limited to 103 bytes.
+      - name: Work directories
+        run: |
+          mkdir -p "$RUNNER_TEMP/results" "$RUNNER_TEMP/bt" "$RUNNER_TEMP/work"
+          {
+            echo "RESULTS=$RUNNER_TEMP/results"
+            echo "TMPDIR=$RUNNER_TEMP/bt"
+            echo "FORGEBASE_TEST_PG_TMP=$RUNNER_TEMP"
+          } >> "$GITHUB_ENV"
+
+      - name: Compare script self-test
+        run: PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s crates/forgebase-bench/scripts -p 'test_*.py'
+
+      - name: Build the dashboard so rust-embed embeds the real assets
+        run: |
+          cd dashboard
+          npm ci
+          npm run build
+
+      - name: zstd for the engine archive
+        if: matrix.backend == 'postgres'
+        run: command -v zstd >/dev/null 2>&1 || sudo apt-get install -y -qq zstd
+
+      - name: Download and unpack the pinned engine
+        if: matrix.backend == 'postgres'
+        run: |
+          set -euo pipefail
+          release=$(python3 deploy/postgres-engine/engine.py get engine.release)
+          mkdir -p "$RUNNER_TEMP/engine-dl"
+          gh release download "$release" --repo "$GITHUB_REPOSITORY" \
+            -p "forgebase-pg*-$TARGET.tar.zst" -p SHA256SUMS -D "$RUNNER_TEMP/engine-dl"
+          python3 - "$RUNNER_TEMP/engine-dl" <<'PY'
+          import hashlib, pathlib, sys
+          d = pathlib.Path(sys.argv[1])
+          archive = next(d.glob("forgebase-pg*.tar.zst"))
+          want = {l.split()[1].lstrip("*"): l.split()[0] for l in (d / "SHA256SUMS").read_text().splitlines() if l.strip()}
+          got = hashlib.sha256(archive.read_bytes()).hexdigest()
+          if want.get(archive.name) != got:
+              sys.exit(f"{archive.name}: sha256 {got} is not the release's {want.get(archive.name)}")
+          print(f"{archive.name} verified ({got})")
+          PY
+          archive=$(ls "$RUNNER_TEMP"/engine-dl/forgebase-pg*.tar.zst)
+          python3 deploy/postgres-engine/engine.py extract "$archive" "$RUNNER_TEMP/engine"
+          echo "FORGEBASE_PG_ENGINE_DIR=$RUNNER_TEMP/engine" >> "$GITHUB_ENV"
+          "$RUNNER_TEMP/engine/bin/postgres" --version
+
+      - name: Build (release)
+        run: cargo build --release --locked -p forgebase-cli -p forgebase-bench --bins
+
+      # What the disk and the machine are, so a number can be read later. The fsync probe is the
+      # Linux counterpart of the F_FULLFSYNC figures in docs/benchmarks.md §1.
+      - name: Machine and disk
+        run: |
+          {
+            echo "## machine"; uname -a; lscpu | sed -n '1,20p'; free -m
+            echo "## disk"; df -h "$RUNNER_TEMP"; findmnt -T "$RUNNER_TEMP" || true
+            lsblk -d -o NAME,ROTA,SIZE,MODEL 2>/dev/null || true
+            echo "## fsync latency (4 KiB write + fsync, 300 times, in $RUNNER_TEMP)"
+            python3 - "$RUNNER_TEMP" <<'PY'
+          import os, sys, time
+          fd = os.open(os.path.join(sys.argv[1], "fsync-probe"), os.O_CREAT | os.O_WRONLY)
+          buf, lat = b"x" * 4096, []
+          for _ in range(300):
+              os.write(fd, buf)
+              t = time.perf_counter()
+              os.fsync(fd)
+              lat.append((time.perf_counter() - t) * 1000)
+          lat.sort()
+          print(f"fsync ms: p50 {lat[149]:.2f}  p95 {lat[284]:.2f}  max {lat[-1]:.2f}")
+          os.close(fd)
+          PY
+          } | tee "$RESULTS/system-${{ matrix.backend }}.txt"
+          cat "$RESULTS/system-${{ matrix.backend }}.txt" >> "$GITHUB_STEP_SUMMARY" || true
+
+      # Criterion: every bench of the crate. TMPDIR is the runner's disk (the benches write
+      # blobs and databases there).
+      - name: Criterion benches
+        run: |
+          cargo bench --locked -p forgebase-bench --benches -- --warm-up-time 2 --measurement-time 5 \
+            2>&1 | tee "$RESULTS/criterion-${{ matrix.backend }}.log"
+
+      - name: Criterion summary (JSON)
+        if: always()
+        run: |
+          python3 crates/forgebase-bench/scripts/bench_report.py criterion \
+            --dir target/criterion --backend ${{ matrix.backend }} \
+            --out "$RESULTS/criterion-${{ matrix.backend }}.json"
+          tar -C target -czf "$RESULTS/criterion-${{ matrix.backend }}-data.tar.gz" criterion
+
+      # fb-load against a release server, one scenario after the other, sampling the server.
+      - name: fb-load
+        run: |
+          JSON_OUT="$RESULTS/fb-load-${{ matrix.backend }}.json" LABEL="linux-${{ matrix.backend }}" \
+            crates/forgebase-bench/run-load.sh target/release/forgebase target/release/fb-load \
+            "$RUNNER_TEMP/work/load" "$LOAD_CONNECTIONS" "$LOAD_SECONDS" ${{ matrix.backend }} \
+            2>&1 | tee "$RESULTS/fb-load-${{ matrix.backend }}.log"
+
+      - name: Compare with the baseline (warns, never fails)
+        if: always()
+        run: |
+          runs=()
+          for f in "$RESULTS/criterion-${{ matrix.backend }}.json" "$RESULTS/fb-load-${{ matrix.backend }}.json"; do
+            [ -f "$f" ] && runs+=("$f")
+          done
+          if [ "${#runs[@]}" -gt 0 ]; then
+            python3 crates/forgebase-bench/scripts/bench_report.py compare \
+              --baseline crates/forgebase-bench/baseline/linux.json "${runs[@]}" | tee "$RESULTS/comparison-${{ matrix.backend }}.md"
+          fi
+
+      - name: Server log
+        if: always()
+        run: cp "$RUNNER_TEMP/work/load/server.log" "$RESULTS/server-${{ matrix.backend }}.log" 2>/dev/null || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bench-${{ matrix.backend }}
+          path: ${{ runner.temp }}/results
+          if-no-files-found: warn
+
+  topology:
+    name: topology load (primary, two replicas, two shards)
+    if: github.event_name == 'schedule' || inputs.topology
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TARGET: x86_64-unknown-linux-musl
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: dashboard/package-lock.json
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: bench-topology
+
+      - name: Work directories
+        run: |
+          mkdir -p "$RUNNER_TEMP/results" "$RUNNER_TEMP/bt" "$RUNNER_TEMP/work"
+          {
+            echo "RESULTS=$RUNNER_TEMP/results"
+            echo "TMPDIR=$RUNNER_TEMP/bt"
+          } >> "$GITHUB_ENV"
+
+      - name: Build the dashboard so rust-embed embeds the real assets
+        run: |
+          cd dashboard
+          npm ci
+          npm run build
+
+      - name: zstd for the engine archive
+        run: command -v zstd >/dev/null 2>&1 || sudo apt-get install -y -qq zstd
+
+      - name: Download and unpack the pinned engine
+        run: |
+          set -euo pipefail
+          release=$(python3 deploy/postgres-engine/engine.py get engine.release)
+          mkdir -p "$RUNNER_TEMP/engine-dl"
+          gh release download "$release" --repo "$GITHUB_REPOSITORY" \
+            -p "forgebase-pg*-$TARGET.tar.zst" -p SHA256SUMS -D "$RUNNER_TEMP/engine-dl"
+          python3 - "$RUNNER_TEMP/engine-dl" <<'PY'
+          import hashlib, pathlib, sys
+          d = pathlib.Path(sys.argv[1])
+          archive = next(d.glob("forgebase-pg*.tar.zst"))
+          want = {l.split()[1].lstrip("*"): l.split()[0] for l in (d / "SHA256SUMS").read_text().splitlines() if l.strip()}
+          got = hashlib.sha256(archive.read_bytes()).hexdigest()
+          if want.get(archive.name) != got:
+              sys.exit(f"{archive.name}: sha256 {got} is not the release's {want.get(archive.name)}")
+          print(f"{archive.name} verified ({got})")
+          PY
+          archive=$(ls "$RUNNER_TEMP"/engine-dl/forgebase-pg*.tar.zst)
+          python3 deploy/postgres-engine/engine.py extract "$archive" "$RUNNER_TEMP/engine"
+          echo "FORGEBASE_PG_ENGINE_DIR=$RUNNER_TEMP/engine" >> "$GITHUB_ENV"
+          "$RUNNER_TEMP/engine/bin/postgres" --version
+
+      - name: Build (release)
+        run: cargo build --release --locked -p forgebase-cli -p forgebase-bench --bins
+
+      # Everything is on one 4-core machine: the replicas and shards share its CPU, memory
+      # and disk, so this measures the routing, the replication stream and the lag under
+      # load, not the extra capacity separate hosts would add (docs/benchmarks.md §9.3).
+      - name: Topology load (2 replicas, 2 shards, 6 tenants)
+        run: |
+          JSON_OUT="$RESULTS/fb-load-topology.json" LABEL="linux-topology-2r-2s" \
+            crates/forgebase-bench/run-topology.sh target/release/forgebase target/release/fb-load \
+            "$RUNNER_TEMP/work/topology" "$LOAD_CONNECTIONS" "$LOAD_SECONDS" 2 2 6 \
+            2>&1 | tee "$RESULTS/fb-load-topology.log"
+
+      - name: Summary
+        if: always()
+        run: |
+          python3 - "$RESULTS/fb-load-topology.json" >> "$GITHUB_STEP_SUMMARY" <<'PY' || true
+          import json, sys
+          d = json.load(open(sys.argv[1]))
+          t = d["extra"]["topology"]
+          print("### Topology load (replicas, shards)")
+          print(f"replicas {t['replicas']}, shards {t['shards']}, tenants {t['tenants']}, writers {t['writers']}, readers {t['readers']}")
+          print(f"replica fallbacks to the primary: {t['replica_fallbacks_delta']}")
+          print("\n| Node | Lag ms p50 | Lag ms p95 | Lag ms max | Lag bytes max | Out of rotation (s) |\n|---|---|---|---|---|---|")
+          for n, l in t["lag"].items():
+              print(f"| {n} | {l['lag_ms']['p50']} | {l['lag_ms']['p95']} | {l['lag_ms']['max']} | {l['lag_bytes']['max']} | {l['out_of_rotation_samples']} |")
+          print("\n| Read served by | Probes | Share |\n|---|---|---|")
+          for n, r in t["read_distribution"]["by_node"].items():
+              print(f"| {n} | {r['count']} | {r['share_pct']} % |")
+          PY
+
+      - name: Compare with the baseline (warns, never fails)
+        if: always()
+        run: |
+          [ -f "$RESULTS/fb-load-topology.json" ] && python3 crates/forgebase-bench/scripts/bench_report.py compare \
+            --baseline crates/forgebase-bench/baseline/linux.json "$RESULTS/fb-load-topology.json" || true
+
+      - name: Server log
+        if: always()
+        run: cp "$RUNNER_TEMP/work/topology/server.log" "$RESULTS/server-topology.log" 2>/dev/null || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bench-topology
+          path: ${{ runner.temp }}/results
+          if-no-files-found: warn

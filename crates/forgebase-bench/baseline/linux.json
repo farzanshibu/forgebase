@@ -1,0 +1,43 @@
+{
+  "format": 1,
+  "note": "TBD: no Linux run has been recorded yet, every value is null and nothing is compared. Run the bench workflow (Actions, bench, Run workflow), download the bench-sqlite, bench-postgres and bench-topology artifacts and record them: python3 crates/forgebase-bench/scripts/bench_report.py baseline --out crates/forgebase-bench/baseline/linux.json --runner 'ubuntu-24.04 (GitHub-hosted, 4 vCPU)' --commit <sha> --recorded-at <date> <the criterion-*.json and fb-load-*.json files>. See docs/benchmarks.md section 9.4. A null value means 'not recorded': the comparison skips it.",
+  "runner": null,
+  "commit": null,
+  "recorded_at": null,
+  "criterion": {
+    "sqlite": {
+      "db/reader_point_select": {"median_ns": null},
+      "storage/put_4k": {"median_ns": null},
+      "graph/traverse_depth_3": {"median_ns": null},
+      "sql/point_lookup_pk": {"median_ns": null},
+      "fuzzy/100k_typo_one_word_top_20": {"median_ns": null}
+    },
+    "postgres": {
+      "db/reader_point_select": {"median_ns": null},
+      "storage/put_4k": {"median_ns": null},
+      "graph/traverse_depth_3": {"median_ns": null},
+      "sql/point_lookup_pk": {"median_ns": null},
+      "fuzzy/100k_typo_one_word_top_20": {"median_ns": null}
+    }
+  },
+  "load": {
+    "sqlite": {
+      "records/create": {"rps": null, "p95_us": null, "p99_us": null},
+      "storage/upload_1m": {"rps": null, "p95_us": null, "p99_us": null},
+      "graph/traverse_depth_3": {"rps": null, "p95_us": null, "p99_us": null},
+      "sql/point_lookup_pk": {"rps": null, "p95_us": null, "p99_us": null}
+    },
+    "postgres": {
+      "records/create": {"rps": null, "p95_us": null, "p99_us": null},
+      "storage/upload_1m": {"rps": null, "p95_us": null, "p99_us": null},
+      "graph/traverse_depth_3": {"rps": null, "p95_us": null, "p99_us": null},
+      "sql/point_lookup_pk": {"rps": null, "p95_us": null, "p99_us": null},
+      "topology/write": {"rps": null, "p95_us": null, "p99_us": null},
+      "topology/read_list_eventual": {"rps": null, "p95_us": null, "p99_us": null}
+    }
+  },
+  "resources": {
+    "sqlite": {"records": {"rss_mb_max": null, "cpu_pct_p50": null}},
+    "postgres": {"records": {"rss_mb_max": null, "cpu_pct_p50": null}}
+  }
+}

@@ -18,7 +18,7 @@ backup pointers.
 | Access | Unix socket only; TCP is off unless `[database.postgres] listen` is set. Windows has no socket: loopback TCP | in-process |
 | Extras | Extensions as accelerators with a portable fallback (ADR-0029), `forgebase db psql` | none |
 
-Which engine runs each feature on each backend, and what differs: [feature parity](feature-parity.md) (ADR-0034).
+Which engine runs each feature on each backend, and what differs: [feature parity](feature-parity.md) (ADR-0034). Which backend to pick, single-writer limits and when to add replicas or shards: [choosing a backend](choosing-a-backend.md).
 
 `forgebase init` asks `Database: [1] PostgreSQL (default, bundled server) [2]
 SQLite (one file)` on a terminal and takes the build's default otherwise. The
