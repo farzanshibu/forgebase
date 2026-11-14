@@ -1144,6 +1144,51 @@ const OBSERVABILITY: &[SettingDef] = &[
     )
     .env("FORGEBASE_OTLP_CA_FILE")
     .example("/etc/forgebase/collector-ca.pem"),
+    SettingDef::new(
+        "observability.slow_query_ms",
+        "Slow statement threshold",
+        Int,
+        "A database statement that takes at least this long is listed in the slow statement log (Insights) with its text, where every value is replaced by a question mark. 200 is a good value; 0 lists every statement.",
+    )
+    .unit("ms")
+    .env("FORGEBASE_OBSERVABILITY_SLOW_QUERY_MS"),
+    SettingDef::new(
+        "observability.query_stats",
+        "Statement statistics",
+        Bool,
+        "Counts every database statement by its shape (values removed): how often it ran, how long it took (median, 95th and 99th percentile), rows and errors. Costs a few atomic additions per statement. It powers the slow statement and query regression pages in Insights. Leave it on unless every statement counts for you.",
+    )
+    .env("FORGEBASE_OBSERVABILITY_QUERY_STATS"),
+    SettingDef::new(
+        "observability.flush_interval_secs",
+        "Statistics flush interval",
+        Int,
+        "How often the statement and function statistics held in memory are written to the database. Each flush writes one time bucket of this length. 60 is a good value.",
+    )
+    .unit("seconds")
+    .env("FORGEBASE_OBSERVABILITY_FLUSH_INTERVAL_SECS"),
+    SettingDef::new(
+        "observability.query_stats_top_n",
+        "Statements kept per flush",
+        Int,
+        "How many statement shapes are written per flush interval: the ones that spent the most time in total (up to 5000). The rest are counted in one summary row. 200 is a good value.",
+    )
+    .env("FORGEBASE_OBSERVABILITY_QUERY_STATS_TOP_N"),
+    SettingDef::new(
+        "observability.retention_days",
+        "Insight retention",
+        Int,
+        "How many days statement statistics, slow statements and function profiles are kept. 14 is a good value.",
+    )
+    .unit("days")
+    .env("FORGEBASE_OBSERVABILITY_RETENTION_DAYS"),
+    SettingDef::new(
+        "observability.function_profiling",
+        "Function profiling",
+        Bool,
+        "Records for every function execution how long each host call took (database, key-value, fetch, storage and so on), the fuel and memory used and whether it was a cold start. Costs a clock reading per host call. It powers the function pages in Insights. Leave it on unless you run very chatty functions and want the last clock readings back.",
+    )
+    .env("FORGEBASE_OBSERVABILITY_FUNCTION_PROFILING"),
 ];
 
 /// `[alerts]`: alerting rules, notifiers and SLOs (ADR-0035).
@@ -1402,11 +1447,11 @@ pub const FEATURES: &[FeatureDef] = &[
     },
     FeatureDef {
         id: "observability",
-        name: "Tracing",
-        summary: "Trace ids in logs and responses, and OpenTelemetry export of traces and logs to your collector.",
+        name: "Tracing and insights",
+        summary: "Trace ids in logs and responses, OpenTelemetry export, slow statements and query regressions, per-tenant usage and cost, function profiles and audit search.",
         can_disable: false,
         enable_key: None,
-        studio_path: None,
+        studio_path: Some("/system"),
         docs: "docs/observability.md#1-tracing",
         routes: &[],
         settings: OBSERVABILITY,

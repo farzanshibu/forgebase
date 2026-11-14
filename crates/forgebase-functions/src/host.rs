@@ -47,6 +47,8 @@ pub(crate) struct HostEnv {
     pub(crate) services: Arc<crate::services::Services>,
     /// Application key-value namespaces the function may reach.
     pub(crate) kv_rules: Arc<Vec<crate::model::KvRule>>,
+    /// Time host calls (`[observability] function_profiling`).
+    pub(crate) profile: bool,
 }
 
 /// A capability operation.
@@ -64,6 +66,21 @@ pub(crate) enum Op {
 }
 
 impl Op {
+    /// The operation's name in a profile.
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Op::DbGet => "db.get",
+            Op::DbList => "db.list",
+            Op::DbCreate => "db.create",
+            Op::DbUpdate => "db.update",
+            Op::DbDelete => "db.delete",
+            Op::Kv => "kv",
+            Op::EnvGet => "env.get",
+            Op::SecretGet => "secret.get",
+            Op::Fetch => "fetch",
+        }
+    }
+
     pub(crate) fn capability(self) -> &'static str {
         match self {
             Op::DbGet | Op::DbList => "db.read",

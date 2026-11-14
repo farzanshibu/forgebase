@@ -31,6 +31,11 @@ pub mod tls_config;
 #[path = "telemetry_config.rs"]
 pub mod telemetry_config;
 
+/// `[observability]`: slow statements, statement statistics, function
+/// profiling (ADR-0036).
+#[path = "observability_config.rs"]
+pub mod observability_config;
+
 /// Prefix of every environment variable ForgeBase reads.
 pub const ENV_PREFIX: &str = "FORGEBASE_";
 /// Environment variable naming the config file.
@@ -1539,6 +1544,13 @@ impl ConfigOverrides {
                 "RESP_MAX_BULK_BYTES" => o.resp_max_bulk_bytes = Some(parse_num(&value).map_err(bad)?),
                 "RESP_IDLE_TIMEOUT_SECS" => o.resp_idle_timeout_secs = Some(parse_num(&value).map_err(bad)?),
                 "RESP_TLS" => o.resp_tls = Some(parse_bool(&value).map_err(bad)?),
+                // ADR-0036: `[observability]`.
+                k if k.starts_with("OBSERVABILITY_") => {
+                    let x = o.observability.get_or_insert_with(Default::default);
+                    if !x.insights_env(k, &value).map_err(bad)? {
+                        return Err(bad("unknown ForgeBase environment variable".into()));
+                    }
+                }
                 // ADR-0033: `[tls]` and `[tls.acme]`.
                 k if k.starts_with("TLS_") => {
                     if !o.tls.env(k, &value).map_err(bad)? {

@@ -28,6 +28,7 @@ forgebase-entitlements.workspace = true
 forgebase-credits.workspace = true
 forgebase-billing.workspace = true
 forgebase-functions.workspace = true
+forgebase-insights.workspace = true
 forgebase-graph.workspace = true
 forgebase-customize.workspace = true
 forgebase-jobs.workspace = true

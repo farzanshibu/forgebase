@@ -38,6 +38,7 @@ forgebase-billing = { path = "crates/forgebase-billing" }
 forgebase-customize = { path = "crates/forgebase-customize" }
 forgebase-queue = { path = "crates/forgebase-queue" }
 forgebase-backup = { path = "crates/forgebase-backup" }
+forgebase-insights = { path = "crates/forgebase-insights" }
 forgebase-convert = { path = "crates/forgebase-convert" }
 forgebase-alerts = { path = "crates/forgebase-alerts" }
 

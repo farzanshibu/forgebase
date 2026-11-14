@@ -1686,6 +1686,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "forgebase-insights"
+version = "0.3.5"
+dependencies = [
+ "axum",
+ "forgebase-api",
+ "forgebase-auth",
+ "forgebase-billing",
+ "forgebase-core",
+ "forgebase-credits",
+ "forgebase-data",
+ "forgebase-db",
+ "forgebase-entitlements",
+ "forgebase-functions",
+ "forgebase-policy",
+ "futures-util",
+ "metrics",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "time",
+ "tokio",
+ "tower",
+ "tracing",
+ "utoipa",
+]
+
+[[package]]
 name = "forgebase-jobs"
 version = "0.3.5"
 dependencies = [
@@ -1955,6 +1983,7 @@ dependencies = [
  "forgebase-entitlements",
  "forgebase-functions",
  "forgebase-graph",
+ "forgebase-insights",
  "forgebase-jobs",
  "forgebase-kv",
  "forgebase-observability",

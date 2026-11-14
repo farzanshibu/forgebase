@@ -124,6 +124,10 @@ pub struct ObservabilityConfig {
     pub trust_incoming_trace: TraceTrust,
     /// OTLP export.
     pub otlp: OtlpConfig,
+    /// Operations insight keys (ADR-0036): slow statements, statement
+    /// statistics and function profiling, in the same `[observability]` table.
+    #[serde(flatten)]
+    pub insights: super::observability_config::ObservabilityConfig,
 }
 
 impl Default for ObservabilityConfig {
@@ -144,6 +148,7 @@ impl Default for ObservabilityConfig {
                 timeout_secs: 10,
                 ca_file: String::new(),
             },
+            insights: super::observability_config::ObservabilityConfig::default(),
         }
     }
 }
@@ -249,6 +254,18 @@ pub struct ObservabilityOverrides {
     pub trust_incoming_trace: Option<TraceTrust>,
     /// `[observability.otlp]`.
     pub otlp: Option<OtlpOverrides>,
+    /// ADR-0036: see [`super::observability_config::ObservabilityConfig`].
+    pub slow_query_ms: Option<u64>,
+    /// ADR-0036.
+    pub query_stats: Option<bool>,
+    /// ADR-0036.
+    pub flush_interval_secs: Option<u64>,
+    /// ADR-0036.
+    pub query_stats_top_n: Option<u32>,
+    /// ADR-0036.
+    pub retention_days: Option<u32>,
+    /// ADR-0036.
+    pub function_profiling: Option<bool>,
 }
 
 /// `[alerts]` from the file or the environment.
@@ -277,6 +294,34 @@ impl Eq for ObservabilityOverrides {}
 impl Eq for AlertsOverrides {}
 
 impl ObservabilityOverrides {
+    /// The ADR-0036 insight keys of this layer.
+    fn insights(&self) -> super::observability_config::ObservabilityOverrides {
+        super::observability_config::ObservabilityOverrides {
+            slow_query_ms: self.slow_query_ms,
+            query_stats: self.query_stats,
+            flush_interval_secs: self.flush_interval_secs,
+            query_stats_top_n: self.query_stats_top_n,
+            retention_days: self.retention_days,
+            function_profiling: self.function_profiling,
+        }
+    }
+
+    /// Sets an ADR-0036 key from `FORGEBASE_OBSERVABILITY_<KEY>` (`key` is
+    /// the name after `FORGEBASE_`); `Ok(false)`: not one of ours.
+    pub(crate) fn insights_env(&mut self, key: &str, value: &str) -> Result<bool, String> {
+        let mut i = self.insights();
+        if !i.env(key, value)? {
+            return Ok(false);
+        }
+        self.slow_query_ms = i.slow_query_ms;
+        self.query_stats = i.query_stats;
+        self.flush_interval_secs = i.flush_interval_secs;
+        self.query_stats_top_n = i.query_stats_top_n;
+        self.retention_days = i.retention_days;
+        self.function_profiling = i.function_profiling;
+        Ok(true)
+    }
+
     fn otlp(&mut self) -> &mut OtlpOverrides {
         self.otlp.get_or_insert_with(OtlpOverrides::default)
     }
@@ -301,6 +346,7 @@ impl ObservabilityOverrides {
     }
 
     pub(crate) fn keys(&self, put: &mut dyn FnMut(bool, &'static str)) {
+        self.insights().keys(put);
         put(
             self.trust_incoming_trace.is_some(),
             "observability.trust_incoming_trace",
@@ -369,6 +415,7 @@ impl AlertsOverrides {
 impl ObservabilityConfig {
     /// Applies one layer.
     pub(crate) fn apply(&mut self, o: &ObservabilityOverrides) {
+        self.insights.apply(&o.insights());
         if let Some(v) = o.trust_incoming_trace {
             self.trust_incoming_trace = v;
         }

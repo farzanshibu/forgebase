@@ -16,6 +16,7 @@ pub mod config;
 pub mod error;
 pub mod features;
 pub mod layout;
+pub mod sketch;
 
 pub use config::{
     AuthSettings, BackupSettings, BackupSource, BillingConfig, Config, ConfigOrigin, ConfigOverrides, ConfigSources,

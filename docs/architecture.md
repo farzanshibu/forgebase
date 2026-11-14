@@ -47,6 +47,7 @@ authoritative description of each crate is its `lib.rs` module docs.
 | Background work | `forgebase-jobs` | Durable jobs, schedules, leases, retries, dead-letter queue, queues, workflows (ADR-0007, ADR-0023). |
 | | `forgebase-realtime` | Transactional outbox, WebSocket and SSE delivery, channels, presence (ADR-0011). |
 | Operations | `forgebase-alerts` | Alert rules over metrics and health signals, alert history, silences, notifiers, SLOs with error budgets and burn-rate alerts (ADR-0035). |
+| Operations | `forgebase-insights` | Statement statistics and regressions, per-tenant usage and cost estimates, function profiles, audit search; administrator-only reads under `/api/v1/insights` (ADR-0036). |
 | Money | `forgebase-credits` | Append-only credit ledger per subject; top-ups, spend, expiry (ADR-0016). |
 | | `forgebase-billing` | Catalog, subscriptions, invoices, payments, provider webhooks. On by default (ADR-0021); `[billing] enabled = false` turns it off. |
 | Product | `forgebase-customize` | Custom domains, branding, transactional email, legal agreements (ADR-0020). |

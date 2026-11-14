@@ -389,6 +389,31 @@ ca_file = ""
 # Env: FORGEBASE_TRUST_INCOMING_TRACE
 trust_incoming_trace = "auto"
 
+# Operations insights (ADR-0036, docs/observability.md#insights).
+# A statement at least this slow is listed in the slow statement log with its
+# text, values removed. 0 lists every statement. Env: FORGEBASE_OBSERVABILITY_SLOW_QUERY_MS
+slow_query_ms = 200
+
+# Aggregate every statement by shape (calls, p50/p95/p99, rows, errors).
+# Env: FORGEBASE_OBSERVABILITY_QUERY_STATS
+query_stats = true
+
+# Seconds between flushes of the statistics held in memory to the database.
+# Env: FORGEBASE_OBSERVABILITY_FLUSH_INTERVAL_SECS
+flush_interval_secs = 60
+
+# Statement shapes written per flush: the busiest by total time (1 to 5000).
+# Env: FORGEBASE_OBSERVABILITY_QUERY_STATS_TOP_N
+query_stats_top_n = 200
+
+# Days statistics, slow statements and function profiles are kept.
+# Env: FORGEBASE_OBSERVABILITY_RETENTION_DAYS
+retention_days = 14
+
+# Profile function executions (host-call breakdown, fuel, memory, cold starts).
+# Env: FORGEBASE_OBSERVABILITY_FUNCTION_PROFILING
+function_profiling = true
+
 [observability.otlp]
 # OpenTelemetry export of traces (and optionally logs) over OTLP/HTTP to a
 # collector: Grafana Tempo, Jaeger, Honeycomb, an OpenTelemetry Collector.

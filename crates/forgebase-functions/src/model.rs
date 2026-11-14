@@ -479,6 +479,20 @@ pub struct ExecutionLog {
     pub trace_id: Option<String>,
 }
 
+/// One recorded execution with its profile (ADR-0036 §3).
+#[derive(Debug, Clone, PartialEq, Serialize, ToSchema)]
+pub struct InvocationDetail {
+    /// The execution log row.
+    #[serde(flatten)]
+    pub log: ExecutionLog,
+    /// What the host-call boundary measured: cold start, fuel and memory
+    /// against their limits, per-operation counts and times, and a timeline
+    /// of the first host calls. `null` for executions recorded before
+    /// profiling existed or while it was off.
+    #[schema(value_type = Option<Object>)]
+    pub profile: Option<serde_json::Value>,
+}
+
 /// What started an execution.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Trigger {

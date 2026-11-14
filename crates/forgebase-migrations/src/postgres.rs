@@ -176,6 +176,16 @@ pub static POSTGRES_MIGRATIONS: &[Migration] = &[
         include_str!("../../../migrations/postgres/0059_trace_context.sql"),
     ),
     Migration::new(
+        60,
+        "insights",
+        include_str!("../../../migrations/postgres/0060_insights.sql"),
+    ),
+    Migration::new(
+        61,
+        "audit_search",
+        include_str!("../../../migrations/postgres/0061_audit_search.sql"),
+    ),
+    Migration::new(
         65,
         "oauth_identity_avatar",
         include_str!("../../../migrations/postgres/0065_oauth_identity_avatar.sql"),

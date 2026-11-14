@@ -111,7 +111,7 @@ impl SqliteDatabase {
                 writer,
                 reader,
                 path: path.to_path_buf(),
-                slow: crate::slow_log::SlowLog::default(),
+                slow: crate::slow_log::SlowLog::new("sqlite"),
                 schema_gen,
             }),
         })

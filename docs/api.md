@@ -388,3 +388,15 @@ caller's trace under `[observability] trust_incoming_trace`
 ([observability.md §1.5](observability.md#15-how-context-travels)). Queue
 messages published then carry a `traceparent` attribute, and jobs a
 `traceparent` field.
+
+### 11.9 Operations insights (`/api/v1/insights`)
+
+Administrator-only reads for the dashboard ([ADR-0036](adr/0036-ops-insights.md), reference with response shapes in
+[observability.md](observability.md#5-insights)): statement statistics by shape (`/queries`, `/queries/{fingerprint}`,
+`/queries/regressions`), the redacted slow statement log (`/slow-queries`), per-tenant usage with estimated cost
+(`/usage`, `/usage/top`, `/usage/series`, `/usage/metrics`, `POST /usage/rollup`), function profiles
+(`/functions`, `/functions/{name}`, `/functions/invocations[/{id}]`) and audit investigation (`/audit`,
+`/audit/{id}`, `/audit/{id}/related`, `/audit/summary`, streamed `/audit/export?format=csv|jsonl`), plus
+`/status` and `POST /flush`. Operation ids start with `insights_`. Anonymous callers get `401`; signed-in callers
+without the `engine:read_insights` / `engine:read_audit` permission get `403`. Every list is paged (`limit`,
+`offset` or `cursor`) and bounded; ranges are `from`/`to` (RFC 3339 or `YYYY-MM-DD`, `to` exclusive).

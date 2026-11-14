@@ -2,11 +2,12 @@
 //! (ADR-0028 §7.3).
 
 use std::collections::VecDeque;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::backend::{SlowQuery, Statement};
+use crate::stmtstats::StatementStats;
 
 /// Default slow-query threshold.
 pub const DEFAULT_SLOW_QUERY_THRESHOLD: Duration = Duration::from_millis(200);
@@ -21,24 +22,55 @@ const QUERY_DURATION_METRIC: &str = "forgebase_db_query_duration_seconds";
 pub(crate) struct SlowLog {
     threshold_us: AtomicU64,
     entries: Mutex<VecDeque<SlowQuery>>,
-}
-
-impl Default for SlowLog {
-    fn default() -> Self {
-        Self {
-            threshold_us: AtomicU64::new(DEFAULT_SLOW_QUERY_THRESHOLD.as_micros() as u64),
-            entries: Mutex::new(VecDeque::with_capacity(SLOW_QUERY_LOG_CAPACITY)),
-        }
-    }
+    /// `sqlite` or `postgres`: the label of the statement statistics.
+    backend: &'static str,
+    /// Fingerprints, latency sketches and the redacted slow statements
+    /// (ADR-0036); the process-wide collector.
+    stats: Arc<StatementStats>,
 }
 
 impl SlowLog {
+    pub(crate) fn new(backend: &'static str) -> Self {
+        Self {
+            threshold_us: AtomicU64::new(DEFAULT_SLOW_QUERY_THRESHOLD.as_micros() as u64),
+            entries: Mutex::new(VecDeque::with_capacity(SLOW_QUERY_LOG_CAPACITY)),
+            backend,
+            stats: StatementStats::global().clone(),
+        }
+    }
+
+    /// Counts a statement that failed (ADR-0036); it has no row count.
+    pub(crate) fn record_error(&self, stmt: &Statement, elapsed: Duration, write: bool) {
+        let slow = elapsed.as_micros() as u64 >= self.threshold_us.load(Ordering::Relaxed);
+        self.stats.record(
+            self.backend,
+            &stmt.sql,
+            stmt.label.as_ref(),
+            elapsed,
+            0,
+            true,
+            write,
+            slow,
+        );
+    }
+
     /// Observes the statement latency (histogram `forgebase_db_query_duration_seconds`, label
     /// `mode`), then logs it when it passed the slow threshold.
     pub(crate) fn record(&self, stmt: &Statement, elapsed: Duration, rows: u64, write: bool) {
         metrics::histogram!(QUERY_DURATION_METRIC, "mode" => if write { "write" } else { "read" })
             .record(elapsed.as_secs_f64());
-        if elapsed.as_micros() as u64 >= self.threshold_us.load(Ordering::Relaxed) {
+        let slow = elapsed.as_micros() as u64 >= self.threshold_us.load(Ordering::Relaxed);
+        self.stats.record(
+            self.backend,
+            &stmt.sql,
+            stmt.label.as_ref(),
+            elapsed,
+            rows,
+            false,
+            write,
+            slow,
+        );
+        if slow {
             let entry = SlowQuery {
                 sql: stmt.sql.clone(),
                 param_count: stmt.params.len(),

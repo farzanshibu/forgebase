@@ -320,6 +320,11 @@ pub static TABLES: &[TablePlacement] = &[
     control("_forgebase_alert_notifications"),
     control("_forgebase_slos"),
     control("_forgebase_slo_minutes"),
+    // Operations insights (ADR-0036, 0060_insights).
+    control("_forgebase_stmt_stats"),
+    control("_forgebase_slow_statements"),
+    control("_forgebase_fn_stats"),
+    control("_forgebase_tenant_usage_daily"),
     control("_forgebase_billing_webhook_events"),
     control("_forgebase_credit_accounts"),
     control("_forgebase_credit_allocations"),

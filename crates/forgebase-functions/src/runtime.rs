@@ -135,10 +135,13 @@ pub const HOST_FUNCTIONS: &[HostFunction] = &[
 pub(crate) struct MemLimiter {
     pub(crate) max: usize,
     pub(crate) hit: bool,
+    /// Largest memory the execution asked for (profiling).
+    pub(crate) peak: usize,
 }
 
 impl ResourceLimiter for MemLimiter {
     fn memory_growing(&mut self, _current: usize, desired: usize, _maximum: Option<usize>) -> wasmtime::Result<bool> {
+        self.peak = self.peak.max(desired.min(self.max));
         if desired > self.max {
             self.hit = true;
             return Err(wasmtime::Error::msg("memory limit exceeded"));
@@ -180,15 +183,20 @@ pub(crate) struct StoreData {
     pub(crate) deadline: std::time::Instant,
     /// Largest output.
     pub(crate) max_output: usize,
+    /// Host-call timings (ADR-0036 §3).
+    pub(crate) prof: crate::profile::Profile,
 }
 
 impl StoreData {
     pub(crate) fn new(limits: &Limits, env: Arc<HostEnv>, input: Vec<u8>) -> Self {
+        let prof = crate::profile::Profile::new(env.profile);
         Self {
             limiter: MemLimiter {
                 max: usize::try_from(limits.memory_bytes).unwrap_or(usize::MAX),
                 hit: false,
+                peak: 0,
             },
+            prof,
             env,
             input,
             output: None,
@@ -210,6 +218,7 @@ pub(crate) struct RunResult {
     pub(crate) result: std::result::Result<Option<Vec<u8>>, ExecError>,
     pub(crate) fuel_used: u64,
     pub(crate) logs: Vec<LogLine>,
+    pub(crate) profile: crate::profile::Profile,
 }
 
 /// The engine and the linker with every host function.
@@ -313,6 +322,7 @@ pub(crate) async fn execute(
                 result: Err(ExecError::Trap(format!("sandbox setup failed: {e}"))),
                 fuel_used: 0,
                 logs: Vec::new(),
+                profile: crate::profile::Profile::default(),
             };
         }
         store.set_epoch_deadline(limits.timeout_ms.div_ceil(TICK.as_millis() as u64) + 1);
@@ -345,7 +355,9 @@ pub(crate) async fn execute(
         .await;
         let fuel_left = store.get_fuel().unwrap_or(0);
         let fuel_used = limits.fuel.saturating_sub(fuel_left);
-        let data = store.into_data();
+        let mut data = store.into_data();
+        let peak = data.limiter.peak;
+        data.prof.memory(peak);
         let result = match outcome {
             Err(_) => Err(ExecError::Timeout(limits.timeout_ms)),
             Ok(Err(e)) => Err(classify(&e, &data, limits)),
@@ -359,6 +371,7 @@ pub(crate) async fn execute(
             result,
             fuel_used,
             logs: data.logs,
+            profile: data.prof,
         }
     }
 }
@@ -577,7 +590,9 @@ async fn call(caller: &mut Caller<'_, StoreData>, op: Op, ptr: i32, len: i32) ->
             return Ok(finish(caller, Err(e)));
         }
     }
+    let timer = caller.data().prof.begin();
     let res = host::run(&env, op, args).await;
+    caller.data_mut().prof.end(timer, op.name(), res.is_ok());
     Ok(finish(caller, res))
 }
 
