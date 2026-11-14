@@ -22,6 +22,7 @@ const KINDS: Record<string, Record<string, string>> = {
   jobs: { j: "Jobs", w: "Workflows" },
   access: { orgs: "Organizations" },
   auth: { users: "Users" },
+  insights: { queries: "Statements" },
 };
 
 /** Words for route segments that are not a studio tab. */

@@ -6,6 +6,7 @@ import { renderStudio, signedIn } from "../../test/helpers";
 import { audit, fnStat, installInsights, invocation, stmt, usageRow, type InsightsState } from "../../test/insightsMock";
 import { pick } from "../../test/pick";
 import { auditExportUrl } from "../../api";
+import { crumbsFor } from "../../components/crumbs";
 import type { Regression, SlowStatement } from "../../api";
 import Timeline from "./Timeline";
 import { fmtMetric, fmtMs, fmtRate, fmtUs, localToIso, oneLine, rangeOf, statementHref } from "./util";
@@ -495,6 +496,11 @@ describe("Insights studio: audit", () => {
 });
 
 describe("Insights studio: navigation", () => {
+  it("has breadcrumbs for a statement and a function that lead back to their lists", () => {
+    expect(crumbsFor("/insights/queries/fp-users")).toEqual([{ label: "Insights", to: "/insights" }, { label: "Statements", to: "/insights" }, { label: "fp-users" }]);
+    expect(crumbsFor("/insights/functions/checkout")).toEqual([{ label: "Insights", to: "/insights" }, { label: "Functions", to: "/insights/functions" }, { label: "Checkout" }]);
+  });
+
   it("has one tab per area, and the studio is in the nav", async () => {
     setup();
     renderStudio("/insights");
