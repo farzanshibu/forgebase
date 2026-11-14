@@ -76,6 +76,16 @@ export interface DownloadOptions {
   downloadAs?: string;
   /** `bytes=0-99`, `{ start: 0, end: 99 }` (inclusive) or `{ suffix: 100 }` (the last 100 bytes). */
   range?: ByteRange;
+  /**
+   * A conditional read: sends `If-None-Match` with this `ETag` (the object's `"<sha256>"`, from `info()` or an earlier
+   * download). `download` then resolves with a body-less `304 Not Modified` `Response` when the object is unchanged.
+   */
+  ifNoneMatch?: string;
+  /**
+   * `text()` and `json()` only: remember the value and its `ETag` in this client, send `If-None-Match` on the next read of the
+   * same key and answer a `304` from memory. Reads stay correct when the object changes (the new body replaces the old).
+   */
+  conditional?: boolean;
   signal?: AbortSignal;
 }
 
@@ -279,24 +289,39 @@ export class BucketApi {
     });
   }
 
-  /** Downloads an object: the raw `Response`, so the body can be streamed. A range answers `206`. */
+  /** Downloads an object: the raw `Response`, so the body can be streamed. A range answers `206`; `ifNoneMatch` can answer `304`. */
   download(key: string, o: DownloadOptions = {}): Promise<Response> {
+    const headers: Record<string, string> = {};
+    if (o.range !== undefined) headers.Range = rangeHeader(o.range);
+    if (o.ifNoneMatch !== undefined) headers["If-None-Match"] = o.ifNoneMatch;
     return this.t.request<Response>(this.path(`/objects/${keyPath(key)}`), {
       raw: true,
       signal: o.signal,
       query: { version: o.version, download: o.downloadAs },
-      headers: o.range === undefined ? undefined : { Range: rangeHeader(o.range) },
+      headers: Object.keys(headers).length ? headers : undefined,
+      acceptStatus: o.ifNoneMatch === undefined ? undefined : [304],
     });
   }
 
-  /** The object as text. */
+  /** The object as text (`conditional: true` reuses the last read while the object is unchanged). */
   async text(key: string, o: DownloadOptions = {}): Promise<string> {
+    if (o.conditional && o.range === undefined) return this.conditionalRead<string>(key, o, true);
     return (await this.download(key, o)).text();
   }
 
-  /** The object parsed as JSON. */
+  /** The object parsed as JSON (`conditional: true` reuses the last read while the object is unchanged). */
   async json<T = unknown>(key: string, o: DownloadOptions = {}): Promise<T> {
+    if (o.conditional && o.range === undefined) return JSON.parse(await this.conditionalRead<string>(key, o, true)) as T;
     return (await this.download(key, o)).json() as Promise<T>;
+  }
+
+  private conditionalRead<T>(key: string, o: DownloadOptions, text: boolean): Promise<T> {
+    return this.t.request<T>(this.path(`/objects/${keyPath(key)}`), {
+      text,
+      conditional: true,
+      signal: o.signal,
+      query: { version: o.version, download: o.downloadAs },
+    });
   }
 
   /** The object as a `Blob`. */

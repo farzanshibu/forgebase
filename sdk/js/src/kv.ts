@@ -117,9 +117,27 @@ export interface KvMessage {
   message: KvBin;
 }
 
+/** A stretch in which `subscribe` may have missed messages. */
+export interface KvGap {
+  /** `reconnect`: the stream dropped and was re-established; `lagged`: the server dropped messages for a slow reader. */
+  reason: "reconnect" | "lagged";
+  /** `lagged`: how many messages were dropped. Unknown (`undefined`) for a reconnect. */
+  missed?: number;
+  /** `reconnect`: when the old stream ended. */
+  from?: Date;
+  /** `reconnect`: when the new stream opened. Messages published between `from` and `to` were not delivered. */
+  to?: Date;
+}
+
 export interface KvSubscribeOptions {
-  /** Reconnect after a dropped stream (default true). Messages published while disconnected are lost: the engine does not store them. */
+  /**
+   * Reconnect after a dropped stream (default true). KV pub/sub is fire-and-forget: the engine stores nothing and offers no
+   * cursor, so **messages published while the stream is down are lost** and cannot be replayed. Pass `onGap` to find out when
+   * that may have happened (and re-read the state you mirror), or use `fb.queues` / `fb.realtime` where delivery matters.
+   */
   reconnect?: boolean;
+  /** Called after a reconnect (with the span that may have lost messages) and when the server reports a slow reader missed some. */
+  onGap?: (gap: KvGap) => void;
   /** Called with errors that do not end the subscription (a handler that threw, a dropped stream). */
   onError?: (err: unknown) => void;
   /** Called when the server says a slow reader missed `n` messages. */
@@ -416,16 +434,30 @@ export class KvNamespace {
     };
     const run = async () => {
       let delay = 500;
+      // When the stream last went down (set once it was up before), to tell `onGap` what may have been missed.
+      let lostAt: Date | undefined;
+      let everOpened = false;
       while (!ctrl.signal.aborted) {
         let opened = false;
         try {
           const res = await this.t.send(this.path(`/subscribe/${enc(channel)}`), { headers: { Accept: "text/event-stream" }, signal: ctrl.signal, retry: false });
           if (!res.body) throw new NetworkError("the event stream has no body");
           opened = true;
+          if (everOpened && lostAt) {
+            const gap: KvGap = { reason: "reconnect", from: lostAt, to: new Date() };
+            lostAt = undefined;
+            try {
+              o.onGap?.(gap);
+            } catch {
+              /* a throwing callback must not break the stream */
+            }
+          }
+          everOpened = true;
           for await (const ev of sseEvents(res.body)) {
             if (ev.event === "lagged") {
               try {
                 o.onLagged?.(Number(ev.data));
+                o.onGap?.({ reason: "lagged", missed: Number(ev.data) });
               } catch {
                 /* ignore */
               }
@@ -446,10 +478,12 @@ export class KvNamespace {
             }
           }
           if (!reconnect) return;
+          if (everOpened) lostAt ??= new Date();
         } catch (e) {
           if (ctrl.signal.aborted) return;
           const final = e instanceof RealtimeError || (e instanceof ApiError && e.status >= 400 && e.status < 500 && e.status !== 429 && e.status !== 408);
           if (final || !reconnect) throw e;
+          if (everOpened) lostAt ??= new Date();
           report(e);
         }
         if (opened) delay = 500;

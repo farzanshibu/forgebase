@@ -50,7 +50,7 @@ export type {
 export { KvApi, KvNamespace, kvBytes, kvText } from "./kv";
 export type {
   KvArg, KvBatchResult, KvBin, KvChannel, KvKey, KvListSide, KvMessage, KvNamespaceInfo, KvReply, KvScanOptions, KvScanPage,
-  KvSetOptions, KvStats, KvStreamAddOptions, KvStreamEntry, KvStreamRangeOptions, KvStreamReadOptions, KvSubscribeOptions,
+  KvSetOptions, KvStats, KvStreamAddOptions, KvStreamEntry, KvStreamRangeOptions, KvStreamReadOptions, KvSubscribeOptions, KvGap,
   KvSubscription, KvType, KvValue,
 } from "./kv";
 export { SqlApi, sqlRows } from "./sql";
@@ -72,7 +72,7 @@ export type {
 export { FunctionsApi, FunctionSecretsApi, FunctionKvRulesApi } from "./functions";
 export type {
   FunctionAccess, FunctionDeployed, FunctionDeployInput, FunctionExecutionLog, FunctionHook, FunctionInfo, FunctionKvRule, FunctionLanguage,
-  FunctionLimits, FunctionLogsOptions, FunctionSecretInfo, FunctionVersion, FunctionVersionSource, InvokeBody, InvokeOptions,
+  FunctionLimits, FunctionLogsOptions, FunctionSecretInfo, FunctionVersion, FunctionVersionSource, InvokeBody, InvokeOptions, InvokeRawOptions, InvokeResult,
 } from "./functions";
 export { CreditsApi, CreditRatesApi, CreditStatsApi, CreditUsageCursorApi } from "./credits";
 export type {

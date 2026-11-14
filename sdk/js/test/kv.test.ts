@@ -264,4 +264,29 @@ describe("kv pub/sub", () => {
     await sub.done;
     expect(f.calls.length).toBeGreaterThanOrEqual(3);
   });
+
+  it("onGap fires with the span of a reconnect, and for a slow reader", async () => {
+    const { f, cache } = setup(sse([{ event: "lagged", data: "7" }]), json(503, errBody("unavailable", "down")), () => sse([]));
+    const gaps: { reason: string; missed?: number; from?: Date; to?: Date }[] = [];
+    const sub = cache.subscribe("news", () => undefined, { onGap: (g) => gaps.push(g), onError: () => undefined });
+    for (let i = 0; i < 400 && gaps.length < 2; i++) await new Promise((r) => setTimeout(r, 5));
+    sub.unsubscribe();
+    await sub.done;
+    expect(f.calls.length).toBeGreaterThanOrEqual(3);
+    expect(gaps[0]).toEqual({ reason: "lagged", missed: 7 });
+    expect(gaps[1]).toMatchObject({ reason: "reconnect" });
+    expect(gaps[1]!.from).toBeInstanceOf(Date);
+    expect(gaps[1]!.to!.getTime()).toBeGreaterThanOrEqual(gaps[1]!.from!.getTime());
+  });
+
+  it("onGap does not fire for the first connect, even after failed attempts", async () => {
+    const { cache } = setup(json(503, errBody("unavailable", "down")), () => sse([{ event: "message", data: { channel: "news", message: "x" } }]));
+    const order: string[] = [];
+    const sub = cache.subscribe("news", (m) => void order.push(`msg:${String(m.message)}`), { onGap: (g) => order.push(`gap:${g.reason}`), onError: () => undefined });
+    for (let i = 0; i < 400 && order.length < 2; i++) await new Promise((r) => setTimeout(r, 5));
+    sub.unsubscribe();
+    await sub.done;
+    // the failed first attempt lost nothing (nothing was subscribed yet); the gap comes only after the stream was up once
+    expect(order.slice(0, 2)).toEqual(["msg:x", "gap:reconnect"]);
+  });
 });
