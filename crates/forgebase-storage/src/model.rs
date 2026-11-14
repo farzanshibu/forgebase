@@ -333,16 +333,32 @@ pub struct SignRequest {
     pub content_type: Option<String>,
 }
 
+/// Who serves a signed URL's bytes (ADR-0040 addendum).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SignedMode {
+    /// ForgeBase: an HMAC URL under `/api/v1/storage/signed/`, relative to
+    /// the server root; the bytes stream through the server.
+    #[default]
+    Proxy,
+    /// The storage provider: an absolute S3, GCS or Azure URL signed with the
+    /// driver's credentials; the bytes do not pass through ForgeBase.
+    Native,
+}
+
 /// A signed URL.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct SignedUrl {
-    /// Path and query, relative to the server root; usable without credentials
-    /// until `expires_at`.
+    /// Proxy: path and query, relative to the server root. Native: an
+    /// absolute provider URL. Usable without credentials until `expires_at`.
     pub url: String,
     /// `GET` or `PUT`.
     pub method: SignedMethod,
     /// RFC 3339 expiry.
     pub expires_at: String,
+    /// `proxy` or `native` (uploads are always `proxy`).
+    #[serde(default)]
+    pub mode: SignedMode,
 }
 
 /// What the reconciler did.

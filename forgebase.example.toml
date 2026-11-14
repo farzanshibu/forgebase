@@ -181,6 +181,15 @@ upload_ttl_secs = 86400
 # Seconds before the reconciler removes unreferenced blobs and stale staged files.
 reconcile_grace_secs = 3600
 
+# Who serves signed download links (ADR-0040 addendum): proxy (ForgeBase streams
+# and sees every byte), native (the S3 / GCS / Azure provider's own signed URL:
+# downloads skip ForgeBase and are not metered by it, rotate-signing-key does not
+# revoke them; refused if the driver cannot sign: GCS needs a service-account
+# key, Azure the account key) or auto (native when the driver can sign, else
+# proxy). Signed uploads always go through ForgeBase.
+# Env: FORGEBASE_STORAGE_SIGNED_URLS
+signed_urls = "proxy"
+
 # S3 only:
 # s3_endpoint = "https://s3.eu-central-1.amazonaws.com"
 # s3_region = "eu-central-1"
@@ -200,6 +209,13 @@ reconcile_grace_secs = 3600
 # azure_container = "forgebase-blobs"
 # azure_prefix = ""
 # azure_endpoint = ""          # empty = https://<account>.blob.core.windows.net; Azurite: http://127.0.0.1:10000/devstoreaccount1
+
+# signed_urls overrides for some buckets (keep this table last in [storage]):
+# a bucket name (every tenant's bucket of that name) or "<tenant>/<name>" (one
+# tenant's bucket, which wins).
+# [storage.signed_urls_buckets]
+# avatars = "native"
+# "acme/invoices" = "proxy"
 
 [realtime]
 # WebSocket, SSE and channels under /api/v1/realtime. Off, record changes are

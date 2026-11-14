@@ -31,6 +31,27 @@ pub struct DriverObject {
     pub modified_ms: i64,
 }
 
+/// What a provider-signed ("native") download URL serves (ADR-0040
+/// addendum): one blob, for a bounded time, with the response headers the
+/// proxy path would send.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PresignGet<'a> {
+    /// Driver key of the blob (`blobs/<aa>/<sha256>`; the driver adds its
+    /// prefix).
+    pub key: &'a str,
+    /// Signing time, epoch seconds.
+    pub now: i64,
+    /// Validity in seconds, at most what [`StorageDriver::presign_support`]
+    /// reports.
+    pub expires_secs: u64,
+    /// `Content-Type` the provider must answer with (`response-content-type`,
+    /// `rsct`).
+    pub content_type: Option<&'a str>,
+    /// `Content-Disposition` the provider must answer with
+    /// (`response-content-disposition`, `rscd`).
+    pub content_disposition: Option<&'a str>,
+}
+
 /// An interchangeable blob store (local directory, S3-compatible service).
 pub trait StorageDriver: Send + Sync + std::fmt::Debug {
     /// Driver name for diagnostics (`local`, `s3`).
@@ -67,6 +88,24 @@ pub trait StorageDriver: Send + Sync + std::fmt::Debug {
 
     /// Checks that the store is reachable and writable.
     fn ping(&self) -> BoxFuture<'_, Result<()>>;
+
+    /// Whether this driver, with its credentials, can sign provider URLs
+    /// ([`StorageDriver::presign_get`]): `Ok` with the longest validity the
+    /// provider accepts, in seconds, or `Err` with the reason it cannot.
+    /// The default cannot (the local driver).
+    fn presign_support(&self) -> std::result::Result<u64, String> {
+        Err(format!("the {} driver has no provider-signed URLs", self.name()))
+    }
+
+    /// A provider-signed `GET` URL for one blob, absolute. Only called when
+    /// [`StorageDriver::presign_support`] is `Ok`; the default refuses.
+    fn presign_get(&self, req: &PresignGet<'_>) -> Result<String> {
+        let _ = req;
+        Err(crate::error::StorageError::conflict(
+            "native_signing_unavailable",
+            format!("the {} driver has no provider-signed URLs", self.name()),
+        ))
+    }
 }
 
 /// The stream of a single in-memory chunk.

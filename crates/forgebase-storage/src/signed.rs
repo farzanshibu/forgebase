@@ -25,22 +25,55 @@
 //!
 //! The key is 32 random bytes, sealed in `_forgebase_storage_settings` with
 //! the auth keyring (G11); a database copy alone cannot forge URLs.
+//!
+//! **Native downloads** (ADR-0040 addendum). With `[storage] signed_urls =
+//! "native"` (or `"auto"` and a driver that can sign), a download URL is the
+//! storage provider's own signed URL (S3 SigV4, GCS V4, Azure service SAS)
+//! for the one content-addressed blob of the version being read, issued
+//! after exactly the checks of a proxy URL (read access, bucket rules,
+//! visibility, version, delete markers) with the object row read from the
+//! primary. Its lifetime is the requested one capped at the provider's
+//! maximum; it carries the object's `Content-Type` and the proxy's
+//! `Content-Disposition` as signed `response-*` / `rsct` / `rscd`
+//! overrides. ForgeBase does not see, meter or count those downloads, and
+//! rotating the signing key does not revoke them (rotate the provider
+//! credential). Each one is recorded in the audit log
+//! (`storage.signed_url.native`). Uploads always stay on the proxy: the
+//! content-addressed key is only known once the bytes are hashed, and the
+//! size, content type, checksum, rules and quota are checked while they
+//! stream through ForgeBase.
 
 use std::collections::BTreeMap;
 
 use axum::body::Bytes;
-use forgebase_data::{AccessContext, Decision};
+use forgebase_core::SignedUrlsMode;
+use forgebase_data::{AccessContext, Decision, ResourceOp};
+use forgebase_db::{ColumnType, Statement};
 use hmac::{Hmac, KeyInit, Mac};
+use serde_json::json;
 use sha2::Sha256;
 
-use crate::driver::ByteStream;
+use crate::driver::{ByteStream, PresignGet};
 use crate::error::{Result, StorageError};
-use crate::model::{ObjectInfo, SignRequest, SignedMethod, SignedUrl};
+use crate::model::{ObjectInfo, SignRequest, SignedMethod, SignedMode, SignedUrl};
 use crate::objects::{ObjectRead, PutRequest, RangeSpec};
 use crate::rules::{NewRow, WriteCheck, new_row_check};
-use crate::service::StorageService;
+use crate::service::{BucketRow, Need, StorageService, blob_key};
 use crate::sigv4::encode;
 use crate::util::{hex, rfc3339, unhex, validate_key};
+
+/// Audit event of a native signed URL (ADR-0040 addendum).
+pub const NATIVE_URL_EVENT: &str = "storage.signed_url.native";
+
+/// Who will serve one signed URL.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Delivery {
+    Proxy,
+    /// The provider; its longest validity in seconds.
+    Native(u64),
+    /// `native` was asked for, but the driver cannot sign: the reason.
+    Unavailable(String),
+}
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -147,16 +180,62 @@ impl StorageService {
         m
     }
 
-    /// Makes a signed URL (path and query) for one operation on one key.
+    /// The `signed_urls` mode of a bucket: its `<tenant>/<name>` entry, else
+    /// its name's entry, else the instance setting.
+    pub fn signed_urls_mode(&self, tenant: Option<&str>, bucket: &str) -> SignedUrlsMode {
+        let s = &self.inner.settings;
+        let scoped = tenant
+            .filter(|t| !t.is_empty())
+            .and_then(|t| s.signed_urls_buckets.get(&format!("{t}/{bucket}")));
+        scoped
+            .or_else(|| s.signed_urls_buckets.get(bucket))
+            .copied()
+            .unwrap_or(s.signed_urls)
+    }
+
+    fn delivery(&self, b: &BucketRow, method: SignedMethod) -> Delivery {
+        if method != SignedMethod::Get {
+            return Delivery::Proxy;
+        }
+        let mode = self.signed_urls_mode(b.tenant.as_deref(), &b.name);
+        if mode == SignedUrlsMode::Proxy {
+            return Delivery::Proxy;
+        }
+        match (self.inner.driver.presign_support(), mode) {
+            (Ok(max), _) => Delivery::Native(max),
+            (Err(why), SignedUrlsMode::Native) => Delivery::Unavailable(why),
+            (Err(_), _) => Delivery::Proxy,
+        }
+    }
+
+    /// Makes a signed URL for one operation on one key: ForgeBase's HMAC URL
+    /// (path and query), or for a download in native mode the provider's.
     pub async fn sign_url(&self, ctx: &AccessContext, bucket: &str, req: SignRequest) -> Result<SignedUrl> {
         validate_key(&req.key)?;
         let b = self.bucket_row(ctx, bucket).await?;
         let method = req.method.unwrap_or(SignedMethod::Get);
+        let delivery = self.delivery(&b, method);
+        let mut native_row = None;
         if method == SignedMethod::Get {
-            // Authorises (bucket rules included) and fails early (404) for a
-            // key or version that is not there or not visible to the signer.
-            self.head_object(ctx, bucket, &req.key, req.version_id.as_deref())
-                .await?;
+            if delivery == Delivery::Proxy {
+                // Authorises (bucket rules included) and fails early (404) for a
+                // key or version that is not there or not visible to the signer.
+                self.head_object(ctx, bucket, &req.key, req.version_id.as_deref())
+                    .await?;
+            } else {
+                // The same checks as `head_object`, with the row read from
+                // the primary: the URL is bound to this version's blob.
+                let access = self
+                    .authorize(ctx, &b, Some(&req.key), Need::Read, ResourceOp::View)
+                    .await?;
+                let row = self
+                    .find_row(&b, &req.key, req.version_id.as_deref(), access.filter())
+                    .await?;
+                if row.delete_marker || row.blob_sha.is_none() {
+                    return Err(StorageError::NotFound(format!("object {}", req.key)));
+                }
+                native_row = Some(row);
+            }
         } else {
             self.authorize_sign_put(ctx, &b, &req.key, req.content_type.as_deref())
                 .await?;
@@ -168,6 +247,23 @@ impl StorageService {
                 "invalid_expiry",
                 format!("expires_in is 1 to {} seconds", s.max_signed_ttl_secs),
             ));
+        }
+        match (delivery, native_row) {
+            (Delivery::Unavailable(why), _) => {
+                return Err(StorageError::conflict(
+                    "native_signing_unavailable",
+                    format!(
+                        "signed_urls is native for bucket {bucket}, but the {} driver cannot sign: {why}; set signed_urls to auto or proxy, or give the driver credentials that can sign",
+                        self.inner.driver.name()
+                    ),
+                ));
+            }
+            (Delivery::Native(max), Some(row)) => {
+                return self
+                    .native_url(ctx, &b, &row, ttl.min(max), req.download_as.as_deref())
+                    .await;
+            }
+            _ => {}
         }
         let expires = self.now() / 1000 + i64::try_from(ttl).unwrap_or(i64::MAX / 2);
         let mut p = SignedParams {
@@ -210,7 +306,99 @@ impl StorageService {
             url,
             method,
             expires_at: rfc3339(expires * 1000),
+            mode: SignedMode::Proxy,
         })
+    }
+
+    /// The provider's signed download URL for `row`'s blob, valid `ttl`
+    /// seconds, with the headers the proxy path would answer with.
+    async fn native_url(
+        &self,
+        ctx: &AccessContext,
+        b: &BucketRow,
+        row: &crate::objects::ObjectRow,
+        ttl: u64,
+        download_as: Option<&str>,
+    ) -> Result<SignedUrl> {
+        let Some(sha) = row.blob_sha.as_deref() else {
+            return Err(StorageError::NotFound(format!("object {}", row.key)));
+        };
+        let disposition = match download_as.filter(|d| !d.is_empty()) {
+            Some(name) => Some(crate::http::disposition(name)),
+            None if crate::http::is_active(&row.content_type) => Some(crate::http::disposition(
+                row.key.rsplit('/').next().unwrap_or("download"),
+            )),
+            None => None,
+        };
+        let now = self.now() / 1000;
+        let key = blob_key(sha);
+        let url = self.inner.driver.presign_get(&PresignGet {
+            key: &key,
+            now,
+            expires_secs: ttl,
+            content_type: Some(row.content_type.as_str()).filter(|c| !c.is_empty()),
+            content_disposition: disposition.as_deref(),
+        })?;
+        let expires = now + i64::try_from(ttl).unwrap_or(i64::MAX / 2);
+        let expires_at = rfc3339(expires * 1000);
+        self.audit_native(
+            ctx,
+            json!({
+                "bucket": b.name,
+                "tenant": b.tenant,
+                "key": row.key,
+                "version_id": row.id,
+                "driver": self.inner.driver.name(),
+                "expires_at": expires_at,
+            }),
+        )
+        .await;
+        Ok(SignedUrl {
+            url,
+            method: SignedMethod::Get,
+            expires_at,
+            mode: SignedMode::Native,
+        })
+    }
+
+    /// Records a native URL in the audit log of the control database
+    /// (`_forgebase_auth_audit`): ForgeBase sees nothing of its downloads.
+    /// The URL itself, a bearer credential, is not recorded. A failure is
+    /// logged, not returned.
+    async fn audit_native(&self, ctx: &AccessContext, detail: serde_json::Value) {
+        let db = self.control();
+        let now = self.now();
+        let r: Result<()> = async {
+            let d = db.dialect();
+            let mut tx = db.begin().await?;
+            let stmt = Statement::new(
+                format!(
+                    "INSERT INTO _forgebase_auth_audit (at, event, outcome, actor, request_id, detail, \
+                     impersonator, realm) VALUES (?1, ?2, 'success', ?3, ?4, CAST(?5 AS {}), ?6, ?7)",
+                    d.column_type(ColumnType::Json)
+                ),
+                vec![
+                    now.div_euclid(1000).into(),
+                    NATIVE_URL_EVENT.into(),
+                    ctx.actor().into(),
+                    ctx.request_id.clone().into(),
+                    detail.to_string().into(),
+                    ctx.impersonator.clone().into(),
+                    ctx.realm_id.clone().into(),
+                ],
+            );
+            match tx.execute(&stmt).await {
+                Ok(_) => Ok(tx.commit().await?),
+                Err(e) => {
+                    let _ = tx.rollback().await;
+                    Err(e.into())
+                }
+            }
+        }
+        .await;
+        if let Err(e) = r {
+            tracing::warn!(error = %e, event = NATIVE_URL_EVENT, "audit event not recorded");
+        }
     }
 
     /// Checks a signed URL: signature first (constant time), then expiry.

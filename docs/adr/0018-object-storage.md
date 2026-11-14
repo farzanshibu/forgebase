@@ -99,6 +99,11 @@ uploader (`by`). A URL is checked when issued, never when used (rls-coverage G15
 lifetimes short (default 15 minutes); `POST /api/v1/storage/maintenance/rotate-signing-key` (administrators)
 revokes every URL at once.
 
+**ADR-0040 §10:** with `[storage] signed_urls = "native"` (or `"auto"` and a driver that can sign) a signed
+*download* is the storage provider's own URL (S3 SigV4 pre-signed, GCS V4, Azure service SAS) for the one blob,
+issued after the same checks; uploads stay HMAC URLs. Native URLs are not revoked by `rotate-signing-key`, and their
+downloads bypass ForgeBase.
+
 ## 8. Quota
 
 Feature `storage.bytes` (a `gauge`, ADR-0010) counts **logical** bytes per object version of the billing

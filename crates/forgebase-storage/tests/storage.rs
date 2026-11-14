@@ -1404,6 +1404,16 @@ async fn openapi_documents_the_storage_api() {
     ] {
         assert!(paths.contains_key(p), "missing {p}");
     }
+    // ADR-0040 §10: the signed URL says who serves it.
+    let schemas = &doc["components"]["schemas"];
+    assert!(
+        schemas["SignedUrl"]["properties"]["mode"].is_object(),
+        "{}",
+        schemas["SignedUrl"]
+    );
+    assert_eq!(schemas["SignedMode"]["enum"], json!(["proxy", "native"]));
+    let sign = &paths["/api/v1/storage/buckets/{bucket}/sign"]["post"]["responses"];
+    assert!(sign["409"].is_object(), "native_signing_unavailable is documented");
 }
 
 // ---- FIX-4: bucket usage and object metadata ----------------------------

@@ -20,8 +20,8 @@ pub mod sketch;
 
 pub use config::{
     AuthSettings, BackupSettings, BackupSource, BackupTls, BillingConfig, Config, ConfigOrigin, ConfigOverrides,
-    ConfigSources, LoadedConfig, LogFormat, ModuleSwitch, OpsAccess, QueueConfig, Source, StorageConfig,
-    StorageDriverKind, Synchronous,
+    ConfigSources, LoadedConfig, LogFormat, ModuleSwitch, OpsAccess, QueueConfig, SignedUrlsMode, Source,
+    StorageConfig, StorageDriverKind, Synchronous,
 };
 pub use error::{ErrorCode, ErrorKind};
 pub use layout::DataLayout;

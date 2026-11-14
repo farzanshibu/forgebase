@@ -281,6 +281,7 @@ stops startup with an error.
 | `FORGEBASE_URL`, `FORGEBASE_TOKEN`, `FORGEBASE_ADMIN_EMAIL`, `FORGEBASE_ADMIN_PASSWORD`, `FORGEBASE_CA_FILE` | Server and credential of `forgebase project` / `forgebase deploy` ([project-as-code.md](project-as-code.md)) and of the Terraform provider. Not configuration; ignored by the config loader. |
 | `FORGEBASE_STORAGE_GCS_CREDENTIALS_JSON`, `FORGEBASE_STORAGE_GCS_CREDENTIALS_FILE`, `FORGEBASE_STORAGE_GCS_ACCESS_TOKEN` | Google Cloud Storage credentials (service-account key, path of the key file, fixed token); none = workload identity (§3.7). Environment only. |
 | `FORGEBASE_STORAGE_AZURE_ACCOUNT_KEY`, `FORGEBASE_STORAGE_AZURE_SAS_TOKEN`, `FORGEBASE_STORAGE_AZURE_TENANT_ID`, `FORGEBASE_STORAGE_AZURE_CLIENT_ID`, `FORGEBASE_STORAGE_AZURE_CLIENT_SECRET` | Azure Blob credentials (account key, SAS token, Entra client credentials; the client id alone selects a user-assigned managed identity); none = managed identity (§3.7). Environment only. |
+| `FORGEBASE_STORAGE_SIGNED_URLS` | `[storage] signed_urls`: `proxy`, `native` or `auto` (§3.7). |
 
 `FORGEBASE_TEST_*` variables (`FORGEBASE_TEST_BACKEND`, `FORGEBASE_TEST_REDIS_URL`,
 `FORGEBASE_TEST_PG_*`) belong to the test suite; the parser ignores them. Do not
@@ -532,6 +533,40 @@ or wrong credentials at the first request. Credentials are never written to the 
 `config show`. **Kubernetes:** put them in the Secret the pod already mounts (§9.3) or use the cluster's workload /
 managed identity; the Helm chart passes any `FORGEBASE_*` environment variable through `extraEnv` / `extraEnvFrom`, so no
 chart change is needed.
+
+**Signed download links: proxy or native** (`[storage] signed_urls`, ADR-0040 addendum). By default (`proxy`) a signed
+URL from `POST /api/v1/storage/buckets/{bucket}/sign` points at ForgeBase, which streams every byte. With `native` it is
+the storage provider's own signed URL, so downloads go straight from the bucket to the client and never load the server:
+
+```toml
+[storage]
+signed_urls = "auto"          # proxy (default) | native | auto
+[storage.signed_urls_buckets] # optional per-bucket overrides
+avatars = "native"            # every tenant's bucket named avatars
+"acme/invoices" = "proxy"     # one tenant's bucket (wins over the name alone)
+```
+
+| Mode | Downloads | When the driver cannot sign |
+|---|---|---|
+| `proxy` | ForgeBase HMAC URL, relative (`/api/v1/storage/signed/...`); bytes pass through the server | n/a |
+| `native` | Absolute provider URL: S3 SigV4 pre-signed, GCS V4 (`GOOG4-RSA-SHA256`), Azure service SAS | issuing fails with `409 native_signing_unavailable` (and a warning at start) |
+| `auto` | native when the driver can sign, proxy otherwise | proxy |
+
+Who can sign: `s3` with an access key and secret (temporary credentials add the session token, and the URL also ends
+when the token does); `gcs` **only with a service-account key** (workload identity, a fixed token or an emulator without
+credentials cannot sign: IAM `signBlob` is not implemented); `azure` **only with the account key** (SAS tokens, Entra
+and managed identities cannot: user-delegation SAS is not implemented); `local` never. `FORGEBASE_STORAGE_SIGNED_URLS`
+sets the mode from the environment.
+
+What changes with `native`: the same access checks run before a URL is issued, but **ForgeBase does not see the
+download**. It is absent from ForgeBase's request metrics, logs and limits, and from any egress accounting: egress is
+visible to ForgeBase on the proxy path only (the `storage.bytes` quota counts stored bytes, never downloads). Only the
+issuance is recorded, in the audit log as `storage.signed_url.native`. Bill and monitor egress on the provider. Lifetimes are capped at the provider's maximum
+(seven days for S3 and GCS). `rotate-signing-key` does **not** revoke native URLs: rotate the provider credential
+(S3 access key, GCS service-account key, Azure account key) instead. The URL names the bucket and blob, and the access
+key id / service-account email / account name. Signed **uploads always stay on the proxy** (size, type, checksum, rules
+and quota are checked while the bytes stream through ForgeBase). The bucket needs no public access: the signature
+grants it, so keep the bucket private.
 
 ## 4. Data directory
 
@@ -908,6 +943,8 @@ Keys in the TOML file, with defaults. Ranges are the accepted values.
 | `storage.max_object_bytes` | `5368709120` (5 GiB) | |
 | `storage.upload_ttl_secs` | `86400` | |
 | `storage.reconcile_grace_secs` | `3600` | |
+| `storage.signed_urls` | `"proxy"` | `proxy`, `native`, `auto`: who serves signed downloads (§3.7). Env: `FORGEBASE_STORAGE_SIGNED_URLS`. |
+| `storage.signed_urls_buckets` | `{}` | Table `[storage.signed_urls_buckets]`: `<bucket>` or `<tenant>/<bucket>` → mode, overriding `signed_urls` (§3.7). |
 | `storage.s3_endpoint`, `s3_region`, `s3_bucket`, `s3_prefix`, `s3_part_size` | unset / `""` / `8388608` | S3 only (`s3_part_size` is also the upload chunk of `gcs` and `azure`). Credentials come from the environment (§3.3). |
 | `storage.gcs_bucket`, `gcs_prefix`, `gcs_endpoint` | unset / `""` / `""` | GCS only; an empty endpoint is `https://storage.googleapis.com`. Credentials come from the environment (§3.3, §3.7). |
 | `storage.azure_account`, `azure_container`, `azure_prefix`, `azure_endpoint` | unset / unset / `""` / `""` | Azure only; an empty endpoint is `https://<account>.blob.core.windows.net`. Credentials come from the environment (§3.3, §3.7). |

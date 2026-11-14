@@ -13,10 +13,12 @@
 //! when no set references it. Without a router there is one database and
 //! nothing changes.
 
+use std::collections::BTreeMap;
 use std::ops::Deref;
 use std::sync::{Arc, OnceLock, RwLock};
 
 use forgebase_auth::crypto::Keyring;
+use forgebase_core::SignedUrlsMode;
 use forgebase_data::{AccessContext, Action, DataService, Decision, Principal, ResourceKind, ResourceOp, ResourceRef};
 use forgebase_db::{Backend, DbRouter, Rows, SetHandle, Statement, TenantRef, TxMode, Value, WriteTx};
 use forgebase_entitlements::{Clock, EntitlementError, EntitlementService, GaugeRequest, subject_key};
@@ -53,6 +55,14 @@ pub struct StorageSettings {
     pub reconcile_grace_secs: u64,
     /// Quota feature key; `None` turns metering off.
     pub quota_feature: Option<String>,
+    /// How signed downloads are served: ForgeBase's HMAC URLs (`Proxy`,
+    /// the default), the provider's signed URL (`Native`), or native when
+    /// the driver can sign (`Auto`). Uploads always use the proxy
+    /// (ADR-0040 addendum).
+    pub signed_urls: SignedUrlsMode,
+    /// Per-bucket `signed_urls`: a bucket name (that name in every tenant)
+    /// or `<tenant>/<name>` (one tenant's bucket, which wins).
+    pub signed_urls_buckets: BTreeMap<String, SignedUrlsMode>,
 }
 
 impl Default for StorageSettings {
@@ -64,6 +74,8 @@ impl Default for StorageSettings {
             default_signed_ttl_secs: 900,
             reconcile_grace_secs: 3600,
             quota_feature: Some(STORAGE_FEATURE.to_owned()),
+            signed_urls: SignedUrlsMode::Proxy,
+            signed_urls_buckets: BTreeMap::new(),
         }
     }
 }
@@ -287,6 +299,18 @@ impl StorageService {
         let signing_key = load_signing_key(db.as_ref(), &keyring).await?;
         data.authorizer()
             .register_resource_schema(crate::rules::object_schema());
+        let wants_native = settings.signed_urls == SignedUrlsMode::Native
+            || settings
+                .signed_urls_buckets
+                .values()
+                .any(|m| *m == SignedUrlsMode::Native);
+        if wants_native && let Err(why) = driver.presign_support() {
+            tracing::warn!(
+                driver = driver.name(),
+                reason = %why,
+                "signed_urls is native, but the storage driver cannot sign: native signed download URLs will be refused (409 native_signing_unavailable)"
+            );
+        }
         Ok(Self {
             inner: Arc::new(Inner {
                 db,

@@ -1,8 +1,8 @@
 //! The Google Cloud Storage driver against a mock of the JSON API, the OAuth
 //! token endpoint and the GCE metadata server (no network): JWT exchange and
 //! refresh, metadata-server auth, resumable uploads, retries, paging, V4
-//! signed URLs against Google's published test vectors, and the storage
-//! service on top.
+//! signed URLs against Google's published test vectors, the storage
+//! service on top, and its native signed downloads fetched from the mock.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 mod common;
@@ -13,10 +13,14 @@ use std::sync::atomic::{AtomicI64, Ordering};
 
 use common::{Env, admin, bytes_of, chunked, put, read_all};
 use forgebase_auth::net::{HttpsClient, TlsSettings};
+use forgebase_core::SignedUrlsMode;
 use forgebase_storage::cloud::RsaSigner;
 use forgebase_storage::driver::collect;
-use forgebase_storage::gcs::{V4Request, v4_signed_url};
-use forgebase_storage::{GcsAuth, GcsConfig, GcsDriver, ServiceAccount, StorageDriver, StorageError, body_of};
+use forgebase_storage::gcs::{V4Request, v4_signed_url, v4_signed_url_with};
+use forgebase_storage::{
+    GcsAuth, GcsConfig, GcsDriver, PresignGet, ServiceAccount, SignRequest, SignedMode, StorageDriver, StorageError,
+    body_of,
+};
 use serde_json::Value as Json;
 use support::gcs_mock::{BUCKET, GcsMock, SA_JSON};
 use support::{chunks_of, conformance, pattern};
@@ -322,35 +326,48 @@ async fn listing_pages_and_folds_by_delimiter() {
 }
 
 /// Google's published V4 signing test vectors (googleapis/conformance-tests,
-/// `storage/v1/v4_signatures.json`) signed with Google's dummy service key.
+/// `storage/v1/v4_signatures.json`) signed with Google's dummy service key,
+/// including the two with extra query parameters (encoding and ordering),
+/// which the `response-*` overrides of native downloads rely on.
 #[test]
 fn v4_signed_urls_match_googles_published_vectors() {
     let sa = ServiceAccount::from_json(SA_JSON).unwrap();
     let signer = RsaSigner::from_pem(&sa.private_key).unwrap();
     let vectors: Vec<Json> = serde_json::from_str(include_str!("fixtures/gcs_v4_vectors.json")).unwrap();
-    assert!(vectors.len() >= 5);
+    assert!(vectors.len() >= 7);
+    let with_query = vectors.iter().filter(|v| v.get("queryParameters").is_some()).count();
+    assert_eq!(with_query, 2);
     for v in &vectors {
+        let extra: Vec<(String, String)> = v
+            .get("queryParameters")
+            .and_then(Json::as_object)
+            .map(|m| {
+                m.iter()
+                    .map(|(k, v)| (k.clone(), v.as_str().unwrap().to_owned()))
+                    .collect()
+            })
+            .unwrap_or_default();
         let ts = time::OffsetDateTime::parse(
             v["timestamp"].as_str().unwrap(),
             &time::format_description::well_known::Rfc3339,
         )
         .unwrap()
         .unix_timestamp();
-        let url = v4_signed_url(
-            &signer,
-            &V4Request {
-                client_email: &sa.client_email,
-                base: "https://storage.googleapis.com",
-                host: "storage.googleapis.com",
-                bucket: v["bucket"].as_str().unwrap(),
-                object: v["object"].as_str().unwrap(),
-                method: v["method"].as_str().unwrap(),
-                expires_secs: v["expiration"].as_u64().unwrap(),
-                now: ts,
-            },
-        )
-        .unwrap();
+        let r = V4Request {
+            client_email: &sa.client_email,
+            base: "https://storage.googleapis.com",
+            host: "storage.googleapis.com",
+            bucket: v["bucket"].as_str().unwrap(),
+            object: v["object"].as_str().unwrap(),
+            method: v["method"].as_str().unwrap(),
+            expires_secs: v["expiration"].as_u64().unwrap(),
+            now: ts,
+        };
+        let url = v4_signed_url_with(&signer, &r, &extra).unwrap();
         assert_eq!(url, v["expectedUrl"].as_str().unwrap(), "{}", v["description"]);
+        if extra.is_empty() {
+            assert_eq!(v4_signed_url(&signer, &r).unwrap(), url);
+        }
     }
 }
 
@@ -506,4 +523,182 @@ fn credentials_are_picked_from_the_environment_in_a_fixed_order() {
         auth_from_env(&host, None, false).unwrap(),
         GcsAuth::Metadata { endpoint } if endpoint == "http://169.254.169.254"
     ));
+}
+
+async fn fetch(url: &str) -> forgebase_auth::social::HttpResponse {
+    use forgebase_auth::social::HttpClient as _;
+    client()
+        .send(forgebase_auth::social::HttpRequest {
+            method: "GET",
+            url: url.to_owned(),
+            headers: Vec::new(),
+            body: Vec::new(),
+        })
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn presigned_downloads_verify_and_are_scoped_to_one_object() {
+    let mock = GcsMock::start(0).await;
+    let d = driver(&mock, CHUNK);
+    d.put("blobs/aa/one", body_of(b"first".to_vec())).await.unwrap();
+    d.put("blobs/bb/two", body_of(b"second".to_vec())).await.unwrap();
+    assert_eq!(d.presign_support(), Ok(604_800));
+    let url = d
+        .presign_get(&PresignGet {
+            key: "blobs/aa/one",
+            now: NOW,
+            expires_secs: 600,
+            content_type: Some("text/plain"),
+            content_disposition: Some("attachment; filename=\"one.txt\""),
+        })
+        .unwrap();
+    assert!(
+        url.starts_with(&format!(
+            "{}/{BUCKET}/fb/blobs/aa/one?X-Goog-Algorithm=GOOG4-RSA-SHA256&",
+            mock.url()
+        )),
+        "{url}"
+    );
+    assert!(url.contains("&X-Goog-Date=20261109T120000Z&X-Goog-Expires=600&X-Goog-SignedHeaders=host&"));
+    assert!(url.contains(
+        "&response-content-disposition=attachment%3B%20filename%3D%22one.txt%22&response-content-type=text%2Fplain&X-Goog-Signature="
+    ));
+    let r = fetch(&url).await;
+    assert_eq!((r.status, r.body.as_slice()), (200, &b"first"[..]));
+    assert_eq!(r.header("content-type"), Some("text/plain"));
+    assert_eq!(
+        r.header("content-disposition"),
+        Some("attachment; filename=\"one.txt\"")
+    );
+    for forged in [
+        url.replace("fb/blobs/aa/one", "fb/blobs/bb/two"),
+        url.replace("X-Goog-Expires=600", "X-Goog-Expires=6000"),
+        url.replace("text%2Fplain", "text%2Fhtml"),
+    ] {
+        assert_eq!(fetch(&forged).await.status, 403, "{forged}");
+    }
+    assert_eq!(mock.st.lock().unwrap().refused.len(), 3);
+}
+
+#[tokio::test]
+async fn native_signed_downloads_are_served_by_gcs() {
+    let mock = GcsMock::start(0).await;
+    let driver: Arc<dyn StorageDriver> = Arc::new(self::driver(&mock, CHUNK));
+    let env = Env::with(
+        |s| {
+            s.signed_urls = SignedUrlsMode::Native;
+            s.max_signed_ttl_secs = 30 * 86_400;
+        },
+        Some(driver),
+    )
+    .await;
+    env.bucket("n", false).await;
+    let data = bytes_of(5000);
+    let info = env
+        .storage
+        .put_object(
+            &admin(),
+            forgebase_storage::PutRequest {
+                content_type: Some("application/octet-stream".into()),
+                ..put("n", "dir/data.bin", &data)
+            },
+        )
+        .await
+        .unwrap();
+    let sha = info.checksum_sha256.unwrap();
+    let sign = |expires_in: u64| SignRequest {
+        key: "dir/data.bin".into(),
+        method: None,
+        expires_in: Some(expires_in),
+        version_id: None,
+        download_as: None,
+        content_type: None,
+    };
+    let signed = env.storage.sign_url(&admin(), "n", sign(120)).await.unwrap();
+    assert_eq!(signed.mode, SignedMode::Native);
+    assert!(
+        signed
+            .url
+            .starts_with(&format!("{}/{BUCKET}/fb/blobs/{}/{sha}?", mock.url(), &sha[..2])),
+        "{}",
+        signed.url
+    );
+    let r = fetch(&signed.url).await;
+    assert_eq!((r.status, &r.body), (200, &data));
+    assert_eq!(r.header("content-type"), Some("application/octet-stream"));
+    assert_eq!(
+        r.header("content-disposition"),
+        None,
+        "inert content is served inline, as by the proxy"
+    );
+    // Capped at the seven days GCS allows.
+    let long = env.storage.sign_url(&admin(), "n", sign(10 * 86_400)).await.unwrap();
+    assert!(long.url.contains("&X-Goog-Expires=604800&"), "{}", long.url);
+    assert_eq!(fetch(&long.url).await.status, 200);
+    assert!(mock.st.lock().unwrap().refused.is_empty());
+    assert!(mock.bad().is_empty(), "{:?}", mock.bad());
+}
+
+#[tokio::test]
+async fn workload_identity_cannot_sign_so_auto_uses_the_proxy() {
+    let mock = GcsMock::start(0).await;
+    let wi = || -> Arc<dyn StorageDriver> {
+        Arc::new(
+            GcsDriver::with_clock(
+                config(&mock, GcsAuth::Metadata { endpoint: mock.url() }, CHUNK),
+                client(),
+                Arc::new(|| NOW),
+            )
+            .unwrap(),
+        )
+    };
+    let why = wi().presign_support().unwrap_err();
+    assert!(why.contains("workload identity"), "{why}");
+    let req = || SignRequest {
+        key: "k".into(),
+        method: None,
+        expires_in: None,
+        version_id: None,
+        download_as: None,
+        content_type: None,
+    };
+    let env = Env::with(|s| s.signed_urls = SignedUrlsMode::Auto, Some(wi())).await;
+    env.bucket("b", false).await;
+    env.storage
+        .put_object(&admin(), put("b", "k", b"proxied"))
+        .await
+        .unwrap();
+    let signed = env.storage.sign_url(&admin(), "b", req()).await.unwrap();
+    assert_eq!(signed.mode, SignedMode::Proxy);
+    let (s, _, body) = env
+        .req(
+            None,
+            axum::http::Method::GET,
+            &signed.url,
+            &[],
+            axum::body::Body::empty(),
+        )
+        .await;
+    assert_eq!((s.as_u16(), body.as_slice()), (200, &b"proxied"[..]));
+
+    let env = Env::with(|s| s.signed_urls = SignedUrlsMode::Native, Some(wi())).await;
+    env.bucket("b", false).await;
+    env.storage.put_object(&admin(), put("b", "k", b"x")).await.unwrap();
+    match env.storage.sign_url(&admin(), "b", req()).await {
+        Err(StorageError::Conflict {
+            code: "native_signing_unavailable",
+            message,
+        }) => assert!(
+            message.contains("gcs driver") && message.contains("workload identity"),
+            "{message}"
+        ),
+        other => panic!("{other:?}"),
+    }
+    // Fixed tokens and emulators without credentials cannot sign either.
+    for auth in [GcsAuth::AccessToken("t".into()), GcsAuth::None] {
+        let d = GcsDriver::new(config(&mock, auth, CHUNK), client()).unwrap();
+        assert!(d.presign_support().is_err());
+    }
 }

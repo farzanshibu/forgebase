@@ -17,7 +17,9 @@
 //!   transport errors); a chunk that failed is re-sent from the offset the
 //!   service reports.
 //! * [`GcsDriver::signed_url`] makes V4 signed URLs (`GOOG4-RSA-SHA256`) with
-//!   the service-account key.
+//!   the service-account key; the REST API offloads signed downloads to them
+//!   (with `response-content-type` / `response-content-disposition`) under
+//!   `[storage] signed_urls = "native"` or `"auto"` (ADR-0040 addendum).
 //!
 //! ForgeBase keeps its own versions, deduplication and signed URLs above the
 //! driver (ADR-0018), so the driver stores plain, unversioned objects and
@@ -34,7 +36,7 @@ use crate::cloud::{
     Clock, RetryPolicy, RsaSigner, Token, TokenCache, b64url, clean_prefix, error_summary, join_key, parse_rfc3339_ms,
     parse_token, system_clock, with_retry,
 };
-use crate::driver::{BoxFuture, ByteStream, DriverObject, StorageDriver};
+use crate::driver::{BoxFuture, ByteStream, DriverObject, PresignGet, StorageDriver};
 use crate::error::{Result, StorageError};
 use crate::sigv4::{encode, stamps};
 use crate::util::{hex, sha256_hex};
@@ -704,6 +706,19 @@ impl GcsDriver {
     /// `expires_secs` (at most seven days). Needs a service-account key;
     /// workload identity and bare tokens cannot sign.
     pub fn signed_url(&self, method: &str, key: &str, expires_secs: u64) -> Result<String> {
+        self.signed_url_with(method, key, self.now(), expires_secs, &[])
+    }
+
+    /// [`GcsDriver::signed_url`] signed at `now` (epoch seconds), with
+    /// further signed query parameters (`response-content-type`, ...).
+    pub fn signed_url_with(
+        &self,
+        method: &str,
+        key: &str,
+        now: i64,
+        expires_secs: u64,
+        query: &[(String, String)],
+    ) -> Result<String> {
         let (GcsAuth::ServiceAccount(sa), Some(signer)) = (&self.inner.cfg.auth, &self.inner.signer) else {
             return Err(StorageError::invalid(
                 "gcs_signing_unavailable",
@@ -716,7 +731,7 @@ impl GcsDriver {
                 "GCS signed URLs are valid for 1 second to 7 days",
             ));
         }
-        v4_signed_url(
+        v4_signed_url_with(
             signer,
             &V4Request {
                 client_email: &sa.client_email,
@@ -726,8 +741,9 @@ impl GcsDriver {
                 object: &self.full_key(key),
                 method,
                 expires_secs,
-                now: self.now(),
+                now,
             },
+            query,
         )
     }
 }
@@ -760,15 +776,24 @@ pub struct V4Request<'a> {
 
 /// Builds a V4 signed URL; split out so a published test vector can drive it.
 pub fn v4_signed_url(signer: &RsaSigner, r: &V4Request<'_>) -> Result<String> {
+    v4_signed_url_with(signer, r, &[])
+}
+
+/// [`v4_signed_url`] with further query parameters (not yet encoded), signed
+/// with the `X-Goog-*` ones: Google's `queryParameters` test vectors, and
+/// the `response-content-type` / `response-content-disposition` overrides of
+/// an offloaded download.
+pub fn v4_signed_url_with(signer: &RsaSigner, r: &V4Request<'_>, extra: &[(String, String)]) -> Result<String> {
     let (date, stamp) = stamps(r.now);
     let scope = format!("{date}/auto/storage/goog4_request");
-    let mut query = [
+    let mut query: Vec<(&str, String)> = vec![
         ("X-Goog-Algorithm", "GOOG4-RSA-SHA256".to_owned()),
         ("X-Goog-Credential", format!("{}/{scope}", r.client_email)),
         ("X-Goog-Date", stamp.clone()),
         ("X-Goog-Expires", r.expires_secs.to_string()),
         ("X-Goog-SignedHeaders", "host".to_owned()),
     ];
+    query.extend(extra.iter().map(|(k, v)| (k.as_str(), v.clone())));
     query.sort_by(|a, b| a.0.cmp(b.0));
     let canonical_query = query
         .iter()
@@ -942,6 +967,30 @@ impl StorageDriver for GcsDriver {
             out.sort_by(|a, b| a.key.cmp(&b.key));
             Ok(out)
         })
+    }
+
+    fn presign_support(&self) -> std::result::Result<u64, String> {
+        match (&self.inner.cfg.auth, &self.inner.signer) {
+            (GcsAuth::ServiceAccount(_), Some(_)) => Ok(MAX_SIGNED_SECS),
+            (GcsAuth::Metadata { .. }, _) => Err(
+                "GCS signed URLs need a service-account key: workload identity (the metadata server) cannot sign them (IAM signBlob is not implemented)".into(),
+            ),
+            (GcsAuth::AccessToken(_), _) => {
+                Err("GCS signed URLs need a service-account key: a fixed access token cannot sign them".into())
+            }
+            _ => Err("GCS signed URLs need a service-account key: the driver has no credentials".into()),
+        }
+    }
+
+    fn presign_get(&self, req: &PresignGet<'_>) -> Result<String> {
+        let mut query = Vec::new();
+        if let Some(ct) = req.content_type {
+            query.push(("response-content-type".to_owned(), ct.to_owned()));
+        }
+        if let Some(cd) = req.content_disposition {
+            query.push(("response-content-disposition".to_owned(), cd.to_owned()));
+        }
+        self.signed_url_with("GET", req.key, req.now, req.expires_secs, &query)
     }
 
     fn ping(&self) -> BoxFuture<'_, Result<()>> {
