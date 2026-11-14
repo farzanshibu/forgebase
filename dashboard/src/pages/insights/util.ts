@@ -1,3 +1,4 @@
+import type { InsightAuditFilter } from "../../api";
 import { formatBytes } from "../../format";
 
 export interface RangePreset { id: string; label: string; secs: number }
@@ -57,3 +58,16 @@ export function localToIso(v: string): string | undefined {
 }
 
 export const today = (): string => new Date().toISOString().slice(0, 10);
+
+/** The audit search form's fields as typed. */
+export interface AuditDraft { actor: string; action: string; resource_type: string; resource_id: string; outcome: string; ip: string; request_id: string; from: string; to: string; q: string; order: "desc" | "asc" }
+export const BLANK_AUDIT_DRAFT: AuditDraft = { actor: "", action: "", resource_type: "", resource_id: "", outcome: "", ip: "", request_id: "", from: "", to: "", q: "", order: "desc" };
+
+/** The draft as the filter the API takes: empty fields are left out and the times become UTC. */
+export function auditFilterOf(d: AuditDraft): InsightAuditFilter {
+  const t = (v: string) => v.trim() || undefined;
+  return {
+    actor: t(d.actor), action: t(d.action), resource_type: t(d.resource_type), resource_id: t(d.resource_id), outcome: t(d.outcome), ip: t(d.ip), request_id: t(d.request_id),
+    from: localToIso(d.from), to: localToIso(d.to), q: t(d.q), order: d.order === "asc" ? "asc" : undefined,
+  };
+}

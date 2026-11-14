@@ -14,23 +14,11 @@ import { Button, ErrorView } from "../../components/ui";
 import { useCursorList, useLoad } from "../../hooks";
 import { Section, When } from "../jobs/ops";
 import AuditRelated, { resourceOf } from "./AuditRelated";
-import { fmtInt, localToIso } from "./util";
-
-interface Draft { actor: string; action: string; resource_type: string; resource_id: string; outcome: string; ip: string; request_id: string; from: string; to: string; q: string; order: "desc" | "asc" }
-const BLANK: Draft = { actor: "", action: "", resource_type: "", resource_id: "", outcome: "", ip: "", request_id: "", from: "", to: "", q: "", order: "desc" };
-
-/** The draft as the filter the API takes: empty fields are left out and times become UTC. */
-export function filterOf(d: Draft): InsightAuditFilter {
-  const t = (v: string) => v.trim() || undefined;
-  return {
-    actor: t(d.actor), action: t(d.action), resource_type: t(d.resource_type), resource_id: t(d.resource_id), outcome: t(d.outcome), ip: t(d.ip), request_id: t(d.request_id),
-    from: localToIso(d.from), to: localToIso(d.to), q: t(d.q), order: d.order === "asc" ? "asc" : undefined,
-  };
-}
+import { BLANK_AUDIT_DRAFT, auditFilterOf, fmtInt, type AuditDraft } from "./util";
 
 /** Audit investigation: search the authentication and administration log, follow an entry to what happened around it, export what matches. */
 export default function Audit() {
-  const [draft, setDraft] = useState<Draft>(BLANK);
+  const [draft, setDraft] = useState<AuditDraft>(BLANK_AUDIT_DRAFT);
   const [filter, setFilter] = useState<InsightAuditFilter>({});
   const [open, setOpen] = useState<InsightAuditEntry>();
   const key = JSON.stringify(filter);
@@ -39,8 +27,8 @@ export default function Audit() {
     `audit:${key}`,
   );
   const summary = useLoad((s) => auditSummary({ from: filter.from, to: filter.to }, s), `audit-summary:${filter.from}:${filter.to}`);
-  const set = (patch: Partial<Draft>) => setDraft((d) => ({ ...d, ...patch }));
-  const submit = (e: FormEvent) => { e.preventDefault(); setFilter(filterOf(draft)); };
+  const set = (patch: Partial<AuditDraft>) => setDraft((d) => ({ ...d, ...patch }));
+  const submit = (e: FormEvent) => { e.preventDefault(); setFilter(auditFilterOf(draft)); };
   const failures = summary.data?.outcomes.find((o) => o.key === "failure")?.count ?? 0;
 
   return (
@@ -62,7 +50,7 @@ export default function Audit() {
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <Button type="submit" tone="primary">Search</Button>
-            <Button type="button" onClick={() => { setDraft(BLANK); setFilter({}); }}>Clear</Button>
+            <Button type="button" onClick={() => { setDraft(BLANK_AUDIT_DRAFT); setFilter({}); }}>Clear</Button>
           </div>
         </form>
       </Section>
