@@ -29,6 +29,10 @@ functions and billing. SQLite is the optional one-file alternative.
 - Project as code in the CLI: `forgebase new`, `forgebase project pull|plan|apply|drift`
   and `forgebase deploy` keep collections, functions, queues, buckets and rules as files
   next to your app and apply them from CI ([docs/project-as-code.md](docs/project-as-code.md)).
+- Developer workflow in the CLI: `forgebase dev` (a local emulator with your project applied,
+  seeded and watched), `forgebase gen types` (TypeScript and Rust models of your collections) and
+  `forgebase functions invoke --trace`; recipes for starting the emulator from Vitest, Rust and
+  Dart test suites ([docs/dev-workflow.md](docs/dev-workflow.md)).
 - Terraform provider in [`integrations/terraform-provider-forgebase`](integrations/terraform-provider-forgebase): collections, storage, queues, functions, identity and plans as code.
 - Kotlin SDK for Android and the JVM in [`sdk/kotlin`](sdk/kotlin).
 - Swift SDK for iOS, macOS, tvOS, watchOS and visionOS in [`sdk/swift`](sdk/swift).
@@ -127,6 +131,8 @@ Commands:
   project    The server's configuration as code: pull, plan, apply, drift (ADR-0037)
   deploy     Build functions and apply the project directory to a server (plan + apply)
   new        Create an app project: the project-as-code layout, samples, seed data, a CI workflow
+  dev        Run a local emulator: a throw-away server with your project applied, seeded and watched (ADR-0038)
+  gen        Generate code from the project: `gen types --lang ts|rust` (ADR-0038)
   help       Print this message or the help of the given subcommand(s)
 
 Options:
