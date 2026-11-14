@@ -52,6 +52,14 @@ pub(crate) async fn rows(conn: &mut SqliteConnection, sql: &str) -> Result<Vec<V
     rows.iter().map(row_values).collect()
 }
 
+/// `count(*)` of `table` (SQL: quoted).
+pub(crate) async fn count(conn: &mut SqliteConnection, table: &str) -> Result<Option<i64>, ConvertError> {
+    Ok(rows(conn, &format!("SELECT count(*) FROM {table}"))
+        .await?
+        .first()
+        .and_then(|r| r[0].as_i64()))
+}
+
 /// A row's values by their stored (dynamic) type.
 pub(crate) fn row_values(row: &SqliteRow) -> Result<Vec<Value>, ConvertError> {
     let mut out = Vec::with_capacity(row.len());

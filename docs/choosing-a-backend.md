@@ -179,6 +179,13 @@ where the engine has them. Problems in the source (integrity or foreign-key
 violations, a collection name PostgreSQL rejects) are refused before anything
 is copied.
 
+**Trigram (fuzzy) indexes** move in both directions. The target builds each
+one again after the copy with its own engine: pg_trgm on PostgreSQL when
+`[database.postgres.extensions] trigram` allows it and the server has it,
+the portable GIN index otherwise, and a trigram table kept by triggers on
+SQLite. The summary names each rebuilt index with its engine, row count and
+build time.
+
 **PostgreSQL to SQLite** first converts the data the source keeps in
 extensions (pgvector vectors, pgmq deliveries, pg_cron schedules) to portable
 rows in the source itself (`--no-prepare` skips that and refuses when such data
@@ -190,10 +197,8 @@ all. Things that stop a conversion:
 
 | Direction | Refused | What to do |
 |---|---|---|
-| to PostgreSQL | **a trigram index**: the SQLite engine keeps a side table `_forgebase_trgm_<index>`, and the table pairing stops with `table _forgebase_trgm_<index> exists on SQLite but not on PostgreSQL` | drop the trigram index (`DELETE /api/v1/indexes/<name>` or the dashboard) before converting, and create it again on PostgreSQL afterwards; `fuzzy` answers `no_trigram_index` in between. Known gap, [feature-parity.md](feature-parity.md) |
 | to PostgreSQL | a table or column that exists only on SQLite (hand-made through the SQL editor), or an automatic index name the target derives differently | recreate it by hand on the target after converting, or drop it |
 | to PostgreSQL | integrity or foreign-key violations in the SQLite file; a collection name PostgreSQL rejects | fix the data (`PRAGMA integrity_check`, `foreign_key_check`), rename the collection |
-| to SQLite | **a trigram index**: `trigram index <name> on <collection> needs pg_trgm, which SQLite does not have: drop the index first (fuzzy search is PostgreSQL only)` | drop it first; the portable SQLite engine can create one again afterwards (feature-parity) |
 | to SQLite | more than one database set (shards), or any replica | drain and remove the shards, remove the replicas |
 | to SQLite | objects that exist only on PostgreSQL: hand-written row-level security policies, functions, triggers, types and domains, free-standing sequences, views that are not view collections, columns of types SQLite lacks (with data in them) | remove or recreate them; the message names each |
 | to SQLite | data still held by an extension: pgvector vectors, pgmq deliveries, pg_cron schedules (only with `--no-prepare`) | run without `--no-prepare`, or the `vector.convert` and `queue.convert` jobs with `{"to": "portable"}` |
@@ -227,7 +232,7 @@ the data.
    many tenants: shards (§5). Writes on one tenant: faster disk, batching, a
    bigger machine.
 5. **Will someone need to leave PostgreSQL later?** SQLite as a target works only
-   for a single set without replicas and without trigram indexes (§6).
+   for a single set without replicas (§6).
 
 [capacity-planning.md](capacity-planning.md) turns the choice into CPU, memory,
 disk and connection numbers.

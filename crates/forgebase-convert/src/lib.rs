@@ -17,13 +17,18 @@
 //!    the target with triggers off: `COPY … FROM STDIN` into PostgreSQL,
 //!    `COPY … TO STDOUT` out of it; values converted by column type
 //!    ([`canon::Kind`]); SQLite `rowid` ↔ `_rowid`;
-//! 4. derived data rebuilt (`_forgebase_vector_fts`), identity sequences
-//!    set past their maximum (and past SQLite's `sqlite_sequence`);
+//! 4. derived data rebuilt (`_forgebase_vector_fts`, and trigram indexes:
+//!    dropped before the copy and built after it by the data core's own
+//!    DDL for the target's engine, see [`RebuiltIndex`]; SQLite's trigram
+//!    tables `_forgebase_trgm_<index>` are never copied), identity
+//!    sequences set past their maximum (and past SQLite's
+//!    `sqlite_sequence`);
 //! 5. verification in the same transaction: per table, row count and a
 //!    SHA-256 over the rows in primary-key order in a canonical encoding
 //!    ([`canon`]); any mismatch rolls the copy back;
-//! 6. a report: per-table counts and hashes, and the raw-SQL indexes and
-//!    other objects the administrator must recreate by hand.
+//! 6. a report: per-table counts and hashes, the rebuilt indexes, and the
+//!    raw-SQL indexes and other objects the administrator must recreate by
+//!    hand.
 
 pub mod canon;
 mod copytext;
@@ -35,7 +40,9 @@ mod schema;
 mod sqlite;
 
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
+use forgebase_data::fuzzy::TrigramReload;
 use forgebase_db::{BackendKind, Database, DbError, SecretString, Value};
 use futures_util::TryStreamExt as _;
 use serde::Serialize;
@@ -130,6 +137,27 @@ pub struct ManualObject {
     pub sql: String,
 }
 
+/// An index whose engine objects are derived from its definition and were
+/// built on the target after the copy, instead of copied: a trigram index
+/// (ADR-0034; SQLite keeps it as a table, PostgreSQL as a GIN index).
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct RebuiltIndex {
+    /// `trigram`.
+    pub kind: String,
+    /// Index name.
+    pub name: String,
+    /// Collection it indexes.
+    pub collection: String,
+    /// The engine it was built with on the target: `pg_trgm` or `portable`.
+    pub engine: String,
+    /// Records of the collection when it was built.
+    pub rows: u64,
+    /// SQLite target: rows of its trigram table (`None` on PostgreSQL).
+    pub trigrams: Option<u64>,
+    /// Time the build took, in milliseconds.
+    pub millis: u64,
+}
+
 /// What a conversion did.
 #[derive(Debug, Clone, Serialize)]
 pub struct ConvertReport {
@@ -148,6 +176,8 @@ pub struct ConvertReport {
     pub tables: Vec<TableReport>,
     /// Rows rebuilt in `_forgebase_vector_fts` (derived from the vector items).
     pub derived_rows: u64,
+    /// Indexes built on the target after the copy (trigram indexes).
+    pub rebuilt: Vec<RebuiltIndex>,
     /// Identity sequences set on the target.
     pub sequences: usize,
     /// Raw-SQL indexes, triggers and views to recreate by hand (their SQL
@@ -257,19 +287,9 @@ pub async fn convert(
                 .collect();
             let found = refusals::check(&mut conn, &views).await;
             let _ = sqlx::Connection::close(conn).await;
-            let mut found = found?;
-            // Trigram indexes (FB-166) need pg_trgm; SQLite has none.
-            for ix in cat
-                .indexes
-                .iter()
-                .filter(|i| i.kind == forgebase_data::IndexKind::Trigram)
-            {
-                found.problems.push(format!(
-                    "trigram index {} on {} needs pg_trgm, which SQLite does not have: drop the index first \
-                     (fuzzy search is PostgreSQL only)",
-                    ix.name, ix.collection
-                ));
-            }
+            // Trigram indexes are not refused: SQLite's portable engine
+            // builds them again after the copy (ADR-0034 addendum).
+            let found = found?;
             if !found.problems.is_empty() {
                 return Err(ConvertError::Refused(found.problems));
             }
@@ -300,15 +320,17 @@ pub async fn convert(
         indexes: built.indexes,
         tables: Vec::new(),
         derived_rows: 0,
+        rebuilt: Vec::new(),
         sequences: 0,
         manual: Vec::new(),
         notes,
     };
+    let trigram = Trigram::new(&cat, built.trigram);
     match (source.conn, target.conn) {
         (Conn::Sqlite(path), Conn::Postgres(url)) => {
             let mut src = sqlite::connect(path, true).await?;
             let mut dst = pg::connect(url.expose()).await?;
-            let r = to_postgres(&mut src, &mut dst, &mut report, progress).await;
+            let r = to_postgres(&mut src, &mut dst, &trigram, &mut report, progress).await;
             let _ = sqlx::Connection::close(src).await;
             let _ = sqlx::Connection::close(dst).await;
             r?;
@@ -316,7 +338,7 @@ pub async fn convert(
         (Conn::Postgres(url), Conn::Sqlite(path)) => {
             let mut src = pg::connect(url.expose()).await?;
             let mut dst = sqlite::connect(path, false).await?;
-            let r = to_sqlite(&mut src, &mut dst, &mut report, progress).await;
+            let r = to_sqlite(&mut src, &mut dst, &trigram, &mut report, progress).await;
             let _ = sqlx::Connection::close(src).await;
             let _ = sqlx::Connection::close(dst).await;
             r?;
@@ -330,6 +352,66 @@ fn unreachable_conn<T>() -> Result<T, ConvertError> {
     Err(ConvertError::Precondition(
         "the copy connections do not match the databases".into(),
     ))
+}
+
+/// Trigram indexes (ADR-0034 addendum): their SQLite objects, derived from
+/// the definitions and never copied, and the target's statements that take
+/// each index out of the copy and build it again after it.
+struct Trigram {
+    /// Index names.
+    names: Vec<String>,
+    /// SQLite trigram tables (`_forgebase_trgm_<index>`).
+    tables: Vec<String>,
+    /// SQLite triggers that keep them.
+    triggers: Vec<String>,
+    /// On the target.
+    reloads: Vec<TrigramReload>,
+}
+
+impl Trigram {
+    fn new(cat: &schema::SourceCatalog, reloads: Vec<TrigramReload>) -> Self {
+        let names: Vec<String> = cat
+            .indexes
+            .iter()
+            .filter(|i| i.kind == forgebase_data::IndexKind::Trigram)
+            .map(|i| i.name.clone())
+            .collect();
+        let objects: Vec<_> = names.iter().map(|n| forgebase_data::fuzzy::sqlite_objects(n)).collect();
+        Self {
+            tables: objects.iter().map(|o| o.table.clone()).collect(),
+            triggers: objects.iter().flat_map(|o| o.triggers.iter().cloned()).collect(),
+            names,
+            reloads,
+        }
+    }
+}
+
+fn rebuild_err(r: &TrigramReload, e: ConvertError) -> ConvertError {
+    ConvertError::Schema(format!(
+        "trigram index {} on {} cannot be built on the target: {e}",
+        r.index, r.collection
+    ))
+}
+
+fn rebuilt(r: &TrigramReload, rows: Option<i64>, trigrams: Option<i64>, took: Duration) -> RebuiltIndex {
+    let count = |n: Option<i64>| n.and_then(|n| u64::try_from(n).ok()).unwrap_or(0);
+    RebuiltIndex {
+        kind: "trigram".into(),
+        name: r.index.clone(),
+        collection: r.collection.clone(),
+        engine: r.engine.name().into(),
+        rows: count(rows),
+        trigrams: trigrams.map(|n| count(Some(n))),
+        millis: u64::try_from(took.as_millis()).unwrap_or(u64::MAX),
+    }
+}
+
+fn say_rebuilt(progress: Progress<'_>, b: &RebuiltIndex) {
+    let trigrams = b.trigrams.map(|n| format!(", {n} trigram row(s)")).unwrap_or_default();
+    progress(&format!(
+        "built {} index {} on {} ({}): {} row(s){trigrams} in {} ms",
+        b.kind, b.name, b.collection, b.engine, b.rows, b.millis
+    ));
 }
 
 fn copy_err(plan: &TablePlan, message: impl Into<String>) -> ConvertError {
@@ -397,14 +479,20 @@ async fn check_pg_only(conn: &mut PgConnection, plans: &[TablePlan]) -> Result<(
 async fn to_postgres(
     src: &mut SqliteConnection,
     dst: &mut PgConnection,
+    trigram: &Trigram,
     report: &mut ConvertReport,
     progress: Progress<'_>,
 ) -> Result<(), ConvertError> {
     let pg_tables = pg::tables(dst).await?;
     let sqlite_tables = sqlite::tables(src).await?;
-    let (plans, _) = plan::pair(&pg_tables, &sqlite_tables, forgebase_migrations::postgres::ROWID_TABLES)
-        .map_err(ConvertError::Refused)?;
-    report.manual = sqlite_manual_objects(src, dst, &plans).await?;
+    let (plans, _) = plan::pair(
+        &pg_tables,
+        &sqlite_tables,
+        forgebase_migrations::postgres::ROWID_TABLES,
+        &trigram.tables,
+    )
+    .map_err(ConvertError::Refused)?;
+    report.manual = sqlite_manual_objects(src, dst, &plans, &trigram.triggers).await?;
     let seqs = sqlite::sequences(src).await?;
     let has_fts = pg_tables
         .iter()
@@ -426,6 +514,12 @@ async fn to_postgres(
             all.push(format!("forgebase.{}", pg::quote(VECTOR_FTS)));
         }
         pg::exec(dst, &format!("TRUNCATE {}", all.join(", "))).await?;
+        // Trigram indexes are built after the copy (one bulk GIN build).
+        for r in &trigram.reloads {
+            for sql in &r.suspend {
+                pg::exec(dst, sql).await?;
+            }
+        }
 
         let mut source_hashes = Vec::with_capacity(plans.len());
         for p in &plans {
@@ -445,6 +539,17 @@ async fn to_postgres(
                 .unwrap_or(0)
                 .try_into()
                 .unwrap_or(0);
+        }
+        for r in &trigram.reloads {
+            let started = Instant::now();
+            for sql in &r.reload {
+                pg::exec(dst, sql).await.map_err(|e| rebuild_err(r, e))?;
+            }
+            let took = started.elapsed();
+            let rows = pg::scalar_i64(dst, &format!("SELECT count(*)::bigint FROM {}", r.table)).await?;
+            let b = rebuilt(r, rows, None, took);
+            say_rebuilt(progress, &b);
+            report.rebuilt.push(b);
         }
         for p in &plans {
             let floor = seqs.iter().find(|(t, _)| t == &p.sqlite).map(|(_, s)| *s);
@@ -562,11 +667,13 @@ fn decode_row(p: &TablePlan, kinds: &[canon::Kind], row: pg::CopyRow) -> Result<
 }
 
 /// SQLite indexes, triggers and views on collection tables that the
-/// target did not get (raw SQL from the SQL editor).
+/// target did not get (raw SQL from the SQL editor). `derived` are the
+/// triggers of trigram indexes, which the target builds itself.
 async fn sqlite_manual_objects(
     src: &mut SqliteConnection,
     dst: &mut PgConnection,
     plans: &[TablePlan],
+    derived: &[String],
 ) -> Result<Vec<ManualObject>, ConvertError> {
     let collection_tables: Vec<&str> = plans
         .iter()
@@ -600,7 +707,11 @@ async fn sqlite_manual_objects(
         let missing = match kind {
             "index" => collection_tables.contains(&table) && !made.iter().any(|m| m == name),
             // Full-text triggers belong to FTS5 tables the GIN index replaces.
-            "trigger" => collection_tables.contains(&table) && !name.starts_with("_forgebase_fts_"),
+            "trigger" => {
+                collection_tables.contains(&table)
+                    && !name.starts_with("_forgebase_fts_")
+                    && !derived.iter().any(|d| d == name)
+            }
             "view" => !views.iter().any(|v| v == name),
             _ => false,
         };
@@ -621,15 +732,21 @@ async fn sqlite_manual_objects(
 async fn to_sqlite(
     src: &mut PgConnection,
     dst: &mut SqliteConnection,
+    trigram: &Trigram,
     report: &mut ConvertReport,
     progress: Progress<'_>,
 ) -> Result<(), ConvertError> {
     let pg_tables = pg::tables(src).await?;
     let sqlite_tables = sqlite::tables(dst).await?;
-    let (plans, _) = plan::pair(&pg_tables, &sqlite_tables, forgebase_migrations::postgres::ROWID_TABLES)
-        .map_err(ConvertError::Refused)?;
+    let (plans, _) = plan::pair(
+        &pg_tables,
+        &sqlite_tables,
+        forgebase_migrations::postgres::ROWID_TABLES,
+        &trigram.tables,
+    )
+    .map_err(ConvertError::Refused)?;
     check_pg_only(src, &plans).await?;
-    report.manual = pg_manual_objects(src, dst).await?;
+    report.manual = pg_manual_objects(src, dst, &trigram.names).await?;
     let has_fts = sqlite_tables.iter().any(|t| t.name == VECTOR_FTS);
     // AUTOINCREMENT tables on the target and the source's sequence positions.
     let mut positions = Vec::new();
@@ -673,6 +790,13 @@ async fn to_sqlite(
                 &format!("DROP TRIGGER {}", sqlite::quote(t[0].as_str().unwrap_or_default())),
             )
             .await?;
+        }
+        // Trigram tables are filled once after the copy, not by their
+        // triggers row by row.
+        for r in &trigram.reloads {
+            for sql in &r.suspend {
+                sqlite::exec(dst, sql).await?;
+            }
         }
         for p in &plans {
             sqlite::exec(dst, &format!("DELETE FROM {}", sqlite::quote(&p.sqlite))).await?;
@@ -736,6 +860,21 @@ async fn to_sqlite(
                 }
             }
             report.sequences += 1;
+        }
+        for r in &trigram.reloads {
+            let started = Instant::now();
+            for sql in &r.reload {
+                sqlite::exec(dst, sql).await.map_err(|e| rebuild_err(r, e))?;
+            }
+            let took = started.elapsed();
+            let rows = sqlite::count(dst, &r.table).await?;
+            let trigrams = match &r.side_table {
+                Some(t) => sqlite::count(dst, t).await?,
+                None => None,
+            };
+            let b = rebuilt(r, rows, trigrams, took);
+            say_rebuilt(progress, &b);
+            report.rebuilt.push(b);
         }
         for t in &triggers {
             sqlite::exec(dst, t[1].as_str().unwrap_or_default()).await?;
@@ -828,10 +967,12 @@ async fn copy_table_to_sqlite(
 
 /// PostgreSQL indexes on collection tables that the SQLite target did not
 /// get (raw SQL from the SQL editor), and the dropped native policies'
-/// helper objects are not listed (they are regenerated).
+/// helper objects are not listed (they are regenerated). `managed` are the
+/// trigram indexes, which SQLite keeps as tables of another name.
 async fn pg_manual_objects(
     src: &mut PgConnection,
     dst: &mut SqliteConnection,
+    managed: &[String],
 ) -> Result<Vec<ManualObject>, ConvertError> {
     let made: Vec<String> = sqlite::rows(dst, "SELECT name FROM sqlite_master WHERE name IS NOT NULL")
         .await?
@@ -841,7 +982,7 @@ async fn pg_manual_objects(
     Ok(pg::public_indexes(src)
         .await?
         .into_iter()
-        .filter(|(name, _, _)| !made.iter().any(|m| m == name))
+        .filter(|(name, _, _)| !made.iter().any(|m| m == name) && !managed.iter().any(|m| m == name))
         .map(|(name, table, sql)| ManualObject {
             kind: "index".into(),
             name,

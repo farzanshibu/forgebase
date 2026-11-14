@@ -41,6 +41,16 @@ project. In `auto` mode pg_cron takes the schedules back at the next start;
 vectors and deliveries stay on portable rows until the `vector.convert` and
 `queue.convert` jobs move them back to pgvector and pgmq.
 
+Trigram (fuzzy) indexes convert in both directions. Their definitions are
+copied with `_forgebase_indexes`. The engine objects are built again on the
+target after the copy, in the same transaction: a GIN index on PostgreSQL
+(pg_trgm or the portable `text[]` index, per `[database.postgres.extensions]
+trigram`), and on SQLite the `_forgebase_trgm_<index>` table, which is never
+copied, plus its triggers. `fuzzy` therefore answers on the target as soon as
+it starts, and the index keeps up with later writes. The summary lists each
+rebuilt index with its engine, row count and build time (`report.rebuilt` in
+`--json`). If the build fails, the copy is rolled back like any other failure.
+
 §1 describes the SQLite engine; the other sections cover both backends and
 say where they differ. The PostgreSQL engine's settings and commands are in
 the deployment guide.

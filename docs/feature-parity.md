@@ -101,6 +101,8 @@ These are decided in their own ADRs and listed here for completeness:
 - Read replicas, sharding, `forgebase db psql` and the SQL editor's
   PostgreSQL-only statements need PostgreSQL ([ADR-0028](adr/0028-bundled-postgres.md),
   [ADR-0029](adr/0029-postgres-extensions-replicas-sharding.md)).
-- `forgebase db convert` moves a project between backends; it does not yet
-  carry SQLite trigram indexes to PostgreSQL or back (re-create them after
-  converting).
+- `forgebase db convert` moves a project between backends, trigram indexes
+  included. Each one is built again on the target by that backend's engine
+  (pg_trgm or portable on PostgreSQL, a trigram table on SQLite), and
+  `fuzzy` gives the same matches in the same order, within the tolerance
+  above ([database.md](database.md), ADR-0034 addendum).

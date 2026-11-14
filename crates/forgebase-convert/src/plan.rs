@@ -119,6 +119,9 @@ pub(crate) struct Skipped {
     /// SQLite tables that are engine internals (FTS5 tables and their
     /// shadow tables, `sqlite_*`).
     pub sqlite_internal: Vec<String>,
+    /// SQLite tables derived from an index definition and built again on
+    /// the target (the trigram tables of ADR-0034).
+    pub sqlite_derived: Vec<String>,
 }
 
 fn shadow_of(name: &str, virtuals: &[&str]) -> bool {
@@ -129,12 +132,14 @@ fn shadow_of(name: &str, virtuals: &[&str]) -> bool {
     })
 }
 
-/// Pairs the tables of both engines. `Err` lists every table or column
-/// found on one side only.
+/// Pairs the tables of both engines. `derived` names SQLite tables that
+/// are built from an index definition (trigram tables): never copied.
+/// `Err` lists every table or column found on one side only.
 pub(crate) fn pair(
     pg: &[PgTable],
     sqlite: &[SqliteTable],
     rowid_tables: &[&str],
+    derived: &[String],
 ) -> Result<(Vec<TablePlan>, Skipped), Vec<String>> {
     let mut problems = Vec::new();
     let mut plans = Vec::new();
@@ -151,6 +156,9 @@ pub(crate) fn pair(
             if t.name != LEDGER {
                 skipped.sqlite_internal.push(t.name.clone());
             }
+        } else if derived.contains(&t.name) {
+            used[i] = true;
+            skipped.sqlite_derived.push(t.name.clone());
         }
     }
     for t in pg {
@@ -277,7 +285,7 @@ mod tests {
             st("_forgebase_meta", &["key", "value"], false),
             st("sqlite_sequence", &["name", "seq"], false),
         ];
-        let (plans, skipped) = pair(&pg, &sqlite, &["_forgebase_jobs"]).unwrap();
+        let (plans, skipped) = pair(&pg, &sqlite, &["_forgebase_jobs"], &[]).unwrap();
         assert_eq!(plans.len(), 2);
         assert_eq!(plans[0].columns[1].sqlite, "rowid");
         assert!(plans[0].sqlite_select().contains("rowid"));
@@ -294,7 +302,23 @@ mod tests {
     fn one_sided_tables_and_columns_fail() {
         let pg = vec![pgt("a", &[("id", "text")], &["id"]), pgt("b", &[("id", "text")], &[])];
         let sqlite = vec![st("a", &["id", "extra"], false), st("c", &["id"], false)];
-        let problems = pair(&pg, &sqlite, &[]).unwrap_err();
+        let problems = pair(&pg, &sqlite, &[], &[]).unwrap_err();
         assert_eq!(problems.len(), 3, "{problems:?}");
+    }
+
+    #[test]
+    fn trigram_tables_are_derived_not_one_sided() {
+        let pg = vec![pgt("things", &[("id", "text"), ("t", "text")], &["id"])];
+        let sqlite = vec![
+            st("things", &["id", "t"], false),
+            st("_forgebase_trgm_things_tri", &["rid", "k", "tri"], false),
+        ];
+        let derived = ["_forgebase_trgm_things_tri".to_owned()];
+        let (plans, skipped) = pair(&pg, &sqlite, &[], &derived).unwrap();
+        assert_eq!(plans.len(), 1);
+        assert_eq!(skipped.sqlite_derived, derived);
+        // Without its index definition it is a one-sided table.
+        let problems = pair(&pg, &sqlite, &[], &[]).unwrap_err();
+        assert!(problems[0].contains("_forgebase_trgm_things_tri"), "{problems:?}");
     }
 }
