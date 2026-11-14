@@ -10,7 +10,7 @@ import { Chip } from "../../components/Chips";
 import { CardBody, HEAD_ROW, TableCard } from "../../components/TableCard";
 import { Button, ErrorView } from "../../components/ui";
 import { useCreateParam, useLoad } from "../../hooks";
-import { notify } from "../../toaster";
+import { toaster } from "../../toaster";
 import { When } from "../jobs/ops";
 import SilenceSheet from "./SilenceSheet";
 
@@ -51,7 +51,7 @@ export default function Silences() {
                         consequence="Matching alerts that are firing start sending notifications again at the next evaluation."
                         confirmLabel="End silence"
                         tone="warning"
-                        onConfirm={async () => { await expireSilence(s.id); notify.saved("Silence ended"); list.reload(); }}
+                        onConfirm={async () => { await expireSilence(s.id); toaster.add({ title: "Silence ended", type: "success" }); list.reload(); }}
                       />
                     )}
                   </Table.Cell>

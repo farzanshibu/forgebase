@@ -177,7 +177,7 @@ describe("Alerts studio: rules", () => {
     const sw = within(table).getByRole("switch", { name: "Enable HttpServerErrorsHigh" });
     expect(sw).toBeChecked();
     await userEvent.click(sw);
-    await toast("Rule HttpServerErrorsHigh disabled saved");
+    await toast("Rule HttpServerErrorsHigh disabled");
     expect(lastBody(mock, "patch /api/v1/alerts/rules/{id}")).toEqual({ enabled: false });
     expect(st.rules[0]!.enabled).toBe(false);
   });
@@ -303,7 +303,7 @@ describe("Alerts studio: silences", () => {
     expect(within(table).getByText("maintenance")).toBeInTheDocument();
     await userEvent.click(within(table).getByRole("button", { name: "End silence sil-1" }));
     await confirmDialog("End this silence?", "End silence");
-    await toast("Silence ended saved");
+    await toast("Silence ended");
     expect(st.silences[0]!.status).toBe("expired");
   });
   it("shows ended silences only when asked (?all=true)", async () => {

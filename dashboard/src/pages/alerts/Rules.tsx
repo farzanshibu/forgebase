@@ -10,7 +10,7 @@ import { CardBody, HEAD_ROW, TableCard } from "../../components/TableCard";
 import { Toggle } from "../../components/controls";
 import { Button, ErrorView } from "../../components/ui";
 import { useCreateParam, useLoad } from "../../hooks";
-import { notify } from "../../toaster";
+import { notify, toaster } from "../../toaster";
 import RuleSheet from "./RuleSheet";
 import { SeverityBadge } from "./shared";
 
@@ -34,7 +34,7 @@ export default function Rules() {
     setError(undefined);
     try {
       await patchRule(r.id, { enabled });
-      notify.saved(`Rule ${r.name} ${enabled ? "enabled" : "disabled"}`);
+      toaster.add({ title: `Rule ${r.name} ${enabled ? "enabled" : "disabled"}`, type: "success" });
       list.reload();
     } catch (e) {
       setError(e);
