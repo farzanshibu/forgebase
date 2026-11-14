@@ -3,7 +3,7 @@
 //! Restore is deliberately not an HTTP operation: it replaces the files the
 //! running server has open. Use `forgebase restore` with the server stopped.
 
-use axum::extract::{Path, State};
+use axum::extract::{Path, RawQuery, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -55,6 +55,8 @@ pub fn router<S: Clone + Send + Sync + 'static>(service: BackupService) -> Route
         .route("/system/backups/prune", post(prune_backups))
         .route("/system/backups/{id}", get(get_backup).delete(delete_backup))
         .route("/system/backups/{id}/verify", post(verify_backup))
+        .route("/system/backups/{id}/drill", post(start_drill))
+        .route("/system/backups/{id}/drills", get(list_drills))
         .with_state(service)
 }
 
@@ -68,9 +70,12 @@ pub fn extension(service: BackupService) -> ApiExtension {
 
 #[derive(OpenApi)]
 #[openapi(
-    paths(list_backups, create_backup, get_backup, delete_backup, verify_backup, prune_backups),
+    paths(list_backups, create_backup, get_backup, delete_backup, verify_backup, prune_backups, start_drill, list_drills),
     components(schemas(
         SnapshotView, SnapshotList, CreateSnapshot, PruneResult, Manifest, VerifyReport, Retention,
+        StartDrill, DrillStarted, DrillList, crate::drill::DrillReport, crate::drill::DrillCheck,
+        crate::drill::CheckStatus, crate::drill::DrillOutcome, crate::drill::DrillPhases, crate::drill::DrillCounts,
+        crate::manifest::BackupStats, crate::manifest::CountRange,
         crate::manifest::FileEntry, crate::manifest::FileKind, crate::manifest::KeyInfo,
     )),
     tags((name = "backups", description = "Point-in-time snapshots of the data directory, with retention and verification"))
@@ -191,6 +196,104 @@ async fn verify_backup(State(s): State<BackupService>, Access(ctx): Access, Path
     guard(&ctx)?;
     let snap = lookup(&s, &id)?;
     Ok(Json(s.verify(&snap.path).await).into_response())
+}
+
+/// Query of `POST /system/backups/{id}/drill`.
+#[derive(Debug, Default, Deserialize, ToSchema, utoipa::IntoParams)]
+pub struct StartDrill {
+    /// Records read back per collection (default 5, at most 1000).
+    #[serde(default)]
+    pub sample: Option<u32>,
+}
+
+/// A drill that was queued.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct DrillStarted {
+    /// The job that runs it (`GET /api/v1/jobs/{id}`; its result is the report).
+    pub job_id: String,
+    /// The backup it restores.
+    pub backup_id: String,
+}
+
+/// Drills of a backup, newest first.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct DrillList {
+    /// The backup.
+    pub backup_id: String,
+    /// The drills, with their measured recovery time (RTO) and backup age (RPO).
+    pub items: Vec<crate::drill::DrillReport>,
+}
+
+/// Restores the snapshot into a scratch directory, starts a quiet server on
+/// it, checks the data and deletes the copy (ADR-0041). Runs as a job: poll
+/// the returned job, or read `GET .../drills` afterwards.
+#[utoipa::path(post, path = "/api/v1/system/backups/{id}/drill", tag = "backups",
+    params(("id" = String, Path, description = "Snapshot id, or `latest`"), StartDrill),
+    responses(
+        (status = 202, description = "The drill job", body = DrillStarted),
+        (status = 404, description = "No such snapshot"),
+        (status = 409, description = "A drill is already queued or running"),
+        (status = 503, description = "This server cannot run drills (not the forgebase command)")))]
+async fn start_drill(
+    State(s): State<BackupService>,
+    Access(ctx): Access,
+    Path(id): Path<String>,
+    RawQuery(query): RawQuery,
+) -> ApiResult {
+    guard(&ctx)?;
+    let sample = match url::form_urlencoded::parse(query.unwrap_or_default().as_bytes()).find(|(k, _)| k == "sample") {
+        Some((_, v)) => Some(v.parse::<u32>().map_err(|_| {
+            api(BackupError::Invalid(
+                "sample must be a number between 1 and 1000".into(),
+            ))
+        })?),
+        None => None,
+    };
+    let req = StartDrill { sample };
+    let unavailable = || {
+        ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "drill_unavailable",
+            "this server cannot run restore drills: they need the `forgebase` executable (run `forgebase backup drill` instead)",
+        )
+    };
+    let Some(jobs) = s.jobs.clone().filter(|_| s.can_drill) else {
+        return Err(unavailable());
+    };
+    let snap = lookup(&s, &id)?;
+    if req.sample.is_some_and(|n| n == 0 || n > 1000) {
+        return Err(api(BackupError::Invalid("sample must be between 1 and 1000".into())));
+    }
+    if crate::drill::active(&jobs).await {
+        return Err(ApiError::new(
+            StatusCode::CONFLICT,
+            "drill_running",
+            "a restore drill is already queued or running",
+        ));
+    }
+    let job_id = crate::drill::enqueue(&jobs, &snap.id, "api", req.sample)
+        .await
+        .map_err(api)?;
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(DrillStarted {
+            job_id,
+            backup_id: snap.id,
+        }),
+    )
+        .into_response())
+}
+
+/// The recorded drills of a snapshot, newest first, with RTO and RPO.
+#[utoipa::path(get, path = "/api/v1/system/backups/{id}/drills", tag = "backups",
+    params(("id" = String, Path, description = "Snapshot id, or `latest`")),
+    responses((status = 200, description = "Drill history of the snapshot", body = DrillList)))]
+async fn list_drills(State(s): State<BackupService>, Access(ctx): Access, Path(id): Path<String>) -> ApiResult {
+    guard(&ctx)?;
+    // The history outlives the snapshot: an id that was pruned still answers.
+    let backup_id = if id == "latest" { lookup(&s, &id)?.id } else { id };
+    let items = s.drills().of_backup(&backup_id);
+    Ok(Json(DrillList { backup_id, items }).into_response())
 }
 
 /// Applies a retention policy now.

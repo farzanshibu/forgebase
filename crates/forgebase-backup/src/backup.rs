@@ -21,6 +21,10 @@ use crate::manifest::{
     Method, PG_DIR, ROLES_FILE,
 };
 use crate::pg::{self, DumpPlan, PgEndpoint, PgSource};
+use crate::stats;
+
+/// The sealed TLS state inside a data directory and inside a backup.
+pub const TLS_DIR: &str = "tls";
 
 /// Top-level entries of the storage directory that are never backed up
 /// (in-flight temporary files of the local driver).
@@ -46,6 +50,9 @@ pub struct BackupOptions {
     pub database_only: bool,
     /// Recorded in the manifest.
     pub note: Option<String>,
+    /// Copy the sealed `tls/` directory (the ACME account and certificate,
+    /// ADR-0033) so a restore keeps its certificate (ADR-0041).
+    pub include_tls: bool,
 }
 
 impl Default for BackupOptions {
@@ -58,6 +65,7 @@ impl Default for BackupOptions {
             pg: None,
             database_only: false,
             note: None,
+            include_tls: false,
         }
     }
 }
@@ -159,7 +167,22 @@ async fn create_with(
         .await?;
     }
 
+    // PostgreSQL: the counts are read before and after the copy (the copy is
+    // not tied to one instant); a write in between widens the range.
+    let counts_before = match db {
+        Some(db) if kind == BackendKind::Postgres && !opts.database_only => stats::collect(db).await.ok(),
+        _ => None,
+    };
     let (db_files, engine) = copy_database(db, kind, layout, &partial, &opts, &name, member).await?;
+    let stats = if opts.database_only {
+        None
+    } else if kind == BackendKind::Sqlite {
+        stats_of_copy(&partial.join(DB_FILE)).await
+    } else if let (Some(db), Some(before)) = (db, counts_before) {
+        stats::collect(db).await.ok().map(|after| before.window(&after))
+    } else {
+        None
+    };
     let schema_version = match (known_version, db) {
         (Some(v), _) => v,
         (None, Some(db)) => db.schema_version().await?,
@@ -194,6 +217,16 @@ async fn create_with(
                     &mut files,
                 )?;
             }
+            if opts.include_tls {
+                copy_tree(
+                    &layout.root().join(TLS_DIR),
+                    &partial,
+                    TLS_DIR,
+                    FileKind::Tls,
+                    &[],
+                    &mut files,
+                )?;
+            }
         }
         let key_src = master_key_path(&layout);
         let fingerprint = key_fingerprint(&key_src)?;
@@ -222,6 +255,7 @@ async fn create_with(
             engine: Some(engine),
             database_only: opts.database_only,
             note: opts.note,
+            stats,
         };
         let json = serde_json::to_vec_pretty(&manifest).map_err(|e| BackupError::Internal(e.to_string()))?;
         fsutil::write_atomic(&partial.join(MANIFEST), &json)?;
@@ -234,6 +268,25 @@ async fn create_with(
     .await?;
     tracing::info!(id = %manifest.id, files = manifest.files.len(), bytes = manifest.total_bytes(), "backup written");
     Ok(manifest)
+}
+
+/// Counts the records and objects of the finished SQLite copy at `path`
+/// (exact: the copy does not change). `None` when it cannot be read: the
+/// backup is still good, only a later drill has less to compare.
+async fn stats_of_copy(path: &Path) -> Option<crate::manifest::BackupStats> {
+    let dir = path.parent()?;
+    let cfg = forgebase_core::Config::defaults(dir);
+    let opts = forgebase_db::DbOptions::from_config(&cfg.database, path.to_path_buf()).read_only();
+    let db = Database::open(opts).await.ok()?;
+    let counts = stats::collect(&db).await;
+    db.close().await;
+    match counts {
+        Ok(c) => Some(c.exact()),
+        Err(e) => {
+            tracing::warn!(error = %e, "backup counts not recorded");
+            None
+        }
+    }
 }
 
 /// Copies the database into `partial` with the engine's own method and
