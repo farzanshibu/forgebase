@@ -64,7 +64,7 @@ Phase gate: god merges every package of a phase, re-runs the full test suite and
 | FB-74 | 8 | Normal | **New (docs/requirements/authz-entitlements-billing.md §F):** product customization: custom domains (host routing to realm), white-label branding and hosted login/signup/consent pages, transactional email (SMTP + templates), versioned legal agreements with acceptance records, hosted API docs | FB-25 | domain routing, template render, re-consent on new version |
 | FB-80 | 9 | High | Security audit + fixes: threat model, bypass suite, SSRF, path traversal, upload validation, cargo-audit/deny | all of 1–8 | #25 full |
 | FB-81 | 9 | Normal | Benchmarks (Criterion + HTTP load), documented hardware, recovery-time tests | all of 1–8 | report in `docs/benchmarks.md` |
-| FB-82 | 9 | Normal | Rust SDK (Dart/Flutter SDK skipped by human 2026-11-10) | FB-41 | SDK tests vs live server |
+| FB-82 | 9 | Normal | Rust SDK (Dart/Flutter SDK skipped by human 2026-11-10; added 2026-11-14 on request, with Swift and Kotlin SDKs: sdk/dart, sdk/swift, sdk/kotlin) | FB-41 | SDK tests vs live server |
 | FB-83 | 9 | Normal | Backup/restore/export/import/snapshots, full `doctor` | all of 1–8 | #21 #22 |
 | FB-84 | 9 | Low | Docs set (architecture, api, database, security, deployment, sdk), release automation for 5 targets, Docker image | FB-80 | docs reviewed by god |
 | FB-85 | 9 | High | Final QA: all 25 SPEC §27 scenarios end-to-end on a clean machine | all | 25/25 pass |

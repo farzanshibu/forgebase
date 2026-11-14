@@ -173,10 +173,14 @@ impl Clock for ManualClock {
     }
 }
 
-/// Sets `forgebase_tls_certificate_expiry_seconds` from the served certificate.
+/// Sets `forgebase_tls_certificate_expiry_seconds` (time left) and
+/// `forgebase_tls_certificate_expiry_timestamp_seconds` (the expiry as Unix
+/// time, which the built-in alert rules compare with `time()`) from the
+/// served certificate.
 pub fn set_expiry_gauge(store: &CertStore, now: i64) {
     if let Some(info) = store.info() {
         metrics::gauge!(names::TLS_CERTIFICATE_EXPIRY_SECONDS).set((info.not_after - now) as f64);
+        metrics::gauge!(names::TLS_CERTIFICATE_EXPIRY_TIMESTAMP_SECONDS).set(info.not_after as f64);
     }
 }
 

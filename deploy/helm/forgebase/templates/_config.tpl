@@ -38,6 +38,10 @@ resp:
 {{- if ne .Values.tls.mode "off" }}
 tls:
   mode: {{ .Values.tls.mode | quote }}
+  {{- if and (eq .Values.tls.mode "files") .Values.tls.existingSecret }}
+  cert_file: /etc/forgebase-tls/tls.crt
+  key_file: /etc/forgebase-tls/tls.key
+  {{- end }}
 {{- end }}
 {{- end -}}
 
@@ -95,3 +99,14 @@ tls:
 # derived from them). Do not edit; change the release's values.
 {{ include "forgebase.tomlTable" (dict "path" "" "map" (include "forgebase.configDict" . | fromJson)) | trim }}
 {{ end -}}
+
+{{/* Probe scheme: probes.scheme when set, else HTTPS with native TLS on and HTTP otherwise. */}}
+{{- define "forgebase.probeScheme" -}}
+{{- if .Values.probes.scheme -}}
+{{- .Values.probes.scheme -}}
+{{- else if ne .Values.tls.mode "off" -}}
+HTTPS
+{{- else -}}
+HTTP
+{{- end -}}
+{{- end -}}

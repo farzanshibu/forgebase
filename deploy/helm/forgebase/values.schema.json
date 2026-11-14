@@ -137,7 +137,7 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "scheme": {"enum": ["HTTP", "HTTPS"]},
+        "scheme": {"enum": ["", "HTTP", "HTTPS"]},
         "startup": {"$ref": "#/definitions/probe"},
         "liveness": {"$ref": "#/definitions/probe"},
         "readiness": {"$ref": "#/definitions/probe"}

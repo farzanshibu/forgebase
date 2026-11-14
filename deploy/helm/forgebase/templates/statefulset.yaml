@@ -163,7 +163,7 @@ spec:
             httpGet:
               path: {{ .Values.probes.startup.path }}
               port: http
-              scheme: {{ .Values.probes.scheme }}
+              scheme: {{ include "forgebase.probeScheme" . }}
             periodSeconds: {{ .Values.probes.startup.periodSeconds }}
             timeoutSeconds: {{ .Values.probes.startup.timeoutSeconds }}
             failureThreshold: {{ .Values.probes.startup.failureThreshold }}
@@ -171,7 +171,7 @@ spec:
             httpGet:
               path: {{ .Values.probes.liveness.path }}
               port: http
-              scheme: {{ .Values.probes.scheme }}
+              scheme: {{ include "forgebase.probeScheme" . }}
             periodSeconds: {{ .Values.probes.liveness.periodSeconds }}
             timeoutSeconds: {{ .Values.probes.liveness.timeoutSeconds }}
             failureThreshold: {{ .Values.probes.liveness.failureThreshold }}
@@ -179,7 +179,7 @@ spec:
             httpGet:
               path: {{ .Values.probes.readiness.path }}
               port: http
-              scheme: {{ .Values.probes.scheme }}
+              scheme: {{ include "forgebase.probeScheme" . }}
             periodSeconds: {{ .Values.probes.readiness.periodSeconds }}
             timeoutSeconds: {{ .Values.probes.readiness.timeoutSeconds }}
             failureThreshold: {{ .Values.probes.readiness.failureThreshold }}

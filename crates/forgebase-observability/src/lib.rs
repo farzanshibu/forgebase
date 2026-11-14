@@ -113,6 +113,9 @@ pub mod names {
     /// Gauge: seconds until the served TLS certificate expires (negative
     /// once expired). Only with `[tls] mode` other than `off` (ADR-0033).
     pub const TLS_CERTIFICATE_EXPIRY_SECONDS: &str = "forgebase_tls_certificate_expiry_seconds";
+    /// Gauge: Unix time (seconds) the served TLS certificate expires; the
+    /// built-in certificate alert rules read it (`[alerts] tls_cert_expiry_metric`, ADR-0035).
+    pub const TLS_CERTIFICATE_EXPIRY_TIMESTAMP_SECONDS: &str = "forgebase_tls_certificate_expiry_timestamp_seconds";
     /// Counter: certificates issued over ACME.
     pub const TLS_RENEWALS_TOTAL: &str = "forgebase_tls_renewals_total";
     /// Counter: failed ACME certificate requests (each is retried with backoff).

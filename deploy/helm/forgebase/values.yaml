@@ -78,16 +78,22 @@ resp:
   # Publish the RESP port on the Service. Off: reach it with kubectl port-forward.
   exposeService: false
 
-# Native TLS in the ForgeBase binary (a [tls] section, being added to the
-# binary). Default off: terminate TLS at the Ingress or the Gateway. The
-# section is rendered only when mode is not "off", and the binary rejects an
-# unknown section, so use this with a ForgeBase release that has [tls].
+# Native TLS in the ForgeBase binary ([tls], ADR-0033, docs/deployment.md §5).
+# Default off: terminate TLS at the Ingress or the Gateway. The section is
+# rendered only when mode is not "off".
 tls:
   mode: "off"        # "off" | files | acme (quote "off": YAML reads a bare off as false)
-  # Keys of the [tls] table besides `mode`, as that release documents them.
+  # More keys of the [tls] table, as in forgebase.example.toml:
+  # min_version ("1.2" | "1.3"), hsts_max_age_secs, hsts_include_subdomains,
+  # reload_interval_secs, redirect_http, http_port, and acme: {domains: [...],
+  # email, directory_url, challenges: [tls-alpn-01 | http-01], eab_kid, ca_file}.
+  # The ACME EAB HMAC key is a secret: pass FORGEBASE_TLS_ACME_EAB_HMAC_KEY via extraEnvFrom.
+  # ACME runs on one server per domain; with more than one server use files
+  # mode with a cert-manager Secret instead (it hot-reloads on rotation).
   settings: {}
-  # A kubernetes.io/tls Secret (tls.crt, tls.key) mounted at /etc/forgebase-tls
-  # for mode=files. Reference it from settings, e.g. cert_file: /etc/forgebase-tls/tls.crt.
+  # A kubernetes.io/tls Secret (tls.crt, tls.key), e.g. from cert-manager,
+  # mounted at /etc/forgebase-tls. With mode=files the chart sets cert_file and
+  # key_file to it.
   existingSecret: ""
 
 # forgebase.toml. Anything here is rendered into the ConfigMap and overrides
@@ -192,7 +198,9 @@ securityContext:
 # The startup probe allows 15 minutes: the first start unpacks the engine,
 # runs initdb and applies every migration, and an upgrade may migrate a big database.
 probes:
-  scheme: HTTP
+  # Empty: HTTPS when tls.mode is files or acme, HTTP otherwise (the kubelet
+  # does not verify the certificate).
+  scheme: ""
   startup:
     path: /health/ready
     periodSeconds: 5

@@ -171,14 +171,16 @@ Both endpoints are open to everybody regardless of `opsAccess`.
 * **Gateway API** (`httpRoute.enabled`): an `HTTPRoute` that attaches to the Gateways in
   `parentRefs`. TLS is configured on the Gateway's listener, which this chart does not
   manage.
-* **Native TLS** (`tls.mode`): the binary is getting a `[tls]` section (`off`,
-  `files`, `acme`). The values are wired (the section is rendered when `mode` is not
-  `off`, with `tls.settings` merged in and `tls.existingSecret` mounted at
-  `/etc/forgebase-tls`), but ForgeBase 0.3.4 rejects an unknown `[tls]` section, so use
-  them only with a release that has it, and set `probes.scheme` to match. The default
-  is TLS at the Ingress.
-* The plain HTTP Service stays inside the cluster. Do not publish the RESP port
-  (`resp.exposeService`) outside a trusted network: it has no TLS.
+* **Native TLS** (`tls.mode`, ADR-0033): `off` (default, TLS at the Ingress),
+  `files` or `acme`. The `[tls]` section is rendered when `mode` is not `off`, with
+  `tls.settings` merged in. With `files` and `tls.existingSecret` (for example a
+  cert-manager Secret), the Secret is mounted at `/etc/forgebase-tls` and `cert_file` /
+  `key_file` point at it; ForgeBase reloads the files when cert-manager rotates them.
+  The probes switch to HTTPS on their own (`probes.scheme` empty). ACME runs on one
+  server per domain, which matches this single-pod chart. Needs a ForgeBase release
+  with native TLS (after 0.3.5).
+* Do not publish the RESP port (`resp.exposeService`) outside a trusted network
+  unless `config.resp.tls` is on (it then uses the same certificate).
 
 ## Monitoring
 
@@ -292,9 +294,9 @@ deploy/helm/validate.sh
 | `resp.enabled` | `false` | Redis protocol listener (no TLS; clients must `AUTH`). |
 | `resp.port` | `6380` | RESP port. |
 | `resp.exposeService` | `false` | Publish the RESP port on the Service. |
-| `tls.mode` | `"off"` | Native TLS in the binary: `off`, `files` or `acme`. Rendered as a `[tls]` section only when not `off`; the 0.3.4 binary rejects that section. Default: TLS at the Ingress or Gateway. |
-| `tls.settings` | `{}` | Further keys of the `[tls]` table. |
-| `tls.existingSecret` | `""` | `kubernetes.io/tls` Secret mounted at `/etc/forgebase-tls`. |
+| `tls.mode` | `"off"` | Native TLS in the binary: `off`, `files` or `acme` (ADR-0033). Rendered as a `[tls]` section only when not `off`. Default: TLS at the Ingress or Gateway. |
+| `tls.settings` | `{}` | Further keys of the `[tls]` table: `min_version`, `hsts_max_age_secs`, `hsts_include_subdomains`, `reload_interval_secs`, `redirect_http`, `http_port`, `acme: {domains, email, directory_url, challenges, eab_kid, ca_file}`. |
+| `tls.existingSecret` | `""` | `kubernetes.io/tls` Secret mounted at `/etc/forgebase-tls`; with `mode: files` it becomes `cert_file`/`key_file`. |
 | `config` | `{}` | Free-form `forgebase.toml` keys (deep-merged over the generated ones). No secrets. |
 | `s3.existingSecret` | `""` | Secret with S3 credentials for `storage.driver = "s3"`. |
 | `s3.accessKeyKey` | `"access-key"` | Key of the access key. |
@@ -317,7 +319,7 @@ deploy/helm/validate.sh
 | `terminationGracePeriodSeconds` | `90` | Time between SIGTERM and SIGKILL. |
 | `podSecurityContext` | `*see values.yaml*` | Pod security context (non-root uid 10001, `fsGroup`, seccomp `RuntimeDefault`). |
 | `securityContext` | `*see values.yaml*` | Container security context (no privilege escalation, read-only root, drop `ALL`). |
-| `probes.scheme` | `"HTTP"` | `HTTP` or `HTTPS` for all three probes. |
+| `probes.scheme` | `""` | `HTTP` or `HTTPS` for all three probes; empty picks HTTPS when `tls.mode` is not `off`. |
 | `probes.startup.path` | `"/health/ready"` | Startup probe path. |
 | `probes.startup.periodSeconds` | `5` | Startup probe period. |
 | `probes.startup.timeoutSeconds` | `3` | Startup probe timeout. |

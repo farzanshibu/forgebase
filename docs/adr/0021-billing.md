@@ -251,3 +251,5 @@ Apple's root; no test reaches the network.
   contract (papay) for off-session renewals; App Store `appAccountToken` and Google obfuscated account ids
   are not trusted to bind a purchase (only a verified claim by the subject, or Creem's signed metadata).
   A store purchase can hold a plan only when the subject has no other live plan (`409 already_subscribed`).
+
+Addendum (2026-11-14): every inbound provider webhook is now recorded and can be inspected, replayed and re-verified; see [ADR-0032](0032-billing-webhook-inspector.md).

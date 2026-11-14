@@ -205,7 +205,8 @@ enum Command {
     },
     /// Deploy WebAssembly functions and read their logs on a running server.
     Functions(Box<functions::FunctionsCli>),
-    /// Publish to durable topics, pull from subscriptions and follow a topic on a running server.
+    /// Durable topics on a running server: publish, pull, tail, forward to a local webhook
+    /// (`listen`), and push-subscription tooling (test, redrive, retry, rotate-secret, pause, resume, attempts, catalog).
     Queues(Box<queues::QueuesCli>),
     /// Follow long-running jobs on a running server.
     Jobs(Box<queues::JobsCli>),

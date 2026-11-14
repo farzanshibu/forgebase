@@ -759,10 +759,16 @@ Scrape every 15 s or so; each scrape refreshes the gauges below.
 | `forgebase_kv_keys`, `forgebase_kv_memory_bytes` | gauge | none |
 | `forgebase_queue_deliveries` | gauge | `state` = `ready`, `delayed`, `in_flight` (only when `[queue]` is enabled) |
 | `forgebase_queue_messages` | gauge | none (only when `[queue]` is enabled) |
+| `forgebase_queue_push_attempts_total` | counter | `subscription`, `outcome` = `success`, `failure` (test sends excluded; ADR-0031) |
+| `forgebase_queue_push_latency_seconds` | histogram | `subscription` |
+| `forgebase_queue_push_consecutive_failures`, `forgebase_queue_push_paused` | gauge | `subscription` (`paused` is 1 while delivery is paused) |
+| `forgebase_queue_push_last_success_timestamp_seconds` | gauge | `subscription` |
+| `forgebase_queue_push_auto_paused_total`, `forgebase_queue_redriven_total` | counter | `subscription` |
 | `forgebase_billing_webhook_deliveries_total` | counter | `provider` (a known provider or `other`), `outcome` = `applied`, `ignored`, `duplicate`, `failed`, `signature_invalid`, `timestamp_out_of_tolerance`, `unknown_provider`, `malformed`, `rejected`, `error` (only when `[billing]` is enabled; ADR-0032) |
 | `forgebase_billing_webhook_processing_seconds` | histogram | `provider` (verification plus processing of a billing webhook, replays and re-verifications included) |
 | `forgebase_billing_webhook_log_dropped_total` | counter | `provider`, `kind` = `body` (stored without body) or `delivery` (not stored): unverified webhooks over the inspector budget |
 | `forgebase_tls_certificate_expiry_seconds` | gauge | none (only with native TLS; negative once expired) |
+| `forgebase_tls_certificate_expiry_timestamp_seconds` | gauge | none (only with native TLS): the expiry as Unix time, read by the built-in `tls_cert_expiring` alert rules |
 | `forgebase_tls_renewals_total`, `forgebase_tls_renewal_failures_total` | counter | none (ACME mode) |
 | `forgebase_tls_reloads_total`, `forgebase_tls_reload_failures_total` | counter | none (files mode) |
 | `forgebase_tls_handshake_failures_total` | counter | `listener` = `https` or `resp` |

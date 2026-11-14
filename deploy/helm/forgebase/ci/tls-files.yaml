@@ -1,0 +1,7 @@
+# Native TLS from a cert-manager Secret (files mode, ADR-0033).
+tls:
+  mode: files
+  existingSecret: forgebase-tls
+  settings:
+    min_version: "1.3"
+    hsts_max_age_secs: 31536000
