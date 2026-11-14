@@ -213,3 +213,22 @@ describe("system.dbLogins and extensions", () => {
     expect(JSON.parse(f.calls[1]!.body!)).toEqual({ name: "pgcrypto" });
   });
 });
+
+describe("system.capabilities", () => {
+  it("reads every feature with its engine and state", async () => {
+    const caps = {
+      backend: "sqlite",
+      features: [{ feature: "graph.cypher", label: "openCypher", engine: "portable", accelerated: false, state: "portable", mode: "auto", reason: null, extension: null, limits: { max_rows: 1000 } }],
+    };
+    const { f, s } = setup(json(200, caps));
+    const c = await s.capabilities();
+    expect(c.backend).toBe("sqlite");
+    expect(c.features[0]).toMatchObject({ feature: "graph.cypher", engine: "portable", state: "portable" });
+    expect(lines(f.calls)).toEqual(["GET /api/system/capabilities"]);
+  });
+
+  it("needs an administrator", async () => {
+    const { s } = setup(json(403, errBody("forbidden", "admin only")));
+    await expect(s.capabilities()).rejects.toBeInstanceOf(PermissionError);
+  });
+});

@@ -152,7 +152,7 @@ describe("graph queries", () => {
 
 describe("graph.cypher", () => {
   it("sends the query, params, limit and timeout", async () => {
-    const result = { columns: ["n"], rows: [[{ id: "a", label: "User", properties: {} }]], truncated: false };
+    const result = { columns: ["n"], rows: [[{ id: "a", label: "User", properties: {} }]], truncated: false, engine: "portable" };
     const { f, g } = setup(json(200, result));
     expect(await g.cypher("MATCH (n:User {id: $id}) RETURN n", { params: { id: "a" }, limit: 5, timeoutMs: 2000 })).toEqual(result);
     expect(f.calls[0]).toMatchObject({ method: "POST", url: "http://x/api/v1/graph/cypher" });
@@ -175,5 +175,13 @@ describe("graph.cypher", () => {
     const { f, g } = setup(json(200, { dropped: true }));
     expect(await g.dropCypher()).toEqual({ dropped: true });
     expect(f.calls[0]).toMatchObject({ method: "POST", url: "http://x/api/v1/graph/cypher/drop" });
+  });
+});
+
+describe("graph.cypher engine", () => {
+  it("reports which engine answered", async () => {
+    const { g } = setup(json(200, { columns: ["c"], rows: [[1]], truncated: false, engine: "age" }), json(200, { columns: ["c"], rows: [[1]], truncated: false, engine: "portable" }));
+    expect((await g.cypher("MATCH (n) RETURN count(n) AS c")).engine).toBe("age");
+    expect((await g.cypher("MATCH (n) RETURN count(n) AS c")).engine).toBe("portable");
   });
 });

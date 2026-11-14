@@ -338,3 +338,29 @@ describe("billing.store admin", () => {
     expect(body(f.calls[1]!)).toEqual({ price: "pro_month" });
   });
 });
+
+describe("billing.webhookDeliveries", () => {
+  it("lists with every filter, gets one, replays and re-verifies", async () => {
+    const delivery = { id: "wd1", provider: "stripe", outcome: "applied" };
+    const { f, b } = setup(json(200, { items: [delivery], total: 1, limit: 10, offset: 0 }), json(200, { ...delivery, headers: {}, body: "{}" }), json(200, { delivery, result: "applied", detail: null }), json(200, { delivery, result: "verified", detail: null }));
+    const page = await b.webhookDeliveries.list({ provider: "stripe", outcome: "rejected", eventType: "invoice.paid", eventId: "evt_1", from: new Date("2026-01-01T00:00:00Z"), to: "2026-02-01", limit: 10, offset: 5 });
+    expect(page.total).toBe(1);
+    const u = new URL(f.calls[0]!.url);
+    expect(u.pathname).toBe("/api/v1/billing/webhook-deliveries");
+    expect(Object.fromEntries(u.searchParams)).toEqual({ provider: "stripe", outcome: "rejected", event_type: "invoice.paid", event_id: "evt_1", from: "2026-01-01T00:00:00.000Z", to: "2026-02-01", limit: "10", offset: "5" });
+    expect((await b.webhookDeliveries.get("wd 1")).id).toBe("wd1");
+    expect((await b.webhookDeliveries.replay("wd1")).result).toBe("applied");
+    expect((await b.webhookDeliveries.reverify("wd1")).result).toBe("verified");
+    expect(f.calls.slice(1).map((c) => `${c.method} ${c.url.replace("http://x", "")}`)).toEqual([
+      "GET /api/v1/billing/webhook-deliveries/wd%201",
+      "POST /api/v1/billing/webhook-deliveries/wd1/replay",
+      "POST /api/v1/billing/webhook-deliveries/wd1/reverify",
+    ]);
+    expect(f.calls[2]!.body).toBe("{}");
+  });
+
+  it("an unknown delivery is a NotFoundError", async () => {
+    const { b } = setup(json(404, errBody("not_found", "no such delivery")));
+    await expect(b.webhookDeliveries.get("nope")).rejects.toBeInstanceOf(NotFoundError);
+  });
+});

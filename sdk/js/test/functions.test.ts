@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ForgeBase, InvalidResponseError, NotFoundError, PermissionError, ValidationError } from "../src/index";
+import { ForgeBase, InvalidResponseError, NotFoundError, PermissionError, ServerError, ValidationError } from "../src/index";
 import { FunctionsApi } from "../src/functions";
 import { errBody, json, scripted } from "./helpers";
 
@@ -200,5 +200,38 @@ describe("functions: invoke", () => {
     await expect(fn.invoke("x")).rejects.toBeInstanceOf(NotFoundError);
     await expect(fn.invoke("x")).rejects.toMatchObject({ status: 502, code: "function_trap" });
     await expect(fn.invoke("x")).rejects.toMatchObject({ status: 504, code: "function_timeout" });
+  });
+});
+
+describe("functions: raw results (functions that answer 404 or 500 on purpose)", () => {
+  it("returns status, headers and the parsed body for a 404 and a 500 instead of throwing", async () => {
+    const { f, fn } = setup(json(404, { error: "no such user" }, { "x-trace": "t1" }), text(500, "boom"), json(200, { ok: true }), new Response(null, { status: 204 }));
+    const a = await fn.invoke<{ error: string }>("api", undefined, { raw: true, path: "users/9", method: "GET" });
+    expect(a).toMatchObject({ status: 404, ok: false, body: { error: "no such user" } });
+    expect(a.headers.get("x-trace")).toBe("t1");
+    expect(await fn.invoke("api", undefined, { raw: true })).toMatchObject({ status: 500, ok: false, body: "boom" });
+    expect(await fn.invoke("api", { a: 1 }, { raw: true })).toMatchObject({ status: 200, ok: true, body: { ok: true } });
+    expect(await fn.invoke("api", undefined, { raw: true })).toMatchObject({ status: 204, ok: true, body: undefined });
+    expect(f.calls[0]!.url).toBe("http://x/api/v1/functions/api/invoke/users/9");
+  });
+
+  it("a bad JSON body under raw is returned as text; without raw it is still an error", async () => {
+    const bad = () => new Response("{nope", { status: 500, headers: { "content-type": "application/json" } });
+    const { fn } = setup(bad(), bad());
+    expect(await fn.invoke("api", undefined, { raw: true })).toMatchObject({ status: 500, body: "{nope" });
+    await expect(fn.invoke("api")).rejects.toBeInstanceOf(ServerError);
+  });
+
+  it("without raw, a 404 from the function still throws; invokeRaw anyStatus returns the Response", async () => {
+    const { fn } = setup(json(404, errBody("not_found", "nope")), json(404, { gone: 1 }));
+    await expect(fn.invoke("api")).rejects.toBeInstanceOf(NotFoundError);
+    const res = await fn.invokeRaw("api", undefined, { anyStatus: true });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ gone: 1 });
+  });
+
+  it("network failures still throw under raw", async () => {
+    const { fn } = setup(new TypeError("fetch failed"));
+    await expect(fn.invoke("api", undefined, { raw: true })).rejects.toMatchObject({ code: "network_error" });
   });
 });

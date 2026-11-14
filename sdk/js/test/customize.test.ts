@@ -201,3 +201,40 @@ describe("customize public views and docs", () => {
     expect(f.calls[0]!.headers.Accept).toBe("text/html");
   });
 });
+
+describe("customize.email provider", () => {
+  const state = { realm: "default", configured: true, config: { provider: "resend", from_address: "no-reply@acme.test", api_key: "********" }, created_at: 1, updated_at: 2 };
+
+  it("reads the provider with the secrets masked, for a realm or the instance", async () => {
+    const { f, c } = setup(json(200, state), json(200, { realm: "*", configured: false, config: {} }));
+    expect((await c.email.provider()).config).toMatchObject({ api_key: "********" });
+    expect((await c.email.provider({ realm: "*" })).configured).toBe(false);
+    expect(line(f)).toEqual(["GET http://x/api/v1/customize/email/provider", "GET http://x/api/v1/customize/email/provider?realm=*"]);
+  });
+
+  it("puts the provider: settings are flattened beside provider and from_address", async () => {
+    const { f, c } = setup(json(200, state), json(400, errBody("invalid_mail_config", "api_key is required")));
+    await c.email.putProvider({ provider: "resend", fromAddress: "no-reply@acme.test", settings: { api_key: "re_123" } }, { realm: "acme" });
+    expect(f.calls[0]).toMatchObject({ method: "PUT", url: "http://x/api/v1/customize/email/provider?realm=acme" });
+    expect(body(f)).toEqual({ api_key: "re_123", provider: "resend", from_address: "no-reply@acme.test" });
+    await expect(c.email.putProvider({ provider: "resend" })).rejects.toMatchObject({ name: "ValidationError", code: "invalid_mail_config" });
+    expect(body(f, 1)).toEqual({ provider: "resend" });
+  });
+
+  it("deletes the provider; a realm without one is a NotFoundError", async () => {
+    const { f, c } = setup(json(204, null), json(404, errBody("not_found", "no provider")));
+    expect(await c.email.deleteProvider({ realm: "acme" })).toBeUndefined();
+    await expect(c.email.deleteProvider()).rejects.toBeInstanceOf(NotFoundError);
+    expect(f.calls[0]).toMatchObject({ method: "DELETE", url: "http://x/api/v1/customize/email/provider?realm=acme" });
+  });
+
+  it("sends a test message; a provider failure is a ConflictError (mail_test_failed)", async () => {
+    const { f, c } = setup(json(200, { provider: "resend", from: "no-reply@acme.test", message_id: "m1" }), json(409, errBody("mail_test_failed", "401 from resend")));
+    expect(await c.email.testProvider("me@acme.test")).toMatchObject({ provider: "resend", message_id: "m1" });
+    expect(f.calls[0]).toMatchObject({ method: "POST", url: "http://x/api/v1/customize/email/provider/test" });
+    expect(body(f)).toEqual({ to: "me@acme.test" });
+    const err = await c.email.testProvider("me@acme.test").catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ConflictError);
+    expect(err).toMatchObject({ code: "mail_test_failed" });
+  });
+});
