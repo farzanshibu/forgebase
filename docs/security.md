@@ -127,6 +127,10 @@ and run against a live server; the others are crate tests.
 | A signed URL outlives the signer's access (G15) | By design (checked when issued, as S3 and Supabase): 15-minute default lifetime, 7-day cap, `rotate-signing-key` revokes all | `security_fb140::g15_rotating_the_signing_key_revokes_every_signed_url` |
 | Prefix ACL entry used as a bucket grant (G1) | **FB-140:** bucket operations match only entries with the empty prefix | `security_fb140::g1_a_prefix_grant_is_not_a_bucket_grant` |
 | Cross-tenant buckets; unchecked object owners (G14) | **FB-140:** buckets per tenant (`<tenant>/<name>` stored, never addressable); bucket rules over object fields compiled into the object SQL | `security_fb140::g14_*` |
+| Cloud storage credentials leaking (S3, GCS, Azure; ADR-0040) | Environment variables only: never in the TOML file, the database, `config show` or the settings registry (secret entries); `Debug` output of every driver config and credential type omits secrets; OAuth tokens live in memory and are replaced before they expire | `forgebase-core` config tests; `gcs::invalid_settings_are_refused`, `azure::invalid_settings_are_refused` |
+| Over-privileged cloud identity | Prefer workload identity (GKE / GCE) or a managed identity (Azure) over long-lived keys; grant `roles/storage.objectAdmin` on the one bucket, or *Storage Blob Data Contributor* on the one container ([deployment.md §3.7](deployment.md#37-object-storage-drivers)) | documentation |
+| Scope of the drivers' own signed URLs (GCS V4, Azure service SAS; not used by the REST API) | One object and one method or permission; GCS at most 7 days; Azure SAS starts five minutes in the past (clock skew) and ends at the requested time; created only with a service-account or account key, so a SAS-token or workload-identity configuration cannot mint URLs | `gcs::v4_signed_urls_match_googles_published_vectors`; `azure::service_sas_matches_an_independent_computation`; `azure::driver_signed_urls_are_service_sas_urls` |
+| Forged or replayed cloud requests | Azure `SharedKey` and GCS/S3 signatures are recomputed per attempt (fresh `x-ms-date`); the retry loop re-signs | `azure::transient_failures_are_retried_and_every_attempt_is_signed_afresh` |
 
 ### 4.5 Server functions (`forgebase-functions`, ADR-0017)
 
@@ -320,8 +324,9 @@ the billing and store webhook tests, and `forgebase-resp` tests.
   the master key. Protect the host and the data directory (`0700`).
 - Upstream providers (payment providers, app stores, identity providers, SMTP, SMS).
 - Denial of service at network scale. Put a proxy or WAF in front.
-- LDAP servers and S3 endpoints are configured by the operator and commonly
-  live on a private network; their clients are not behind the SSRF guard.
+- LDAP servers and S3, GCS and Azure endpoints (and the cloud metadata servers
+  the identity-based storage auth contacts) are configured by the operator and
+  commonly live on a private network; their clients are not behind the SSRF guard.
 
 ## 8. Accepted risks and follow-ups
 

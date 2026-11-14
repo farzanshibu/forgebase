@@ -163,10 +163,13 @@ tls = false
 # Env: FORGEBASE_STORAGE_ENABLED
 enabled = true
 
-# Object storage (ADR-0018). "local" keeps blobs under <data_dir>/storage;
-# "s3" uses an S3-compatible service. S3 credentials come from the
-# environment only: FORGEBASE_STORAGE_S3_ACCESS_KEY, FORGEBASE_STORAGE_S3_SECRET_KEY
-# (and optionally FORGEBASE_STORAGE_S3_SESSION_TOKEN).
+# Object storage (ADR-0018, ADR-0040). "local" keeps blobs under
+# <data_dir>/storage; "s3" uses any S3-compatible service (MinIO, Cloudflare R2,
+# Backblaze B2, Wasabi, Spaces, GCS interoperability, ...); "gcs" uses Google
+# Cloud Storage natively; "azure" uses Azure Blob Storage. Credentials come from
+# the environment only: FORGEBASE_STORAGE_S3_ACCESS_KEY, FORGEBASE_STORAGE_S3_SECRET_KEY
+# (and optionally FORGEBASE_STORAGE_S3_SESSION_TOKEN); FORGEBASE_STORAGE_GCS_* and
+# FORGEBASE_STORAGE_AZURE_* (docs/deployment.md section 3.7).
 driver = "local"
 
 # Largest object in bytes (a bucket may set a lower limit). Default 5 GiB.
@@ -183,7 +186,20 @@ reconcile_grace_secs = 3600
 # s3_region = "eu-central-1"
 # s3_bucket = "forgebase-blobs"
 # s3_prefix = ""
-# s3_part_size = 8388608
+# s3_part_size = 8388608       # also the upload chunk of the gcs and azure drivers
+
+# GCS only (driver = "gcs"; credentials: FORGEBASE_STORAGE_GCS_CREDENTIALS_JSON or
+# _FILE; with none, the Google Cloud metadata server / workload identity):
+# gcs_bucket = "forgebase-blobs"
+# gcs_prefix = ""
+# gcs_endpoint = ""            # empty = https://storage.googleapis.com; an emulator URL otherwise
+
+# Azure only (driver = "azure"; credentials: FORGEBASE_STORAGE_AZURE_ACCOUNT_KEY,
+# _SAS_TOKEN, Entra _TENANT_ID/_CLIENT_ID/_CLIENT_SECRET, else managed identity):
+# azure_account = "myaccount"
+# azure_container = "forgebase-blobs"
+# azure_prefix = ""
+# azure_endpoint = ""          # empty = https://<account>.blob.core.windows.net; Azurite: http://127.0.0.1:10000/devstoreaccount1
 
 [realtime]
 # WebSocket, SSE and channels under /api/v1/realtime. Off, record changes are

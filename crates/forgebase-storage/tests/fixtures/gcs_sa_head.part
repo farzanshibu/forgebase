@@ -1,0 +1,6 @@
+{
+  "comment": "This is a dummy service account JSON file that is inactive. It's fine for it to be public.",
+  "type": "service_account",
+  "project_id": "dummy-project-id",
+  "private_key_id": "ffffffffffffffffffffffffffffffffffffffff",
+  "private_key": "

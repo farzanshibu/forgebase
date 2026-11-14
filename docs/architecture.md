@@ -42,7 +42,7 @@ authoritative description of each crate is its `lib.rs` module docs.
 | | `forgebase-resp` | Redis protocol listener (RESP2/RESP3) over the KV engine. Off by default (ADR-0013). |
 | | `forgebase-graph` | Nodes and typed edges on SQLite. |
 | | `forgebase-vector` | Vector collections, items, metadata; similarity search. |
-| | `forgebase-storage` | Buckets, objects, versions, uploads, signed URLs; local and S3-compatible drivers. |
+| | `forgebase-storage` | Buckets, objects, versions, uploads, signed URLs; local, S3-compatible, Google Cloud Storage and Azure Blob drivers (ADR-0040). |
 | | `forgebase-functions` | WebAssembly server functions on Wasmtime, with capability-scoped host calls (ADR-0017). |
 | Background work | `forgebase-jobs` | Durable jobs, schedules, leases, retries, dead-letter queue, queues, workflows (ADR-0007, ADR-0023). |
 | | `forgebase-realtime` | Transactional outbox, WebSocket and SSE delivery, channels, presence (ADR-0011). |

@@ -2023,6 +2023,7 @@ name = "forgebase-storage"
 version = "0.3.5"
 dependencies = [
  "axum",
+ "base64 0.22.1",
  "forgebase-api",
  "forgebase-auth",
  "forgebase-core",
@@ -2035,6 +2036,7 @@ dependencies = [
  "futures-util",
  "getrandom 0.4.3",
  "hmac",
+ "ring",
  "serde",
  "serde_json",
  "sha2 0.11.1",

@@ -1903,6 +1903,8 @@ async fn open_storage(
                 .with_max_body(cfg.read_chunk.max(cfg.part_size) + 1024 * 1024);
             Arc::new(S3Driver::new(cfg, Arc::new(client)).map_err(|e| ServerError::Storage(e.to_string()))?)
         }
+        forgebase_core::StorageDriverKind::Gcs => Arc::new(open_gcs_driver(sc).await?),
+        forgebase_core::StorageDriverKind::Azure => Arc::new(open_azure_driver(sc)?),
     };
     let settings = StorageSettings {
         max_object_bytes: sc.max_object_bytes,
@@ -1931,6 +1933,75 @@ async fn open_storage(
     svc.attach_router(router.clone());
     svc.attach_entitlements(entitlements.clone());
     Ok(svc)
+}
+
+/// The outbound client of the native cloud storage drivers (ADR-0040).
+fn cloud_http_client(
+    part_size: usize,
+    read_chunk: usize,
+) -> Result<Arc<forgebase_auth::net::HttpsClient>, ServerError> {
+    let tls = forgebase_auth::net::TlsSettings::new();
+    let client = forgebase_auth::net::HttpsClient::new(&tls)
+        .map_err(|e| ServerError::Storage(e.to_string()))?
+        .with_timeout(std::time::Duration::from_secs(120))
+        .with_max_body(read_chunk.max(part_size) + 1024 * 1024);
+    Ok(Arc::new(client))
+}
+
+fn storage_env(name: &str) -> Option<String> {
+    std::env::var(name).ok().filter(|v| !v.trim().is_empty())
+}
+
+/// The Google Cloud Storage driver: a service-account key from
+/// `FORGEBASE_STORAGE_GCS_CREDENTIALS_JSON`, or the file named by
+/// `FORGEBASE_STORAGE_GCS_CREDENTIALS_FILE` / `GOOGLE_APPLICATION_CREDENTIALS`,
+/// else a fixed `FORGEBASE_STORAGE_GCS_ACCESS_TOKEN`, else the metadata server
+/// (workload identity); with a custom endpoint and none of these, no
+/// credentials (an emulator).
+async fn open_gcs_driver(sc: &forgebase_core::StorageConfig) -> Result<forgebase_storage::GcsDriver, ServerError> {
+    use forgebase_storage::{GcsConfig, GcsDriver};
+    let fail = |m: String| ServerError::Storage(m);
+    let key_text = match storage_env("FORGEBASE_STORAGE_GCS_CREDENTIALS_JSON") {
+        Some(json) => Some(json),
+        None => match storage_env("FORGEBASE_STORAGE_GCS_CREDENTIALS_FILE")
+            .or_else(|| storage_env("GOOGLE_APPLICATION_CREDENTIALS"))
+        {
+            Some(path) => Some(
+                tokio::fs::read_to_string(&path)
+                    .await
+                    .map_err(|e| fail(format!("cannot read the GCS credentials file {path}: {e}")))?,
+            ),
+            None => None,
+        },
+    };
+    let custom_endpoint = !sc.gcs_endpoint.trim().is_empty();
+    let auth = forgebase_storage::gcs::auth_from_env(&storage_env, key_text, custom_endpoint)
+        .map_err(|e| fail(e.to_string()))?;
+    let mut cfg = GcsConfig::new(&sc.gcs_bucket, auth);
+    if custom_endpoint {
+        cfg.endpoint.clone_from(&sc.gcs_endpoint);
+    }
+    cfg.prefix.clone_from(&sc.gcs_prefix);
+    cfg.part_size = usize::try_from(sc.s3_part_size).unwrap_or(8 * 1024 * 1024);
+    let client = cloud_http_client(cfg.part_size, cfg.read_chunk)?;
+    GcsDriver::new(cfg, client).map_err(|e| fail(e.to_string()))
+}
+
+/// The Azure Blob driver: the account key from
+/// `FORGEBASE_STORAGE_AZURE_ACCOUNT_KEY`, else a SAS token
+/// (`..._SAS_TOKEN`), else Microsoft Entra client credentials
+/// (`..._TENANT_ID`, `..._CLIENT_ID`, `..._CLIENT_SECRET`), else the
+/// managed identity of the host (`..._CLIENT_ID` picks a user-assigned one).
+fn open_azure_driver(sc: &forgebase_core::StorageConfig) -> Result<forgebase_storage::AzureDriver, ServerError> {
+    use forgebase_storage::{AzureConfig, AzureDriver};
+    let fail = |m: String| ServerError::Storage(m);
+    let auth = forgebase_storage::azure::auth_from_env(&storage_env).map_err(|e| fail(e.to_string()))?;
+    let mut cfg = AzureConfig::new(&sc.azure_account, &sc.azure_container, auth);
+    cfg.endpoint = Some(sc.azure_endpoint.clone()).filter(|e| !e.trim().is_empty());
+    cfg.prefix.clone_from(&sc.azure_prefix);
+    cfg.part_size = usize::try_from(sc.s3_part_size).unwrap_or(8 * 1024 * 1024);
+    let client = cloud_http_client(cfg.part_size, cfg.read_chunk)?;
+    AzureDriver::new(cfg, client).map_err(|e| fail(e.to_string()))
 }
 
 /// FB-163: enqueues `graph.materialise` jobs for the graph service.
