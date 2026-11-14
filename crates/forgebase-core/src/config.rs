@@ -2855,6 +2855,57 @@ mod tests {
     }
 
     #[test]
+    fn signed_urls_default_to_the_proxy_and_take_per_bucket_overrides() {
+        let tmp = tempfile::tempdir().unwrap();
+        let load = |toml: &str, vars: &[(&str, &str)]| {
+            std::fs::write(tmp.path().join("forgebase.toml"), toml).unwrap();
+            ConfigLoader::new(tmp.path()).env(env(vars)).load()
+        };
+        let d = load("", &[]).unwrap();
+        assert_eq!(d.config.storage.signed_urls, SignedUrlsMode::Proxy);
+        assert!(d.config.storage.signed_urls_buckets.is_empty());
+        let c = load(
+            "[storage]\nsigned_urls = \"auto\"\n[storage.signed_urls_buckets]\navatars = \"native\"\n\"acme/invoices\" = \"proxy\"\n",
+            &[],
+        )
+        .unwrap();
+        assert_eq!(c.config.storage.signed_urls, SignedUrlsMode::Auto);
+        assert_eq!(
+            c.config.storage.signed_urls_buckets,
+            std::collections::BTreeMap::from([
+                ("acme/invoices".to_owned(), SignedUrlsMode::Proxy),
+                ("avatars".to_owned(), SignedUrlsMode::Native),
+            ])
+        );
+        assert_eq!(c.sources.get("storage.signed_urls"), Source::File);
+        assert_eq!(c.sources.get("storage.signed_urls_buckets"), Source::File);
+        // The environment wins over the file.
+        let e = load(
+            "[storage]\nsigned_urls = \"auto\"\n",
+            &[("FORGEBASE_STORAGE_SIGNED_URLS", "native")],
+        )
+        .unwrap();
+        assert_eq!(e.config.storage.signed_urls, SignedUrlsMode::Native);
+        assert_eq!(e.sources.get("storage.signed_urls"), Source::Env);
+        let bad_env = ConfigOverrides::from_env([("FORGEBASE_STORAGE_SIGNED_URLS".to_owned(), "offload".to_owned())]);
+        assert!(
+            bad_env
+                .unwrap_err()
+                .to_string()
+                .contains("\"proxy\" or \"native\" or \"auto\"")
+        );
+        assert!(load("[storage]\nsigned_urls = \"offload\"\n", &[]).is_err());
+        for bad in ["\"a/b/c\"", "\"/x\"", "\" x\""] {
+            let err = load(&format!("[storage.signed_urls_buckets]\n{bad} = \"native\"\n"), &[]).unwrap_err();
+            assert!(err.to_string().contains("storage.signed_urls_buckets"), "{err}");
+        }
+        assert_eq!(
+            serde_json::to_value(&c.config.storage).unwrap()["signed_urls"],
+            serde_json::json!("auto")
+        );
+    }
+
+    #[test]
     fn billing_is_on_by_default_and_can_be_turned_off() {
         let tmp = tempfile::tempdir().unwrap();
         assert!(Config::defaults(tmp.path()).billing.enabled, "default on");
