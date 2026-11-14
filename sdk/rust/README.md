@@ -2,7 +2,12 @@
 
 Async Rust client for [ForgeBase](../../README.md): authentication, collections and records,
 realtime subscriptions (WebSocket with SSE fallback), object storage, key-value, server functions,
-jobs and entitlements. It mirrors the TypeScript SDK in [`sdk/js`](../js).
+jobs, queues with webhook tooling, billing and entitlements (with their admin sides), credits,
+vector search, the property graph with openCypher, the SQL editor, indexes, documents, access
+control, organizations, identity administration, customization, alerts and SLOs, operations
+insights, instance administration and webhook signature verification. It covers the same surface
+as the TypeScript SDK in [`sdk/js`](../js) and adds the roadmap APIs (webhook tooling, billing
+webhook inspector, alerts, insights, mail providers and login presets).
 
 * `reqwest` + `rustls` (the `ring` provider): **no OpenSSL**, no system TLS library.
 * Typed errors with the server's error codes, status and request id.
@@ -44,8 +49,38 @@ async fn main() -> forgebase_sdk::Result<()> {
 }
 ```
 
-More in [`examples/`](examples): `quickstart`, `realtime`, `storage`, `kv_jobs_entitlements`.
-They read `FORGEBASE_URL` and `FORGEBASE_API_KEY` (or email and password) from the environment.
+More in [`examples/`](examples): `quickstart`, `realtime`, `storage`, `kv_jobs_entitlements`,
+`vector_graph_sql`, `webhook_verify`. They read `FORGEBASE_URL` and `FORGEBASE_API_KEY` (or email
+and password) from the environment.
+
+## Modules
+
+Every accessor returns a cheap handle (`Clone + Send + Sync`); methods are `async` and return
+`Result<T, Error>`. Request and response bodies are typed: the structs of [`generated`](src/generated.rs)
+where the OpenAPI document describes them, hand-written structs (with builder helpers) elsewhere.
+Optional fields are `Option`s and stay off the wire when unset.
+
+| Accessor | Module | Covers |
+|---|---|---|
+| `auth()` | `auth` | sign-up and sign-in flows, MFA, tokens, sessions, OAuth |
+| `collections()`, `collection(name)` | `records` | collection definitions, records (typed or JSON), import / export |
+| `documents()` | `documents` | the record operations of document collections, `If-Match`, versions |
+| `storage()`, `kv(ns)`, `functions()`, `jobs()`, `realtime()` | `storage`, `kv`, `functions`, `jobs`, `realtime` | objects, key-value, server functions, background jobs, subscriptions |
+| `queues()` | `queues`, `queue_webhooks` | topics, publish, pull, ack, replay, streaming pull; **webhook tooling**: attempts, test send, redrive, retry, secret rotation, pause / resume, event catalog |
+| `billing()` | `billing`, `billing_admin` | store receipts; customers, portal, subscriptions, orders, invoices, credit notes, catalog (products, prices, coupons, tax rates), providers, settings, dunning, stats, usage meters, maintenance; **webhook inspector**: list, get, replay, reverify |
+| `entitlements()` | `entitlements`, `entitlements_admin` | `has`, quotas, reservations, leases; plans, features, add-ons, usage packs, quota policies, overrides, enterprise limits, trials, gauges, usage events and alerts |
+| `credits()` | `credits` | balance, lots, ledger, top-up, grant, spend, refund, reversal, rates, stats |
+| `vector()` | `vector` | collections and fields, upsert, similarity and hybrid search, recall, rebuild |
+| `graph()` | `graph` | nodes, edges, neighbours, traversal, shortest path, read-only openCypher (`engine`: `age` or `portable`) |
+| `sql()`, `indexes()` | `sql`, `indexes` | run, batch, explain, tables; indexes, planner statistics, slow-query log |
+| `access()` | `access` | permission checks, ACLs, per-principal overrides, collection rules, engine resource rules |
+| `orgs()` | `orgs` | organizations, projects and environments, members, invitations, teams, roles, role sets, realm bindings, suspensions |
+| `identity()` | `identity` | API keys, service accounts, OAuth clients, realms, login providers (presets), SMS gateways, users, impersonation, audit, passkeys, phone, LDAP |
+| `customize()` | `customize` | branding, custom domains, email templates, **mail provider and test send**, agreements, hosted views |
+| `system()` | `system` | info, **capabilities**, features and config, backups, database logins, extensions, topology |
+| `alerts()`, `slos()` | `alerts` | **rules, alerts, history, silences, notifiers and test send, notifications; SLOs and status** |
+| `insights()` | `insights` | **statements, regressions, slow queries, usage, functions, invocations, audit search and streamed CSV / JSONL export** |
+| `webhooks::verify`, `construct_event` | `webhooks` | verify `X-Forgebase-Signature` and parse the push envelope |
 
 ## Client and configuration
 
@@ -204,6 +239,141 @@ if ent.has(HasQuery::Feature("ai_calls".into()), None).await? {
 ent.check_quota(&QuotaRequest::new("ai_calls")).await?;   // consume, reserve, commit, leases, usage
 ```
 
+## Vector, graph and SQL
+
+```rust
+use forgebase_sdk::generated::Metric;
+use forgebase_sdk::vector::{FieldSpec, HybridOptions, NewVectorCollection, SearchOptions, UpsertItem};
+
+let vector = fb.vector();
+vector.create(&NewVectorCollection::new("docs").field(FieldSpec::new("emb", 3, Metric::Cosine))).await?;
+let docs = vector.collection("docs");
+docs.upsert(&[UpsertItem::new().id("a").vector("emb", &[1.0, 0.0, 0.0]).metadata(json!({"year": 2020})).text("hello")]).await?;
+let hits = docs.search(&SearchOptions::new(&[1.0, 0.0, 0.0]).k(5).filter("year >= {:min}", Some(json!({"min": 2019})))).await?;
+let fused = docs.hybrid(&HybridOptions::new("hello world", &[1.0, 0.0, 0.0]).k(5)).await?; // BM25 + vector, RRF
+
+use forgebase_sdk::graph::{CypherOptions, NewEdge, NewNode};
+let g = fb.graph();
+g.nodes().create(&NewNode::new("Person", json!({"name": "Ada"})).id("ada")).await?;
+g.nodes().create(&NewNode::new("Person", json!({"name": "Bob"})).id("bob")).await?;
+g.edges().create(&NewEdge::new("KNOWS", "ada", "bob")).await?;
+let r = g.cypher("MATCH (a:Person)-[:KNOWS]->(b) RETURN a.name, b.name", &CypherOptions::default()).await?;
+println!("{} rows from the {} engine", r.rows.len(), r.engine);   // "age" or "portable"
+
+use forgebase_sdk::sql::SqlOptions;
+let rows = fb.sql().query("SELECT id, title FROM posts WHERE views > ?", &[json!(10)], &SqlOptions::default()).await?;
+let plan = fb.sql().explain("SELECT * FROM posts WHERE id = ?", &[json!(1)]).await?;
+```
+
+`fb.system().capabilities()` says which engine runs each feature (`opencypher` is `portable` on
+SQLite and on PostgreSQL without Apache AGE). Only the first openCypher query of a tenant on AGE can
+answer `409 graph_materialising`; retry after the job finishes.
+
+## Webhooks
+
+Verify a push delivery in your handler: pass the **raw** body bytes and the header value.
+
+```rust
+use forgebase_sdk::webhooks::{self, DEFAULT_TOLERANCE};
+
+// axum: async fn hook(headers: HeaderMap, body: Bytes) -> StatusCode
+let sig = headers.get(webhooks::SIGNATURE_HEADER).and_then(|v| v.to_str().ok());
+match webhooks::construct_event::<serde_json::Value>(&secret, sig, &body, DEFAULT_TOLERANCE) {
+    Ok(event) => { /* event.message.data, event.delivery_attempt */ StatusCode::OK }
+    Err(e) => { eprintln!("{e}"); StatusCode::BAD_REQUEST }   // e.reason: signature_mismatch, ...
+}
+```
+
+`verify(secret, header, body, tolerance)` checks only the signature and the timestamp. While a secret
+rotates the header carries several `v1=` values (`t=<ts>,v1=<new>,v1=<old>`) and a request passes when
+any of them matches; `verify_any` / `construct_event_any` accept a list of secrets on the receiving
+side. Comparison is constant time, the timestamp must be within `tolerance` (five minutes by
+default) of the clock, and the body is parsed only after the signature checks out. `sign` builds a
+header for tests of your own handler.
+
+Operate a push subscription with `fb.queues().webhooks("orders-push")`:
+
+```rust
+use forgebase_sdk::queue_webhooks::{AttemptsQuery, Redrive};
+use forgebase_sdk::queues::PushTarget;
+
+let q = fb.queues();
+let mut sub = NewSubscription::new("orders-push", "orders");
+sub.push = Some(PushTarget::webhook("https://hooks.example.com/orders"));
+let secret = q.create_subscription(&sub).await?.push_secret;   // shown once
+
+let w = q.webhooks("orders-push");
+let attempt = w.test(None).await?;                              // synthetic signed event, not a message
+let log = w.attempts(&AttemptsQuery::default()).await?;         // status, latency, error class, headers, body
+w.redrive(&Redrive::all()).await?;                              // dead letters -> delivered again, once each
+let rotated = w.rotate_secret(Some(3_600_000)).await?;          // new secret once; old one valid for an hour
+w.pause(Some("maintenance")).await?;  w.resume().await?;
+let catalog = q.catalog().await?;                               // topics with description, schema, example
+```
+
+Billing provider webhooks are inspected with `fb.billing().webhook_deliveries()`: `list`, `get`,
+`replay` (process a verified delivery again) and `reverify` (verify a refused one against the current
+secrets).
+
+## Alerts, SLOs and insights
+
+```rust
+let alerts = fb.alerts();
+let rule: AlertRuleInput = serde_json::from_value(json!({
+    "name": "slow-api", "expr": "http_request_p95_seconds", "op": ">", "threshold": 1.0, "for": "5m", "severity": "warning"}))?;
+let rule = alerts.rules().create(&rule).await?;
+alerts.rules().update(&rule.id, &AlertRulePatch { enabled: Some(false), ..Default::default() }).await?;
+let open = alerts.active(Some("firing"), None).await?;
+let history = alerts.history(&AlertHistoryQuery { limit: Some(50), ..Default::default() }).await?;
+alerts.notifiers().test("ops-slack").await?;                    // sends a test notification now
+let status = fb.slos().status("api-availability").await?;       // SLI, error budget, burn rates
+
+use forgebase_sdk::insights::{AuditQuery, ExportFormat, TimeRange};
+let i = fb.insights();
+let status = i.status().await?;
+let regressions = i.regressions(&Default::default()).await?;
+let mut csv = i.export_audit(&AuditQuery { range: TimeRange::new("2026-01-01", "2026-02-01"), ..Default::default() },
+                             ExportFormat::Csv, Some(100_000)).await?;
+while let Some(line) = csv.line().await? { /* streamed: nothing is buffered */ }
+```
+
+## Administration
+
+```rust
+// Access: roles, rules, ACLs, overrides
+fb.access().policies().put("posts", &CollectionPolicy { list_rule: Some(String::new()), ..Default::default() }).await?; // "" = public
+fb.access().acl().put(&NewAcl::new("record", "posts/1", "team:t1", "records:update", Effect::Allow)).await?;
+let me = fb.access().me(None).await?;   let ok = fb.access().can("records:create").await?;
+
+// Organizations
+let org = fb.orgs().create(&NewOrg::new("acme", "Acme")).await?;
+fb.orgs().members().set(&org.id, &MemberInput::new("user:users/u1", &["editor"])).await?;
+let invite = fb.orgs().invitations().create(&org.id, "ada@example.com", &["viewer"]).await?;   // invite.token: once
+
+// Identity: realms, login provider presets, OAuth clients, service accounts and keys
+fb.identity().realms().providers()
+    .put("default", "github", &RealmProviderConfig::preset(ProviderPreset::Github, "client-id", "client-secret")).await?;
+let client = fb.identity().clients().create(&ClientInput::new("Web").redirect_uri("https://app/cb")).await?; // client_secret: once
+let sa = fb.identity().service_accounts().create(&NewServiceAccount::new("ci")).await?;
+let key = fb.identity().service_accounts().keys().create(&sa.id, &NewApiKey::new("deploy", &["records:read"])).await?;
+
+// Billing and entitlements administration
+fb.billing().catalog().products().put("pro", &product).await?;
+fb.billing().subscriptions().create(&subscribe_input).await?;
+fb.entitlements().plans().put("pro", &plan).await?;   fb.credits().top_up(&CreditInput::new("org:1", 100, "k1")).await?;
+
+// Customization: branding and the mail provider, with a test send
+fb.customize().email().put_provider(&MailProviderConfig::new("postmark").set("server_token", "..."), None).await?;
+fb.customize().email().test_provider("me@example.com", None).await?;   // 409 mail_test_failed carries the reason
+
+// Instance: capabilities, backups
+let caps = fb.system().capabilities().await?;
+let snap = fb.system().backups().create(&Default::default()).await?;
+```
+
+Secrets (`client_secret`, API keys, signing secrets, provider credentials) are write-only: the server
+returns them once, on creation, and masks them afterwards.
+
 ## Errors
 
 Every failure is an `Error`: `Api(ApiError)` (server answered), `Network`, `InvalidResponse`,
@@ -233,6 +403,18 @@ python3 scripts/generate_models.py openapi/openapi.json src/generated.rs
 git diff --exit-code src/generated.rs     # drift check
 ```
 
+`openapi/openapi.json` is `GET /api/openapi.json` of a running server, written as sorted, compact JSON
+with a trailing newline (the same bytes as `sdk/js/openapi/openapi.json`):
+
+```sh
+curl -s http://127.0.0.1:8090/api/openapi.json |
+  python3 -c 'import json,sys; sys.stdout.write(json.dumps(json.load(sys.stdin), separators=(",", ":"), sort_keys=True, ensure_ascii=False) + "\n")' \
+  > openapi/openapi.json
+```
+
+Where the server's schema is narrower than what it sends, `TYPE_OVERRIDES` in the script widens one
+field (today `SloStatus.burn_rates`, whose values are `null` without traffic).
+
 ## Known gaps
 
 * Message queues and topics (FB-63) are covered by `queues()` (see Queues above). Job progress,
@@ -241,8 +423,15 @@ git diff --exit-code src/generated.rs     # drift check
 * Collection definitions are passed as JSON: the OpenAPI request schema is the full `CollectionSchema`
   (with server-assigned `id`, `version`, ...). `storage().delete_object` returns the generated `DeleteResult`.
 * No cookie sessions (a browser feature) and no OAuth redirect helper beyond `oauth_start` / `oauth_complete`.
-* Not covered by helpers (use `fb.request`): policies, orgs and teams, plans and billing admin, vector,
-  graph, SQL, credits, customization.
+* The identity browser ceremonies stay with the caller: passkey calls take and return the JSON the
+  platform credential API produces, and OIDC protocol endpoints (authorize, token, ...) are left to OIDC
+  libraries; `identity().oidc()` serves the issuer and discovery URLs.
+* Types the OpenAPI document leaves as plain objects (access, orgs and identity bodies, mail provider state)
+  are written by hand after the server's JSON; compare them with `/api/openapi.json` after a server upgrade.
+* Database topology agent calls (`/api/system/database/agent/*`, used by `forgebase node join`) are not wrapped.
+* The audit export streams the response body; a CSV record with an embedded line break spans several
+  `line()` results (use `chunk()` and a CSV parser for general CSV).
+* Credits, billing and entitlements times are RFC 3339 strings; there is no `chrono` / `time` dependency.
 
 ## Build and test
 
@@ -257,6 +446,18 @@ cargo test                                      # unit + scripted-server tests (
 FB_LIVE_BIN=/path/to/target/debug/forgebase cargo test   # + live tests against the real server binary
 cargo deny --config ../../deny.toml check
 ```
+
+Tests: `tests/mock_*.rs` run every module against a scripted HTTP server (`tests/common/mock.rs`) and
+check the request each call sends (method, path, query, body) and the response it decodes; response
+bodies of generated models are built from the OpenAPI document (`tests/common/sample.rs`). `tests/webhooks.rs`
+runs the vectors of `sdk/js/test/webhooks.test.ts`. The live tests (`live_*.rs`) start the real server binary
+(`cargo build -p forgebase-cli` in the repository root, then `FB_LIVE_BIN=$PWD/../../target/debug/forgebase`);
+`live_admin.rs` covers vector, graph and openCypher, SQL, webhook tooling, the billing webhook inspector,
+alerts and SLOs, insights and capabilities, and `live_platform.rs` identity, customization, billing and
+entitlements admin, backups, indexes and documents. Without `FB_LIVE_BIN` they pass vacuously.
+
+Dependencies beyond HTTP and TLS: `hmac` and `sha2` (RustCrypto, MIT OR Apache-2.0) for webhook
+signatures.
 
 Live tests (`tests/live_*.rs`) start the binary on a free port with a temporary data directory, sign in
 as a bootstrapped administrator and exercise every area against real persistence. Without

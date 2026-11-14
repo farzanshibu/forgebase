@@ -9741,7 +9741,7 @@ pub struct SloStatus {
     pub bad: i64,
     /// Burn rate per window (`5m`, `30m`, `1h`, `6h`, `3d`): error ratio / (1 - objective).
     #[serde(default)]
-    pub burn_rates: std::collections::HashMap<String, f64>,
+    pub burn_rates: std::collections::HashMap<String, Option<f64>>,
     /// The error budget.
     pub error_budget: SloErrorBudget,
     /// Good requests.

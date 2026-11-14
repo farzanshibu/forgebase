@@ -24,6 +24,12 @@ OUT = sys.argv[2] if len(sys.argv) > 2 else "src/generated.rs"
 spec = json.load(open(SRC))
 schemas = spec["components"]["schemas"]
 
+# Fields whose OpenAPI schema is narrower than what the server sends. utoipa renders the values of
+# a `BTreeMap<String, Option<f64>>` as plain numbers although they are `null` without traffic.
+TYPE_OVERRIDES = {
+    ("SloStatus", "burn_rates"): "std::collections::HashMap<String, Option<f64>>",
+}
+
 RESERVED_TYPES = {"Option", "Result", "Vec", "String", "Box", "Value", "Self", "HashMap", "Some", "None", "Ok", "Err"}
 KEYWORDS = {
     "as", "break", "const", "continue", "crate", "else", "enum", "extern", "false", "fn", "for", "if", "impl", "in",
@@ -254,6 +260,7 @@ def gen_struct(name, s):
     used = set()
     for k, v in props.items():
         ty, opt = map_type(v, name, k, boxed_owner=None)
+        ty = TYPE_OVERRIDES.get((name, k), ty)
         # box a direct reference back to this struct
         if ty.startswith("Vec<") or ty.startswith("std::collections"):
             pass

@@ -10,7 +10,7 @@ does not repeat it.
 | SDK | Location | Status |
 |---|---|---|
 | JavaScript / TypeScript (`@forgebase/sdk`) | [`sdk/js`](../sdk/js) | Version 0.1.0. Covers auth, collections and records, storage, KV, functions, vector, graph, SQL, realtime, queues, jobs, billing, entitlements, credits, webhook verification, and the organization, access, identity, customization and system administration APIs. |
-| Rust (`forgebase-sdk`) | [`sdk/rust`](../sdk/rust) | Version 0.1.0 (FB-82), its own Cargo workspace. Covers auth, records, KV, storage, realtime, functions, jobs, queues, billing and entitlements. See [sdk/rust/README.md](../sdk/rust/README.md). |
+| Rust (`forgebase-sdk`) | [`sdk/rust`](../sdk/rust) | Version 0.1.0 (FB-82), its own Cargo workspace. The same surface as the JavaScript SDK: auth, records, documents, KV, storage, realtime, functions, jobs, queues, billing and entitlements (with their admin sides), credits, vector, graph, SQL, indexes, and the access, organization, identity, customization and system administration APIs; plus queue webhook tooling, the billing webhook inspector, alerts and SLOs, operations insights and webhook verification. See [§3.4](#34-rust-sdk) and [sdk/rust/README.md](../sdk/rust/README.md). |
 | Dart / Flutter (`forgebase`) | [`sdk/dart`](../sdk/dart) | Version 0.1.0 (requested after the 2026-11-10 skip). Pure Dart, so it runs in Flutter and on servers. Covers auth, records, realtime, storage, KV, functions, queues, jobs, entitlements and store billing. See [§8](#8-dart--flutter-sdk) and [sdk/dart/README.md](../sdk/dart/README.md). |
 | Kotlin (Android and JVM, `dev.forgebase:forgebase`) | [`sdk/kotlin`](../sdk/kotlin) | Version 0.1.0, a pure Kotlin/JVM Gradle library (Android needs no plugin). Covers auth with a pluggable token store and Custom Tabs sign-in, records, storage (multipart and resumable), realtime with resume, functions, KV, queues, jobs, entitlements, billing customer and store verification, vector, graph, SQL reads and webhook verification. Administration APIs are left to the JS and Rust SDKs. See [sdk/kotlin/README.md](../sdk/kotlin/README.md). |
 | Swift (iOS, macOS, tvOS, watchOS, visionOS; product `ForgeBase`) | [`sdk/swift`](../sdk/swift) | Version 0.1.0, Swift Package Manager, no third-party dependencies. Covers auth with a Keychain token store and `ASWebAuthenticationSession` sign-in, records, storage (multipart and resumable), realtime with resume, functions, KV, queues, jobs, entitlements, billing, credits, vector, graph, SQL reads and webhook verification. Administration APIs are left to the JS and Rust SDKs. See [§10](#10-swift-sdk) and [sdk/swift/README.md](../sdk/swift/README.md). |
@@ -131,8 +131,8 @@ ack deadline; after `maxDeliveryAttempts` they move to the dead letters
 
 ### 3.2 Backups and operational endpoints
 
-The JavaScript SDK wraps the backup routes (FB-83) as `fb.system.backups`; the
-Rust SDK does not, and neither wraps `/metrics`. They are administrator
+The JavaScript SDK wraps the backup routes (FB-83) as `fb.system.backups` and the
+Rust SDK as `fb.system().backups()`; neither wraps `/metrics`. They are administrator
 operations; call them with an administrator session or an admin service-account
 key:
 
@@ -171,6 +171,42 @@ passes when any matches. The comparison is constant time and timestamps further
 than `toleranceSeconds` from now (either direction) are rejected. Failures throw
 `WebhookVerificationError` with a `reason`. Express, Next.js and Hono examples are
 in [sdk/js/README.md#webhook-verification](../sdk/js/README.md#webhook-verification).
+
+### 3.4 Rust SDK
+
+`forgebase-sdk` is async (Tokio, `reqwest` + `rustls`, no OpenSSL). Each area is an accessor
+on the client that returns a `Clone + Send + Sync` handle whose methods return
+`Result<T, Error>`; bodies are typed structs (generated from the OpenAPI document where it
+describes them, hand-written with builder helpers elsewhere) and unset options stay off the wire.
+
+| Area | Accessor (module) |
+|---|---|
+| Auth, records, documents, storage, KV, functions, jobs, realtime | `auth()`, `collection(name)`, `documents()`, `storage()`, `kv(ns)`, `functions()`, `jobs()`, `realtime()` |
+| Queues and webhook tooling | `queues()` and `queues().webhooks(sub)`: attempts, test send, redrive, retry, secret rotate / expire-previous, pause / resume, catalog, `push`, `pause_after_failures`, `ttl_ms` |
+| Billing | `billing()`: store receipts, customers, portal, subscriptions, orders, invoices, catalog, providers, settings, dunning, stats, usage meters, `webhook_deliveries()` (list, get, replay, reverify) |
+| Entitlements and credits | `entitlements()` (checks, quotas, plans, features, add-ons, packs, policies, overrides, limits, trials, gauges, usage events), `credits()` |
+| Search and data | `vector()`, `graph()` (openCypher with the `engine` field), `sql()`, `indexes()` |
+| Access and tenancy | `access()` (roles, rules, ACLs, overrides), `orgs()` (organizations, teams, members, invitations, roles) |
+| Identity | `identity()`: API keys, PATs, service accounts, OAuth clients, realms, login provider presets, SMS gateways, users, impersonation, audit |
+| Customization and system | `customize()` (branding, domains, templates, mail provider and test send, agreements), `system()` (info, capabilities, features, backups, topology) |
+| Operations | `alerts()` and `slos()` (rules, alerts, history, silences, notifiers and test, SLO status), `insights()` (statements, regressions, slow queries, usage, functions, audit search and streamed CSV / JSONL export) |
+
+```rust
+use forgebase_sdk::webhooks::{self, DEFAULT_TOLERANCE};
+
+let sig = headers.get(webhooks::SIGNATURE_HEADER).and_then(|v| v.to_str().ok());
+let event = webhooks::construct_event::<serde_json::Value>(&secret, sig, &raw_body, DEFAULT_TOLERANCE)?;
+// `verify_any` / `construct_event_any` take a list of secrets while rotating
+```
+
+The verification helper follows the same rules as §3.3 (several `v1=` values, constant-time
+comparison, tolerance in both directions, the body parsed only after the signature checks out) and
+runs the same test vectors. `fb.request(method, path, body)` reaches any route without a helper.
+The checked-in OpenAPI copy `sdk/rust/openapi/openapi.json` and `src/generated.rs` are regenerated
+with `scripts/generate_models.py` ([sdk/rust/README.md](../sdk/rust/README.md#generated-models)).
+`cargo test` runs the scripted-server tests; `FB_LIVE_BIN=<path to target/debug/forgebase> cargo test`
+adds the live tests (vector, graph and openCypher, SQL, webhook tooling, alerts and SLOs, insights,
+capabilities, identity, customization, billing admin, backups and indexes).
 
 ## 4. Types
 

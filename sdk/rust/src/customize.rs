@@ -68,12 +68,12 @@ pub struct MailProviderState {
     /// The settings (`provider`, `from_address`, provider fields).
     #[serde(default)]
     pub config: Value,
-    /// Creation time.
+    /// Creation time (epoch milliseconds).
     #[serde(default)]
-    pub created_at: Option<String>,
-    /// Update time.
+    pub created_at: Option<i64>,
+    /// Update time (epoch milliseconds).
     #[serde(default)]
-    pub updated_at: Option<String>,
+    pub updated_at: Option<i64>,
 }
 
 /// The settings of [`EmailApi::put_provider`].

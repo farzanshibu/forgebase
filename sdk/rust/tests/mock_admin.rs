@@ -112,7 +112,7 @@ async fn customize_email_templates_provider_and_test_send() {
         ok(json!({"items": [schema("Delivery")]})),
         ok(schema("Delivery")),
         status(202, schema("Delivery")),
-        ok(json!({"realm": "eu", "configured": true, "config": {"provider": "resend", "api_key": "********"}, "created_at": "t", "updated_at": "t"})),
+        ok(json!({"realm": "eu", "configured": true, "config": {"provider": "resend", "api_key": "********"}, "created_at": 1794619038000_i64, "updated_at": 1794619038000_i64})),
         ok(json!({"realm": "eu", "configured": true, "config": {"provider": "postmark"}})),
         no_content(),
         ok(json!({"provider": "postmark", "message_id": "m-1", "from": "noreply@acme.test"})),
