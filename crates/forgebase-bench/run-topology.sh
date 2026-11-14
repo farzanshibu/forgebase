@@ -29,7 +29,6 @@ cd app
 echo "root password 1" | "$FB" admin create --email root@example.com --password-stdin >/dev/null
 
 PID=""
-SHARD_PIDS=""
 start_server() {
   "$FB" serve --port "$PORT" >>../server.log 2>&1 &
   PID=$!
