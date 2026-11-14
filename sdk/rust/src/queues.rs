@@ -34,9 +34,33 @@ pub struct Topic {
     /// Messages published since creation.
     #[serde(default)]
     pub published_total: i64,
+    /// Most bytes kept (`None`: no limit).
+    #[serde(default)]
+    pub retention_bytes: Option<i64>,
+    /// JSON Schema of message data.
+    #[serde(default)]
+    pub schema: Option<Value>,
+    /// What the topic's events are (event catalog).
+    #[serde(default)]
+    pub description: Option<String>,
+    /// An example of message `data` (event catalog).
+    #[serde(default)]
+    pub example: Option<Value>,
+    /// Record source, when the topic mirrors a collection (`collection`, `ops`).
+    #[serde(default)]
+    pub source: Option<Value>,
+    /// Bytes ever published.
+    #[serde(default)]
+    pub published_bytes: i64,
+    /// Creator.
+    #[serde(default)]
+    pub created_by: String,
     /// Creation time (RFC 3339).
     #[serde(default)]
     pub created_at: String,
+    /// Last change (RFC 3339).
+    #[serde(default)]
+    pub updated_at: String,
 }
 
 /// Settings of a new topic (fields left `None` use the server default).
@@ -56,6 +80,15 @@ pub struct NewTopic {
     /// JSON Schema publishes are validated against.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub schema: Option<Value>,
+    /// Most bytes kept; the oldest messages are dropped beyond it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retention_bytes: Option<i64>,
+    /// What the topic's events are (event catalog; at most 1024 characters).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// An example of message `data` (event catalog); must satisfy the schema when one is set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub example: Option<Value>,
     /// Labels.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub labels: BTreeMap<String, String>,
@@ -184,12 +217,78 @@ pub struct QueueSubscription {
     /// Ordered delivery.
     #[serde(default)]
     pub ordering: bool,
+    /// Retry backoff start in ms.
+    #[serde(default)]
+    pub backoff_base_ms: i64,
+    /// Retry backoff cap in ms.
+    #[serde(default)]
+    pub backoff_max_ms: i64,
+    /// Push target, when it is a push subscription.
+    #[serde(default)]
+    pub push: Option<PushTarget>,
+    /// Webhook signing secret: returned only when the subscription is created.
+    #[serde(default)]
+    pub push_secret: Option<String>,
+    /// End of the grace window of the secret a rotation replaced (RFC 3339).
+    #[serde(default)]
+    pub push_secret_previous_expires_at: Option<String>,
+    /// Auto-pause after this many consecutive failed push attempts.
+    #[serde(default)]
+    pub pause_after_failures: Option<i64>,
+    /// When push delivery was paused (RFC 3339); messages accumulate until it is resumed.
+    #[serde(default)]
+    pub paused_at: Option<String>,
+    /// Why it was paused (`auto: ...` for the circuit breaker).
+    #[serde(default)]
+    pub paused_reason: Option<String>,
+    /// When the subscription is deleted (RFC 3339).
+    #[serde(default)]
+    pub expires_at: Option<String>,
+    /// Labels.
+    #[serde(default)]
+    pub labels: BTreeMap<String, String>,
+    /// Creator.
+    #[serde(default)]
+    pub created_by: String,
     /// Creation time (RFC 3339).
     #[serde(default)]
     pub created_at: String,
+    /// Last change (RFC 3339).
+    #[serde(default)]
+    pub updated_at: String,
 }
 
-/// Settings of a new subscription (fields left `None` use the server default).
+/// Where a push subscription delivers.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PushTarget {
+    /// `webhook` or `function`.
+    pub kind: String,
+    /// Webhook URL (`https://`) or function name.
+    pub endpoint: String,
+}
+
+impl PushTarget {
+    /// Delivers to a webhook URL.
+    #[must_use]
+    pub fn webhook(url: impl Into<String>) -> Self {
+        Self {
+            kind: "webhook".into(),
+            endpoint: url.into(),
+        }
+    }
+
+    /// Delivers to a server function.
+    #[must_use]
+    pub fn function(name: impl Into<String>) -> Self {
+        Self {
+            kind: "function".into(),
+            endpoint: name.into(),
+        }
+    }
+}
+
+/// Settings of a new subscription (fields left `None` use the server default). Set `push` for a
+/// webhook or function subscription; see [`QueuesApi::webhooks`] for its debugging and operating tools.
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct NewSubscription {
     /// Name (required).
@@ -220,6 +319,19 @@ pub struct NewSubscription {
     /// Where a new subscription starts: `"latest"`, `"earliest"` or `{"time": "..."}`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub start: Option<Value>,
+    /// Push delivery to a webhook or a server function (the signing secret comes back once, as
+    /// `push_secret` of the created subscription).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub push: Option<PushTarget>,
+    /// Push: pause delivery after this many consecutive failed attempts (1-1000; default: never).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pause_after_failures: Option<i64>,
+    /// Delete the subscription this long after creation (60 s to 31 days; default: never).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ttl_ms: Option<i64>,
+    /// Free-form labels.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub labels: BTreeMap<String, String>,
 }
 
 impl NewSubscription {
@@ -566,6 +678,42 @@ impl QueuesApi {
                 )
                 .await?,
         )
+    }
+
+    /// Changes a topic (retention, limits, schema, description, example, labels).
+    pub async fn patch_topic(&self, name: &str, patch: &crate::generated::TopicPatch) -> Result<Topic> {
+        self.t
+            .json(Req::patch(format!("{Q}/topics/{}", seg(name))).json(patch)?)
+            .await
+    }
+
+    /// Counters of a topic: messages, bytes, oldest message age, publish rate, subscriptions.
+    pub async fn topic_metrics(&self, name: &str) -> Result<crate::generated::TopicMetrics> {
+        self.t.json(Req::get(format!("{Q}/topics/{}/metrics", seg(name)))).await
+    }
+
+    /// Changes a subscription (deadlines, backoff, attempt limit, push target, auto-pause, expiry, labels).
+    pub async fn patch_subscription(
+        &self,
+        name: &str,
+        patch: &crate::generated::SubscriptionPatch,
+    ) -> Result<QueueSubscription> {
+        self.t
+            .json(Req::patch(format!("{Q}/subscriptions/{}", seg(name))).json(patch)?)
+            .await
+    }
+
+    /// Debugging and operating tools of a push subscription (webhook or function): attempts, test
+    /// send, redrive, retry, secret rotation, pause and resume (ADR-0031).
+    #[must_use]
+    pub fn webhooks(&self, subscription: &str) -> crate::queue_webhooks::QueueWebhooksApi {
+        crate::queue_webhooks::QueueWebhooksApi::new(self.t.clone(), subscription)
+    }
+
+    /// Every topic the caller may read with its description, data schema, example and (for record
+    /// sources) event types.
+    pub async fn catalog(&self) -> Result<crate::generated::EventCatalog> {
+        self.t.json(Req::get(format!("{Q}/catalog"))).await
     }
 
     // ---- pull and ack ----

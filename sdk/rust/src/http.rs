@@ -185,6 +185,17 @@ pub(crate) fn seg(s: &str) -> String {
         .replace('+', "%20")
 }
 
+/// The `items` array of a list answer decoded into `T`s.
+pub(crate) fn decode_items<T: DeserializeOwned>(v: &Value, what: &str) -> Result<Vec<T>> {
+    let arr = v.get("items").cloned().unwrap_or_else(|| Value::Array(Vec::new()));
+    serde_json::from_value(arr).map_err(|e| Error::InvalidResponse(format!("{what}: {e}")))
+}
+
+/// The wire string of a serde enum (`"top_up"` for `EntryKind::TopUp`), for query parameters.
+pub(crate) fn wire_str<T: Serialize>(v: &T) -> Option<String> {
+    serde_json::to_value(v).ok().and_then(|v| v.as_str().map(str::to_owned))
+}
+
 /// Percent-encodes an object key: `/` is kept so `a/b.txt` stays a path.
 pub(crate) fn key_path(s: &str) -> String {
     s.split('/').map(seg).collect::<Vec<_>>().join("/")
@@ -313,6 +324,13 @@ impl Transport {
             return Ok(Value::Null);
         }
         serde_json::from_slice(&bytes).map_err(|e| Error::InvalidResponse(format!("{} {}: {e}", req.method, req.path)))
+    }
+
+    /// A `{"items": [...]}` answer decoded into a `Vec<T>` (a missing `items` is an empty list).
+    pub async fn items<T: DeserializeOwned>(&self, req: Req) -> Result<Vec<T>> {
+        let what = format!("{} {}", req.method, req.path);
+        let v = self.value(req).await?;
+        decode_items(&v, &what)
     }
 
     /// Response body ignored (204 and friends).
