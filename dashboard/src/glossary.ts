@@ -105,6 +105,16 @@ export const GLOSSARY = {
   freeze: { short: "Freeze", text: "While a tenant moves, its writes pause for a moment at the end (usually a second or two) so no change is lost. Reads and other tenants carry on." },
   read_after: { short: "Read after", text: "A marker your app sends so a read sees its own earlier writes, even when a replica answers it." },
   topology_set: { short: "Set", text: "A primary server with its replicas. Control is the first set; every shard is another." },
+  // Alerts and insights
+  slo: { short: "SLO", text: "Service level objective: the share of requests that must be good (not failing, or fast enough) over a rolling window, such as 99.9% over 30 days." },
+  error_budget: { short: "Error budget", text: "The bad requests an SLO allows over its window: (1 - objective) × requests. When it is spent, the objective is missed." },
+  burn_rate: { short: "Burn rate", text: "How fast the error budget is spent: 1 spends it exactly over the SLO window, 14 spends it fourteen times faster. Alerts fire when a short and a long window both burn fast." },
+  silence: { short: "Silence", text: "Mutes the notifications of alerts whose labels match, until it ends. The alerts still fire and are listed." },
+  fingerprint: { short: "Fingerprint", text: "A statement with its values, placeholders and comments removed, so every run of the same query shape is counted together." },
+  cold_start: { short: "Cold start", text: "A run that had to load its code into the cache first, after a restart, an eviction or the first call. It is slower than a warm run." },
+  host_call: { short: "Host call", text: "A call a function makes out to the server, such as a database query, a key-value read or an outgoing request. Each one is timed." },
+  accelerated: { short: "Accelerated", text: "Runs on a PostgreSQL extension. Portable features run on ForgeBase's own engine, which works on every database and gives the same answers." },
+  estimate: { short: "Estimate", text: "A cost worked out from the usage in the period and the prices in your billing catalog, as if the period were one billing period. It is not an invoice." },
 } satisfies Record<string, GlossaryEntry>;
 
 export type GlossaryTerm = keyof typeof GLOSSARY;

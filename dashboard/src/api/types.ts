@@ -1,4 +1,5 @@
 /** Wire types for the ForgeBase API (docs/PLAN.md section 5). */
+import type { TlsStatus } from "./capabilities";
 
 export interface ApiErrorBody {
   error: { code: string; message: string; request_id?: string };
@@ -26,6 +27,8 @@ export interface SystemInfo {
     journal_mode: string;
     schema_version: number;
   };
+  /** The certificate section (ADR-0033); absent on servers older than 0.3.4. */
+  tls?: TlsStatus;
 }
 
 /** One entry of `error.details.fields` (400 validation errors). */
