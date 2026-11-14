@@ -205,6 +205,10 @@ fn undo_head(head: i64) -> &'static [&'static str] {
             "DROP TABLE _forgebase_db_node_commands",
             "DROP TABLE _forgebase_db_node_agents",
         ],
+        66 => &[
+            "DROP TABLE _forgebase_email_providers",
+            "ALTER TABLE _forgebase_email_deliveries DROP COLUMN provider_message_id",
+        ],
         v => panic!("shard_rollout: teach undo_head how to undo migration {v}"),
     }
 }
