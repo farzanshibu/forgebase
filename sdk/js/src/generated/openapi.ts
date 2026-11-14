@@ -8686,6 +8686,44 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/system/backups/{id}/drill": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Restores the snapshot into a scratch directory, starts a quiet server on
+         *     it, checks the data and deletes the copy (ADR-0041). Runs as a job: poll
+         *     the returned job, or read `GET .../drills` afterwards.
+         */
+        post: operations["start_drill"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/system/backups/{id}/drills": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The recorded drills of a snapshot, newest first, with RTO and RPO. */
+        get: operations["list_drills"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/system/backups/{id}/verify": {
         parameters: {
             query?: never;
@@ -10322,6 +10360,20 @@ export interface components {
         AuthUserEnvelope: {
             user: unknown;
         };
+        /**
+         * @description What a backup holds, counted when it was taken; a restore drill compares
+         *     the restored database with it (ADR-0041). Absent in older backups.
+         */
+        BackupStats: {
+            /** @description Records of every table-backed collection, by collection name. */
+            collections?: {
+                [key: string]: components["schemas"]["CountRange"];
+            };
+            /** @description Rows of the storage blob table (distinct blobs). */
+            storage_blobs?: components["schemas"]["CountRange"];
+            /** @description Rows of the storage object table. */
+            storage_objects?: components["schemas"]["CountRange"];
+        };
         /** @description A subject's balance. */
         Balance: {
             /**
@@ -10895,6 +10947,11 @@ export interface components {
             /** @description The lease from the claim. */
             lease_id: string;
         };
+        /**
+         * @description Verdict of one check of a drill.
+         * @enum {string}
+         */
+        CheckStatus: "ok" | "warn" | "fail" | "skip";
         /** @description Child jobs. */
         ChildList: {
             /** @description In request order. */
@@ -11176,6 +11233,24 @@ export interface components {
             count: number;
             /** @description The value counted (an event, actor, address or outcome). */
             key: string;
+        };
+        /**
+         * @description A count that was taken while the backup ran: the value lies in
+         *     `min..=max`. On SQLite the count is read from the finished copy, so
+         *     `min == max`; on PostgreSQL it is read before and after `pg_basebackup`
+         *     and a write between them widens the range.
+         */
+        CountRange: {
+            /**
+             * Format: int64
+             * @description Most.
+             */
+            max: number;
+            /**
+             * Format: int64
+             * @description Fewest.
+             */
+            min: number;
         };
         CountResponse: {
             /** Format: int64 */
@@ -11911,6 +11986,126 @@ export interface components {
          * @enum {string}
          */
         DomainStatus: "pending" | "verified";
+        /** @description One check of a drill. */
+        DrillCheck: {
+            /** @description What was found. */
+            detail: string;
+            /** @description Short name: `verify`, `restore`, `server`, `doctor`, `schema`, `counts`, ... */
+            name: string;
+            /** @description Verdict. */
+            status: components["schemas"]["CheckStatus"];
+        };
+        /** @description What the checks looked at. */
+        DrillCounts: {
+            /**
+             * Format: int64
+             * @description Blob files read and hashed.
+             */
+            blobs_sampled: number;
+            /**
+             * Format: int64
+             * @description Collections counted.
+             */
+            collections: number;
+            /**
+             * Format: int64
+             * @description Records in them.
+             */
+            records: number;
+            /**
+             * Format: int64
+             * @description Records read back through the data service.
+             */
+            records_sampled: number;
+            /**
+             * Format: int64
+             * @description Storage objects in the restored database.
+             */
+            storage_objects: number;
+        };
+        /** @description Drills of a backup, newest first. */
+        DrillList: {
+            /** @description The backup. */
+            backup_id: string;
+            /** @description The drills, with their measured recovery time (RTO) and backup age (RPO). */
+            items: components["schemas"]["DrillReport"][];
+        };
+        /**
+         * @description Overall verdict.
+         * @enum {string}
+         */
+        DrillOutcome: "passed" | "failed";
+        /** @description Wall time of the phases, in milliseconds. */
+        DrillPhases: {
+            /**
+             * Format: int64
+             * @description The checks.
+             */
+            checks_ms: number;
+            /**
+             * Format: int64
+             * @description Verifying the backup and restoring it into the scratch directory.
+             */
+            restore_ms: number;
+            /**
+             * Format: int64
+             * @description Starting the quiescent server on the restored data (migrations,
+             *     PostgreSQL crash recovery, listener).
+             */
+            start_ms: number;
+        };
+        /** @description The result of one restore drill. */
+        DrillReport: {
+            /** @description When the backup was taken (RFC 3339). */
+            backup_created: string;
+            /** @description The backup that was restored. */
+            backup_id: string;
+            /** @description Every check, in order. */
+            checks: components["schemas"]["DrillCheck"][];
+            /** @description What was counted and sampled. */
+            counts: components["schemas"]["DrillCounts"];
+            /** @description `sqlite`, `postgres 18.3 (managed)`. */
+            engine: string;
+            /** @description End of the drill (RFC 3339). */
+            finished_at: string;
+            /** @description Drill id (its UTC start time). */
+            id: string;
+            /** @description The scratch directory, when it was kept (`--keep`). */
+            kept?: string | null;
+            /** @description Verdict. */
+            outcome: components["schemas"]["DrillOutcome"];
+            /** @description Time per phase. */
+            phases: components["schemas"]["DrillPhases"];
+            /** @description The failed checks, as messages. */
+            problems: string[];
+            /**
+             * Format: int64
+             * @description Recovery point: age of the backup when the drill started, in seconds.
+             *     Everything written since the backup is what a restore would lose.
+             */
+            rpo_seconds: number;
+            /**
+             * Format: double
+             * @description Recovery time: restore, start and checks, as wall time in seconds.
+             */
+            rto_seconds: number;
+            /**
+             * Format: int64
+             * @description Schema version of the backup.
+             */
+            schema_version: number;
+            /** @description Start of the drill (RFC 3339). */
+            started_at: string;
+            /** @description Who ran it: `cli`, `api` or `schedule`. */
+            trigger: string;
+        };
+        /** @description A drill that was queued. */
+        DrillStarted: {
+            /** @description The backup it restores. */
+            backup_id: string;
+            /** @description The job that runs it (`GET /api/v1/jobs/{id}`; its result is the report). */
+            job_id: string;
+        };
         /** @description An unpaid invoice that dunning is working on. */
         DunningEntry: {
             /**
@@ -12390,7 +12585,7 @@ export interface components {
          * @description What a file is.
          * @enum {string}
          */
-        FileKind: "database" | "storage" | "index" | "key" | "postgres" | "dump";
+        FileKind: "database" | "storage" | "index" | "key" | "postgres" | "dump" | "tls";
         /**
          * @description When a metadata filter is applied relative to the vector search.
          * @enum {string}
@@ -15132,6 +15327,7 @@ export interface components {
              * @description Highest applied system migration in the copied database.
              */
             schema_version: number;
+            stats?: components["schemas"]["BackupStats"] | null;
         };
         /** @description Body of `POST /billing/invoices/{id}/mark-paid` (manual billing). */
         MarkPaidInput: {
@@ -18520,6 +18716,14 @@ export interface components {
             show_secrets?: boolean | null;
             /** @description One SQL statement; positional parameters `?` / `?1`. */
             sql: string;
+        };
+        /** @description Query of `POST /system/backups/{id}/drill`. */
+        StartDrill: {
+            /**
+             * Format: int32
+             * @description Records read back per collection (default 5, at most 1000).
+             */
+            sample?: number | null;
         };
         /** @description Where a new subscription starts reading. */
         StartPosition: "latest" | "earliest" | {
@@ -54703,6 +54907,138 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+        };
+    };
+    start_drill: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Snapshot id, or `latest` */
+                id: string;
+                /** @description Records read back per collection (default 5, at most 1000). */
+                sample: number | null;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The drill job */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DrillStarted"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description No such snapshot */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description A drill is already queued or running */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description This server cannot run drills (not the forgebase command) */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    list_drills: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Snapshot id, or `latest` */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Drill history of the snapshot */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DrillList"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description No such collection, record or index (or not visible to the caller) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
             };
         };
     };

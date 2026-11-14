@@ -1185,6 +1185,21 @@ pub struct AuthUserEnvelope {
     pub user: serde_json::Value,
 }
 
+/// What a backup holds, counted when it was taken; a restore drill compares
+/// the restored database with it (ADR-0041). Absent in older backups.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct BackupStats {
+    /// Records of every table-backed collection, by collection name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub collections: Option<std::collections::HashMap<String, CountRange>>,
+    /// Rows of the storage blob table (distinct blobs).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub storage_blobs: Option<CountRange>,
+    /// Rows of the storage object table.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub storage_objects: Option<CountRange>,
+}
+
 /// A subject's balance.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct Balance {
@@ -1748,6 +1763,22 @@ pub struct ChangePlanInput {
     pub quantity: Option<i64>,
 }
 
+/// Verdict of one check of a drill.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CheckStatus {
+    #[serde(rename = "ok")]
+    Ok,
+    #[serde(rename = "warn")]
+    Warn,
+    #[serde(rename = "fail")]
+    Fail,
+    #[serde(rename = "skip")]
+    Skip,
+    /// A value this SDK version does not know (kept so newer servers do not break old clients).
+    #[serde(other)]
+    Unknown,
+}
+
 /// What a subscription, order or plan change returned: the object, the
 /// invoice it produced, and where to pay when no payment method is saved.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
@@ -2079,6 +2110,18 @@ pub struct Count {
     pub count: i64,
     /// The value counted (an event, actor, address or outcome).
     pub key: String,
+}
+
+/// A count that was taken while the backup ran: the value lies in
+/// `min..=max`. On SQLite the count is read from the finished copy, so
+/// `min == max`; on PostgreSQL it is read before and after `pg_basebackup`
+/// and a write between them widens the range.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct CountRange {
+    /// Most.
+    pub max: i64,
+    /// Fewest.
+    pub min: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
@@ -2839,6 +2882,116 @@ pub enum DomainStatus {
     Unknown,
 }
 
+/// One check of a drill.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DrillCheck {
+    /// What was found.
+    pub detail: String,
+    /// Short name: `verify`, `restore`, `server`, `doctor`, `schema`, `counts`, ...
+    pub name: String,
+    /// Verdict.
+    pub status: CheckStatus,
+}
+
+/// What the checks looked at.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct DrillCounts {
+    /// Blob files read and hashed.
+    pub blobs_sampled: i64,
+    /// Collections counted.
+    pub collections: i64,
+    /// Records in them.
+    pub records: i64,
+    /// Records read back through the data service.
+    pub records_sampled: i64,
+    /// Storage objects in the restored database.
+    pub storage_objects: i64,
+}
+
+/// Drills of a backup, newest first.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct DrillList {
+    /// The backup.
+    pub backup_id: String,
+    /// The drills, with their measured recovery time (RTO) and backup age (RPO).
+    #[serde(default)]
+    pub items: Vec<DrillReport>,
+}
+
+/// Overall verdict.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DrillOutcome {
+    #[serde(rename = "passed")]
+    Passed,
+    #[serde(rename = "failed")]
+    Failed,
+    /// A value this SDK version does not know (kept so newer servers do not break old clients).
+    #[serde(other)]
+    Unknown,
+}
+
+/// Wall time of the phases, in milliseconds.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct DrillPhases {
+    /// The checks.
+    pub checks_ms: i64,
+    /// Verifying the backup and restoring it into the scratch directory.
+    pub restore_ms: i64,
+    /// Starting the quiescent server on the restored data (migrations,
+    /// PostgreSQL crash recovery, listener).
+    pub start_ms: i64,
+}
+
+/// The result of one restore drill.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DrillReport {
+    /// When the backup was taken (RFC 3339).
+    pub backup_created: String,
+    /// The backup that was restored.
+    pub backup_id: String,
+    /// Every check, in order.
+    #[serde(default)]
+    pub checks: Vec<DrillCheck>,
+    /// What was counted and sampled.
+    pub counts: DrillCounts,
+    /// `sqlite`, `postgres 18.3 (managed)`.
+    pub engine: String,
+    /// End of the drill (RFC 3339).
+    pub finished_at: String,
+    /// Drill id (its UTC start time).
+    pub id: String,
+    /// The scratch directory, when it was kept (`--keep`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kept: Option<String>,
+    /// Verdict.
+    pub outcome: DrillOutcome,
+    /// Time per phase.
+    pub phases: DrillPhases,
+    /// The failed checks, as messages.
+    #[serde(default)]
+    pub problems: Vec<String>,
+    /// Recovery point: age of the backup when the drill started, in seconds.
+    /// Everything written since the backup is what a restore would lose.
+    pub rpo_seconds: i64,
+    /// Recovery time: restore, start and checks, as wall time in seconds.
+    pub rto_seconds: f64,
+    /// Schema version of the backup.
+    pub schema_version: i64,
+    /// Start of the drill (RFC 3339).
+    pub started_at: String,
+    /// Who ran it: `cli`, `api` or `schedule`.
+    pub trigger: String,
+}
+
+/// A drill that was queued.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct DrillStarted {
+    /// The backup it restores.
+    pub backup_id: String,
+    /// The job that runs it (`GET /api/v1/jobs/{id}`; its result is the report).
+    pub job_id: String,
+}
+
 /// An unpaid invoice that dunning is working on.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DunningEntry {
@@ -3394,6 +3547,8 @@ pub enum FileKind {
     Postgres,
     #[serde(rename = "dump")]
     Dump,
+    #[serde(rename = "tls")]
+    Tls,
     /// A value this SDK version does not know (kept so newer servers do not break old clients).
     #[serde(other)]
     Unknown,
@@ -6322,6 +6477,8 @@ pub struct Manifest {
     pub note: Option<String>,
     /// Highest applied system migration in the copied database.
     pub schema_version: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stats: Option<BackupStats>,
 }
 
 /// Body of `POST /billing/invoices/{id}/mark-paid` (manual billing).
@@ -9942,6 +10099,14 @@ pub struct SqlStatementBody {
     pub show_secrets: Option<bool>,
     /// One SQL statement; positional parameters `?` / `?1`.
     pub sql: String,
+}
+
+/// Query of `POST /system/backups/{id}/drill`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct StartDrill {
+    /// Records read back per collection (default 5, at most 1000).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sample: Option<i64>,
 }
 
 /// Where a new subscription starts reading.
