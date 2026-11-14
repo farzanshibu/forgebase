@@ -69,7 +69,7 @@ async fn data_service(db: &Database) -> anyhow::Result<DataService> {
 /// The engine's tools without a connection: `verify` and `restore` read a
 /// backup and never start the cluster. The version comes from the engine's
 /// own `postgres --version`.
-async fn pg_tools(config: &Config, layout: &DataLayout) -> Option<PgSource> {
+pub(crate) async fn pg_tools(config: &Config, layout: &DataLayout) -> Option<PgSource> {
     let root = database::engine_root(&config.database, layout)?;
     let bin = root
         .join("bin")
@@ -95,12 +95,12 @@ fn pg_source(config: &Config, layout: &DataLayout, primary: &PrimaryDatabase) ->
     )
 }
 
-fn print_json(v: &serde_json::Value) -> anyhow::Result<()> {
+pub(crate) fn print_json(v: &serde_json::Value) -> anyhow::Result<()> {
     println!("{}", serde_json::to_string_pretty(v)?);
     Ok(())
 }
 
-fn human_bytes(n: u64) -> String {
+pub(crate) fn human_bytes(n: u64) -> String {
     const UNITS: [&str; 4] = ["B", "KiB", "MiB", "GiB"];
     let mut v = n as f64;
     let mut u = 0;
@@ -187,6 +187,10 @@ enum BackupCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Prove that a backup restores: restore it into a scratch directory,
+    /// start a quiet server on it, check the data, measure RTO and RPO,
+    /// delete the copy. Exits non-zero when anything fails (ADR-0041).
+    Drill(crate::drill::DrillArgs),
     /// Delete snapshots by retention policy.
     Prune {
         /// Always keep the newest N.
@@ -221,7 +225,7 @@ fn cluster_backups(layout: &DataLayout) -> Vec<PathBuf> {
     out
 }
 
-fn resolve_backup(store: &SnapshotStore, spec: &str) -> anyhow::Result<PathBuf> {
+pub(crate) fn resolve_backup(store: &SnapshotStore, spec: &str) -> anyhow::Result<PathBuf> {
     let as_path = Path::new(spec);
     if as_path.join(forgebase_backup::manifest::MANIFEST).is_file() || topology::is_cluster_backup(as_path) {
         return Ok(as_path.to_path_buf());
@@ -331,6 +335,7 @@ pub async fn run_backup(g: &GlobalArgs, cli: BackupCli) -> anyhow::Result<ExitCo
                 ExitCode::FAILURE
             })
         }
+        Some(BackupCommand::Drill(args)) => crate::drill::run(&config, &layout, &store, args).await,
         Some(BackupCommand::Prune {
             keep_last,
             max_age_days,
@@ -383,6 +388,7 @@ async fn create(
         include_master_key: a.include_master_key,
         label: a.label,
         pg: pg_source(config, layout, &db),
+        include_tls: config.backup.includes_tls(config.tls.mode),
         ..BackupOptions::default()
     };
     let result = match &a.dest {
@@ -875,7 +881,7 @@ async fn restore_cluster_cli(
 /// The backend marker a restore of a backup made by `engine` leaves behind,
 /// after checking that it does not change the backend of this data directory
 /// (that is `forgebase db convert`'s job, FB-151).
-fn restore_marker(
+pub(crate) fn restore_marker(
     config: &Config,
     layout: &DataLayout,
     engine: &forgebase_backup::manifest::EngineInfo,

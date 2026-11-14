@@ -145,5 +145,10 @@ path = "tests/node_e2e.rs"
 name = "project_e2e"
 path = "tests/project_e2e.rs"
 
+# ADR-0041: `backup drill`, the drill API and the sealed TLS state in backups.
+[[test]]
+name = "drill_e2e"
+path = "tests/drill_e2e.rs"
+
 [lints]
 workspace = true

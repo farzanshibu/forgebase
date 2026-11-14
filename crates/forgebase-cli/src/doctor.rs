@@ -121,6 +121,28 @@ pub async fn run(g: &GlobalArgs, as_json: bool, deep: bool) -> anyhow::Result<Ex
     })
 }
 
+/// The checks of `forgebase doctor` for one configuration, as
+/// `(name, status, detail)`: what a restore drill runs against the restored
+/// copy (ADR-0041). `ok` checks are returned too.
+pub(crate) async fn instance_checks(
+    loaded: &LoadedConfig,
+) -> Vec<(String, forgebase_backup::drill::CheckStatus, String)> {
+    use forgebase_backup::drill::CheckStatus;
+    let mut r = Report::default();
+    check_instance(&mut r, loaded, false).await;
+    r.checks
+        .into_iter()
+        .map(|c| {
+            let status = match c.status {
+                Level::Ok => CheckStatus::Ok,
+                Level::Warn => CheckStatus::Warn,
+                Level::Fail => CheckStatus::Fail,
+            };
+            (c.name.to_owned(), status, c.detail)
+        })
+        .collect()
+}
+
 async fn check_instance(r: &mut Report, loaded: &LoadedConfig, deep: bool) {
     let config = &loaded.config;
     let layout = DataLayout::new(&config.data_dir);

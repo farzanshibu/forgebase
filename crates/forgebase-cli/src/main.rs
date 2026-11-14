@@ -6,7 +6,7 @@
 //! forgebase migrate        apply pending system migrations (--status to list)
 //! forgebase status         show project, database and server state
 //! forgebase doctor         run diagnostics; exit code 1 if any check fails
-//! forgebase backup         online backup or snapshot (also: list, verify, prune, delete)
+//! forgebase backup         online backup or snapshot (also: list, verify, drill, prune, delete)
 //! forgebase restore <SRC>  verified restore into a stopped data directory
 //! forgebase export <...>   export collections, records or the configuration
 //! forgebase import <...>   import collections, records or a configuration file
@@ -30,6 +30,7 @@ mod dataops;
 mod db;
 mod doctor;
 mod dotenv;
+mod drill;
 mod functions;
 mod node;
 mod probe;
