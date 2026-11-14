@@ -7,8 +7,9 @@
  *   <MultiPick label="Scopes" options={OIDC_SCOPES} value={scopes} onChange={setScopes} />
  *   <Check label="Skip consent screen" hint="First-party apps only" checked={skip} onChange={setSkip} />
  */
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { Input } from "panelui-web/input";
+import { SECRET_MASK } from "../../api";
 import { Check as PanelCheck } from "../../components/controls";
 import { Button, CopyButton } from "../../components/ui";
 
@@ -55,11 +56,12 @@ export function MultiPick({ label, options, value, onChange, help }: { label: st
 }
 
 /** A secret the server shows once: copy it now, it cannot be read again. */
-export function SecretOnce({ label, secret, onDismiss }: { label: string; secret: string; onDismiss: () => void }) {
+export function SecretOnce({ label, secret, onDismiss, note }: { label: string; secret: string; onDismiss: () => void; note?: ReactNode }) {
   return (
     <div role="status" aria-label={label} className="rounded-xl border border-warning/40 bg-warning/10 p-4 text-sm">
       <p className="font-semibold text-warning">{label}</p>
       <p className="mt-1 text-foreground/80">Copy it now. It is shown once and cannot be read again.</p>
+      {note && <div className="mt-1 text-foreground/80">{note}</div>}
       <div className="mt-3 flex flex-wrap items-center gap-2">
         <code data-testid="secret-once" className="min-w-0 flex-1 break-all rounded-md border border-border bg-background px-3 py-2 font-mono text-xs text-foreground">{secret}</code>
         <CopyButton text={secret} label="Copy secret" />
@@ -77,4 +79,22 @@ export function Note({ children }: { children: ReactNode }) {
 export function Saved({ show }: { show: boolean }) {
   if (!show) return null;
   return <span role="status" className="text-sm text-success">Saved</span>;
+}
+
+/**
+ * A write-only secret input: shows `********` when a secret is stored, never its value. Empty keeps it, typing replaces it, Clear removes it.
+ * `onChange` gets the typed value, the mask (keep), `null` (nothing stored, nothing typed) or `""` (cleared).
+ */
+export function SecretInput({ label, stored, onChange, className }: { label: string; stored: string | null | undefined; onChange: (v: string | null) => void; className?: string }) {
+  const [v, setV] = useState("");
+  const isSet = stored === SECRET_MASK;
+  return (
+    <Field label={label} className={className} help={isSet ? <>Stored: <code className="font-mono">{SECRET_MASK}</code>. Type to replace it, or clear it.</> : "Write-only: never shown again after saving."}>
+      <span className="flex items-center gap-2">
+        <Input size="sm" aria-label={label} type="password" autoComplete="off" value={v} placeholder={isSet ? "set (leave empty to keep)" : "not set"}
+          onChange={(e) => { setV(e.target.value); onChange(e.target.value === "" ? (isSet ? SECRET_MASK : null) : e.target.value); }} />
+        {isSet && <Button aria-label={`Clear ${label}`} onClick={() => { setV(""); onChange(""); }}>Clear</Button>}
+      </span>
+    </Field>
+  );
 }

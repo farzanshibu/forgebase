@@ -70,7 +70,7 @@ export const STUDIOS: Studio[] = [
   {
     path: "queues", label: "Queues", title: "Queues", term: "topic", group: "build", docs: "docs/adr/0022-queues-pubsub.md", feature: "queues",
     summary: "Durable topics and subscriptions that carry messages between services.",
-    tabs: [{ to: "/queues", label: "Topics" }, { to: "/queues/subscriptions", label: "Subscriptions" }, { to: "/queues/inspector", label: "Pub/Sub inspector" }],
+    tabs: [{ to: "/queues", label: "Topics" }, { to: "/queues/subscriptions", label: "Subscriptions" }, { to: "/queues/catalog", label: "Event catalog" }, { to: "/queues/inspector", label: "Pub/Sub inspector" }],
   },
   {
     path: "jobs", label: "Jobs", title: "Jobs", term: "job", group: "build", docs: "docs/adr/0007-jobs.md", feature: "jobs",
@@ -94,7 +94,7 @@ export const STUDIOS: Studio[] = [
     tabs: [
       { to: "/identity", label: "Realms" }, { to: "/identity/providers", label: "Identity providers" }, { to: "/identity/clients", label: "Client apps" },
       { to: "/identity/consents", label: "Consents and keys" }, { to: "/identity/branding", label: "Branding" }, { to: "/identity/domains", label: "Custom domains" },
-      { to: "/identity/email", label: "Email templates" }, { to: "/identity/legal", label: "Legal agreements" },
+      { to: "/identity/email", label: "Email templates" }, { to: "/identity/email-provider", label: "Email provider" }, { to: "/identity/legal", label: "Legal agreements" },
     ],
   },
   {

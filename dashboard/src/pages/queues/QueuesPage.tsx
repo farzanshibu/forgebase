@@ -3,6 +3,7 @@ import { PageHeader } from "../../components/PageHeader";
 import { RouteTabs } from "../../components/controls";
 import { Button } from "../../components/ui";
 import { useCreateParam } from "../../hooks";
+import Catalog from "./Catalog";
 import Inspector from "./Inspector";
 import NewTopic from "./NewTopic";
 import SubscriptionDetail from "./SubscriptionDetail";
@@ -16,7 +17,7 @@ function Home() {
   return (
     <div>
       <PageHeader studio="queues" primary={<Button tone="primary" onClick={() => setCreating(true)}>New topic</Button>} />
-      <RouteTabs label="Queues sections" tabs={[{ to: "/queues", label: "Topics", end: true }, { to: "/queues/subscriptions", label: "Subscriptions" }, { to: "/queues/inspector", label: "Pub/Sub inspector" }]} className="mt-4" />
+      <RouteTabs label="Queues sections" tabs={[{ to: "/queues", label: "Topics", end: true }, { to: "/queues/subscriptions", label: "Subscriptions" }, { to: "/queues/catalog", label: "Event catalog" }, { to: "/queues/inspector", label: "Pub/Sub inspector" }]} className="mt-4" />
       <div className="mt-6"><Outlet context={{ newTopic: () => setCreating(true) }} /></div>
       <NewTopic open={creating} onOpenChange={setCreating} />
     </div>
@@ -30,6 +31,7 @@ export default function QueuesPage() {
       <Route element={<Home />}>
         <Route index element={<TopicList />} />
         <Route path="subscriptions" element={<SubscriptionList />} />
+        <Route path="catalog" element={<Catalog />} />
         <Route path="inspector" element={<Inspector />} />
       </Route>
       <Route path="t/:topic" element={<TopicDetail />} />

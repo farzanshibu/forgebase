@@ -2,7 +2,7 @@
  * In-memory fake of `/api/v1/queues` (ADR-0022) for component tests.
  * The routes are plain handlers: the OpenAPI fixture does not describe the queue API yet (it is regenerated after FIX-4).
  */
-import type { AckResult, DeadLetter, MessagePage, QueueMessage, ReceivedMessage, QueueSnapshot, QueueSubscription, QueueTopic } from "../api";
+import type { AckResult, CatalogTopic, DeadLetter, MessagePage, PushAttempt, PushHealth, QueueMessage, ReceivedMessage, QueueSnapshot, QueueSubscription, QueueTopic } from "../api";
 import { envelope, type MockApi } from "./mockApi";
 
 const NOW = "2026-11-09T10:00:00Z";
@@ -22,7 +22,28 @@ export interface QueueState {
   acked: string[];
   nacked: string[];
   seeks: { sub: string; to: unknown }[];
+  /** Webhook tooling (ADR-0031): the attempt log, the event catalog, the health shown with a push subscription's metrics and what the tools were asked to do. */
+  attempts: PushAttempt[];
+  catalog: CatalogTopic[];
+  health: Record<string, PushHealth>;
+  /** What the next test send answers: an attempt that succeeded or failed, or an error status. */
+  testResult: "success" | "failure" | "rate_limited";
+  /** Deliveries waiting for a retry backoff: what "retry now" reports. */
+  delayed: number;
+  calls: { redrive: unknown[]; retry: unknown[]; rotate: unknown[]; pause: unknown[]; resume: number; expire: number; test: number; patchSub: unknown[]; patchTopic: unknown[] };
 }
+
+export const pushAttempt = (id: number, over: Partial<PushAttempt> = {}): PushAttempt => ({
+  id, subscription: "hook", message_id: `msg_${id}`, attempt: 1, test: false, kind: "webhook", endpoint: "https://example.com/hook", at: NOW, latency_ms: 120,
+  outcome: "success", status: 200, error_class: null, error: null,
+  request_headers: { "content-type": "application/json", "x-forgebase-signature": "t=1731578400,v1=<redacted>" }, response_headers: { "content-type": "text/plain" },
+  response_body: "ok", response_bytes: 2, response_truncated: false, ...over,
+});
+
+export const pushHealth = (over: Partial<PushHealth> = {}): PushHealth => ({
+  window_ms: 3_600_000, attempts: 40, successes: 38, failures: 2, success_rate: 0.95, latency_p50_ms: 110, latency_p95_ms: 480, latency_p99_ms: 900, consecutive_failures: 0,
+  last_success_at: NOW, last_failure_at: "2026-11-09T09:00:00Z", last_error: "connection refused", paused: false, ...over,
+});
 
 export const topic = (name: string, extra: Partial<QueueTopic> = {}): QueueTopic => ({
   name, retention_ms: 7 * 86_400_000, max_message_bytes: 1_048_576, dedup_window_ms: 600_000, labels: {}, published_total: 0, published_bytes: 0,
@@ -53,6 +74,8 @@ export function installQueues(mock: MockApi): QueueState {
     },
     snapshots: [{ name: "before-fix", subscription: "order-workers", topic: "orders", cursor_seq: 2, unacked: 1, created_by: "admin", created_at: NOW, expires_at: "2026-11-16T10:00:00Z" }],
     ready: {}, acked: [], nacked: [], seeks: [], rules: { queue_topic: {}, queue_subscription: {} }, tenants: [],
+    attempts: [], catalog: [], health: {}, testResult: "success", delayed: 1,
+    calls: { redrive: [], retry: [], rotate: [], pause: [], resume: 0, expire: 0, test: 0, patchSub: [], patchTopic: [] },
   };
   const Q = "/api/v1/queues";
   const no = (what: string) => envelope(404, `${what}_not_found`, `no such ${what}`);
@@ -132,7 +155,7 @@ export function installQueues(mock: MockApi): QueueState {
     const sb = s(params.sub!);
     if (!sb) return no("subscription");
     const dead = st.dead[sb.name]?.length ?? 0;
-    return { status: 200, body: { subscription: sb.name, topic: sb.topic, backlog_messages: 7, backlog_bytes: 70, oldest_unacked_age_ms: 120_000, ready: 4, delayed: 1, in_flight: 2, delivered_total: 20, acked_total: 12, nacked_total: 3, expired_total: 1, dead_lettered_total: dead, dead_letters: dead, acked_last_minute: 6, ack_rate_per_sec: 0.1 } };
+    return { status: 200, body: { subscription: sb.name, topic: sb.topic, backlog_messages: 7, backlog_bytes: 70, oldest_unacked_age_ms: 120_000, ready: 4, delayed: st.delayed, in_flight: 2, delivered_total: 20, acked_total: 12, nacked_total: 3, expired_total: 1, dead_lettered_total: dead, dead_letters: dead, acked_last_minute: 6, ack_rate_per_sec: 0.1, ...(st.health[sb.name] ? { push: st.health[sb.name] } : {}) } };
   });
   mock.on("GET", `${Q}/subscriptions/{sub}/dead-letters`, ({ params }) => (s(params.sub!) ? { status: 200, body: { items: st.dead[params.sub!] ?? [] } } : no("subscription")));
   mock.on("POST", `${Q}/subscriptions/{sub}/pull`, ({ params }) => {
@@ -172,6 +195,108 @@ export function installQueues(mock: MockApi): QueueState {
     st.snapshots = st.snapshots.filter((x) => x.name !== params.snapshot);
     return { status: 204 };
   });
+  // Webhook tooling (ADR-0031 section 8).
+  let nextAttempt = 1000;
+  let secrets = 0;
+  mock.on("GET", `${Q}/subscriptions/{sub}/attempts`, ({ params, query }) => {
+    if (!s(params.sub!)) return no("subscription");
+    const outcome = query.get("outcome"), msg = query.get("message_id"), test = query.get("test"), since = query.get("since"), before = Number(query.get("before") ?? 0), limit = Number(query.get("limit") ?? 50);
+    const rows = st.attempts.filter((a) => a.subscription === params.sub && (!outcome || a.outcome === outcome) && (!msg || a.message_id === msg) && (test === null || String(a.test) === test)
+      && (!since || a.at >= since) && (!before || a.id < before)).sort((a, b) => b.id - a.id);
+    const items = rows.slice(0, limit);
+    return { status: 200, body: { items, next_before: rows.length > limit ? items[items.length - 1]!.id : null } };
+  });
+  mock.on("GET", `${Q}/subscriptions/{sub}/attempts/{id}`, ({ params }) => {
+    const a = st.attempts.find((x) => x.subscription === params.sub && x.id === Number(params.id));
+    return a ? { status: 200, body: a } : envelope(404, "attempt_not_found", "no such attempt");
+  });
+  mock.on("POST", `${Q}/subscriptions/{sub}/test`, ({ params }) => {
+    const sb = s(params.sub!);
+    if (!sb) return no("subscription");
+    if (!sb.push) return envelope(409, "not_push_subscription", "this is a pull subscription");
+    if (st.testResult === "rate_limited") return envelope(429, "rate_limited", "too many test sends");
+    st.calls.test++;
+    const made = pushAttempt(++nextAttempt, st.testResult === "success"
+      ? { subscription: sb.name, message_id: `test-${nextAttempt}`, test: true, attempt: 1 }
+      : { subscription: sb.name, message_id: `test-${nextAttempt}`, test: true, outcome: "failure", status: 500, error_class: "http_status", error: "endpoint answered 500", response_body: "boom" });
+    st.attempts.push(made);
+    return { status: 200, body: made };
+  });
+  mock.on("POST", `${Q}/subscriptions/{sub}/redrive`, ({ params, body }) => {
+    if (!s(params.sub!)) return no("subscription");
+    st.calls.redrive.push(body);
+    const b = body as { ids?: number[]; all?: boolean };
+    const dead = st.dead[params.sub!] ?? [];
+    if (!b.all && !(b.ids?.length)) return envelope(400, "invalid_redrive", "give ids or all");
+    const pick = b.all ? dead.filter((d) => !d.redriven_at) : dead.filter((d) => b.ids!.includes(d.id));
+    const result = { redriven: [] as number[], already_redriven: [] as number[], not_found: (b.ids ?? []).filter((i) => !dead.some((d) => d.id === i)), remaining: 0 };
+    for (const d of pick) {
+      if (d.redriven_at) result.already_redriven.push(d.id);
+      else { d.redriven_at = NOW; d.redriven_by = "admin"; result.redriven.push(d.id); }
+    }
+    return { status: 200, body: result };
+  });
+  mock.on("POST", `${Q}/subscriptions/{sub}/retry`, ({ params, body }) => {
+    if (!s(params.sub!)) return no("subscription");
+    st.calls.retry.push(body);
+    const n = st.delayed;
+    st.delayed = 0;
+    return { status: 200, body: { count: n } };
+  });
+  mock.on("POST", `${Q}/subscriptions/{sub}/secret/rotate`, ({ params, body }) => {
+    const sb = s(params.sub!);
+    if (!sb) return no("subscription");
+    if (sb.push?.kind !== "webhook") return envelope(409, "not_webhook_subscription", "a function is not signed");
+    st.calls.rotate.push(body);
+    const grace = (body as { grace_ms?: number }).grace_ms ?? 86_400_000;
+    const until = grace > 0 ? new Date(Date.parse(NOW) + grace).toISOString() : null;
+    sb.push_secret_previous_expires_at = until;
+    return { status: 200, body: { subscription: sb.name, push_secret: `fbwh_new_secret_${++secrets}`, previous_expires_at: until } };
+  });
+  mock.on("POST", `${Q}/subscriptions/{sub}/secret/expire-previous`, ({ params }) => {
+    const sb = s(params.sub!);
+    if (!sb) return no("subscription");
+    st.calls.expire++;
+    sb.push_secret_previous_expires_at = null;
+    return { status: 200, body: sb };
+  });
+  mock.on("POST", `${Q}/subscriptions/{sub}/pause`, ({ params, body }) => {
+    const sb = s(params.sub!);
+    if (!sb) return no("subscription");
+    st.calls.pause.push(body);
+    sb.paused_at = NOW;
+    sb.paused_reason = (body as { reason?: string }).reason ?? null;
+    return { status: 200, body: sb };
+  });
+  mock.on("POST", `${Q}/subscriptions/{sub}/resume`, ({ params }) => {
+    const sb = s(params.sub!);
+    if (!sb) return no("subscription");
+    st.calls.resume++;
+    sb.paused_at = null;
+    sb.paused_reason = null;
+    return { status: 200, body: sb };
+  });
+  mock.on("PATCH", `${Q}/subscriptions/{sub}`, ({ params, body }) => {
+    const sb = s(params.sub!);
+    if (!sb) return no("subscription");
+    st.calls.patchSub.push(body);
+    const n = (body as { pause_after_failures?: number }).pause_after_failures;
+    if (n !== undefined) sb.pause_after_failures = n === 0 ? null : n;
+    return { status: 200, body: sb };
+  });
+  mock.on("PATCH", `${Q}/topics/{topic}`, ({ params, body }) => {
+    const tp = t(params.topic!);
+    if (!tp) return no("topic");
+    st.calls.patchTopic.push(body);
+    const b = body as { description?: string; example?: unknown; clear_example?: boolean };
+    if (b.example !== undefined && tp.schema && (typeof b.example !== "object" || b.example === null)) return envelope(400, "invalid_example", "the example does not satisfy the schema");
+    if (b.description !== undefined) tp.description = b.description === "" ? null : b.description;
+    if (b.example !== undefined) tp.example = b.example;
+    if (b.clear_example) tp.example = null;
+    tp.updated_at = `2026-11-09T10:00:${String(st.calls.patchTopic.length).padStart(2, "0")}Z`;
+    return { status: 200, body: tp };
+  });
+  mock.on("GET", `${Q}/catalog`, () => ({ status: 200, body: { topics: st.catalog } }));
   // The rules editor: queue rules read @request only, so the kinds list no item fields.
   const R = "/api/v1/policies/resources";
   mock.on("GET", `${R}/{kind}`, ({ params }) => ({ status: 200, body: { kind: params.kind, fields: [], operations: ["list", "view", "create", "update", "delete"], actions: [], items: Object.entries(st.rules[params.kind!] ?? {}).map(([name, rules]) => ({ name, rules })) } }));

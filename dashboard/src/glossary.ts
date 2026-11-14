@@ -66,6 +66,12 @@ export const GLOSSARY = {
   cron: { short: "Cron", text: "A schedule written as minute, hour, day of month, month and weekday, such as 0 3 * * * for 03:00 daily." },
   reserved_kind: { short: "Reserved kind", text: "A job or queue kind whose name starts with a prefix the server keeps for its own work. Only an administrator can enqueue it; anyone else gets 403." },
   idempotency_key: { short: "Idempotency key", text: "A unique key per request, so sending it twice does the work only once." },
+  redrive: { short: "Redrive", text: "Deliver dead letters to the subscription again, with a fresh attempt counter. Each dead letter is redriven once." },
+  signing_secret: { short: "Signing secret", text: "The secret ForgeBase signs each webhook with. Your receiver checks the X-Forgebase-Signature header against it to know the call is genuine." },
+  grace_window: { short: "Grace window", text: "After a rotation the old secret keeps signing for a while, next to the new one, so you can deploy the new secret without dropping a delivery." },
+  circuit_breaker: { short: "Auto-pause", text: "Stops delivering to an endpoint after this many failed attempts in a row, so a dead endpoint is not hammered. Messages wait and nothing is dead-lettered until you resume." },
+  push_attempt: { short: "Attempt", text: "One call to the webhook or function: its status, how long it took and what the endpoint answered. Test sends are logged too, marked as tests." },
+  event_catalog: { short: "Event catalog", text: "The kinds of event you can subscribe to: each topic with its schema and an example, and each record source with created, updated and deleted events." },
   // Key-value
   ttl: { short: "TTL", text: "Time to live: how long a key is kept before the server deletes it on its own." },
   namespace: { short: "Namespace", text: "A separate set of keys, so two apps or features never overwrite each other's keys." },
@@ -87,6 +93,9 @@ export const GLOSSARY = {
   proration: { short: "Proration", text: "Charging or crediting the part of a period that was used when a plan changes mid-period." },
   meter: { short: "Usage meter", text: "Counts something a customer uses, such as API calls, so it can be billed or limited." },
   entitlement: { short: "Entitlement", text: "What a customer's plan lets them use, such as a feature or a monthly limit." },
+  webhook_delivery: { short: "Webhook delivery", text: "One request a payment provider sent to ForgeBase, kept with its headers and body whether or not it verified, so you can see why it was applied, ignored or refused." },
+  reverify: { short: "Re-verify", text: "Check a refused delivery again with the webhook secrets as they are now, and process it once if it passes. Use it after fixing a wrong secret." },
+  replay: { short: "Replay", text: "Process a verified delivery again through the normal path. An event that was already handled changes nothing." },
   // System and metrics
   wal: { short: "WAL", text: "Write-ahead log: the database writes changes here first, so they survive a crash." },
   rss: { short: "RSS", text: "Resident set size: the memory the server process is using right now." },
