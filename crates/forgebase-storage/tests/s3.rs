@@ -1,7 +1,10 @@
 //! The S3 driver against a local mock S3 server (no network): SigV4 headers
 //! are recomputed and compared on every request, bodies are checked against
 //! their declared payload hash, multipart uploads and ranged reads are
-//! observed, and the whole storage service runs on top of it.
+//! observed, and the whole storage service runs on top of it. Pre-signed
+//! URLs (query-string SigV4) are checked against AWS's documented example and
+//! verified by the mock with code written from AWS's documentation, and the
+//! service's native signed downloads are fetched from the mock.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 mod common;
@@ -12,9 +15,14 @@ use std::sync::{Arc, Mutex};
 
 use common::*;
 use forgebase_auth::net::{HttpsClient, TlsSettings};
+use forgebase_core::SignedUrlsMode;
+use forgebase_storage::s3::{MAX_PRESIGNED_SECS, PresignInput, presigned_url};
 use forgebase_storage::sigv4::{Credentials, SignInput, sign};
 use forgebase_storage::util::sha256_hex;
-use forgebase_storage::{ByteStream, S3Config, S3Driver, StorageDriver, StorageError, body_of};
+use forgebase_storage::{
+    ByteStream, PresignGet, S3Config, S3Driver, SignRequest, SignedMode, StorageDriver, StorageError, body_of,
+};
+use hmac::{Hmac, KeyInit, Mac};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
@@ -86,6 +94,83 @@ fn pct_decode(s: &str) -> String {
         .next()
         .map(|(_, v)| v.into_owned())
         .unwrap_or_default()
+}
+
+/// RFC 3986 encoding as SigV4 wants it (unreserved characters kept).
+fn uri_encode(s: &str, keep_slash: bool) -> String {
+    s.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => char::from(b).to_string(),
+            b'/' if keep_slash => "/".to_owned(),
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
+}
+
+fn mac(key: &[u8], data: &str) -> Vec<u8> {
+    let mut m = <Hmac<sha2::Sha256> as KeyInit>::new_from_slice(key).unwrap();
+    m.update(data.as_bytes());
+    m.finalize().into_bytes().to_vec()
+}
+
+/// Verifies a pre-signed request as S3 does ("Authenticating Requests: Using
+/// Query Parameters"), written from the documentation rather than the driver:
+/// the canonical query is every parameter but `X-Amz-Signature`, re-encoded
+/// and sorted; the only signed header is `host`; the payload is unsigned.
+/// Returns why it is refused.
+fn verify_presigned(
+    method: &str,
+    host: &str,
+    path: &str,
+    query: &[(String, String)],
+    (access, secret): (&str, &str),
+) -> Result<(), String> {
+    let get = |n: &str| query.iter().find(|(k, _)| k == n).map(|(_, v)| v.clone());
+    if get("X-Amz-Algorithm").as_deref() != Some("AWS4-HMAC-SHA256") {
+        return Err("algorithm".into());
+    }
+    if get("X-Amz-SignedHeaders").as_deref() != Some("host") {
+        return Err("signed headers".into());
+    }
+    let expires: u64 = get("X-Amz-Expires").and_then(|e| e.parse().ok()).ok_or("expires")?;
+    if !(1..=604_800).contains(&expires) {
+        return Err("expires out of range".into());
+    }
+    let credential = get("X-Amz-Credential").ok_or("credential")?;
+    let scope: Vec<&str> = credential.split('/').collect();
+    if scope.len() != 5 || scope[0] != access || scope[3] != "s3" || scope[4] != "aws4_request" {
+        return Err(format!("credential {credential}"));
+    }
+    let date = get("X-Amz-Date").ok_or("date")?;
+    if !date.starts_with(scope[1]) {
+        return Err("date and scope disagree".into());
+    }
+    let mut pairs: Vec<String> = query
+        .iter()
+        .filter(|(k, _)| k != "X-Amz-Signature")
+        .map(|(k, v)| format!("{}={}", uri_encode(k, false), uri_encode(v, false)))
+        .collect();
+    pairs.sort();
+    let canonical = format!(
+        "{method}\n{}\n{}\nhost:{host}\n\nhost\nUNSIGNED-PAYLOAD",
+        uri_encode(path, true),
+        pairs.join("&")
+    );
+    let digest = sha256_hex(canonical.as_bytes());
+    let to_sign = format!(
+        "AWS4-HMAC-SHA256\n{date}\n{}/{}/s3/aws4_request\n{digest}",
+        scope[1], scope[2]
+    );
+    let mut k = mac(format!("AWS4{secret}").as_bytes(), scope[1]);
+    for part in [scope[2], "s3", "aws4_request"] {
+        k = mac(&k, part);
+    }
+    let want = forgebase_storage::util::hex(&mac(&k, &to_sign));
+    if get("X-Amz-Signature").as_deref() == Some(want.as_str()) {
+        Ok(())
+    } else {
+        Err("SignatureDoesNotMatch".into())
+    }
 }
 
 async fn serve(
@@ -172,6 +257,18 @@ async fn serve(
         },
     );
     let want = &expected.iter().find(|(k, _)| k == "authorization").unwrap().1;
+    let presigned = q("X-Amz-Signature").is_some();
+    let verdict = if presigned {
+        if headers.contains_key("authorization") {
+            Err("both header and query authentication".to_owned())
+        } else {
+            verify_presigned(&method, &addr.to_string(), &path, &query, (ACCESS, SECRET))
+        }
+    } else if *want == auth && sha256_hex(&body) == payload {
+        Ok(())
+    } else {
+        Err("SignatureDoesNotMatch".to_owned())
+    };
     let mut reply: (u16, Vec<(String, String)>, Vec<u8>) = (200, vec![], vec![]);
     {
         let mut s = st.lock().unwrap();
@@ -179,7 +276,8 @@ async fn serve(
             "{method} {path}?{}",
             query.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>().join("&")
         ));
-        if *want != auth || sha256_hex(&body) != payload {
+        if let Err(why) = verdict {
+            s.log.push(format!("refused {why}"));
             s.bad_signatures.push(format!("{method} {target}"));
             reply = (
                 403,
@@ -267,6 +365,15 @@ async fn serve(
                 },
                 ("GET", Some(key)) => match s.objects.get(&key) {
                     Some(v) => {
+                        // Signed response overrides (pre-signed URLs only, as on S3).
+                        for (param, header) in [
+                            ("response-content-type", "Content-Type"),
+                            ("response-content-disposition", "Content-Disposition"),
+                        ] {
+                            if let Some(value) = q(param).filter(|_| presigned) {
+                                reply.1.push((header.into(), value));
+                            }
+                        }
                         let range = headers
                             .get("range")
                             .and_then(|r| r.strip_prefix("bytes="))
@@ -525,4 +632,237 @@ async fn gcs_interoperability_settings_work_on_the_s3_driver() {
     support::conformance::run(&d, "s3", 250_000).await;
     assert!(mock.store.lock().unwrap().bad_signatures.is_empty());
     assert!(mock.keys().iter().all(|k| k.starts_with("fb/")), "{:?}", mock.keys());
+}
+
+fn get_of(url: &str) -> forgebase_auth::social::HttpRequest {
+    forgebase_auth::social::HttpRequest {
+        method: "GET",
+        url: url.to_owned(),
+        headers: Vec::new(),
+        body: Vec::new(),
+    }
+}
+
+async fn fetch(url: &str) -> forgebase_auth::social::HttpResponse {
+    use forgebase_auth::social::HttpClient as _;
+    let client = HttpsClient::new(&TlsSettings::new()).unwrap().with_max_body(1 << 20);
+    client.send(get_of(url)).await.unwrap()
+}
+
+fn query_of(url: &str) -> Vec<(String, String)> {
+    url::Url::parse(url).unwrap().query_pairs().into_owned().collect()
+}
+
+/// AWS's documented pre-signed URL ("Authenticating Requests: Using Query
+/// Parameters (AWS Signature Version 4)": GET `test.txt`, 86400 seconds).
+#[test]
+fn presigned_urls_match_awss_documented_example() {
+    let c = Credentials {
+        access_key: "AKIAIOSFODNN7EXAMPLE".into(),
+        secret_key: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY".into(),
+        session_token: None,
+        region: "us-east-1".into(),
+        service: "s3".into(),
+    };
+    let url = presigned_url(
+        &c,
+        &PresignInput {
+            method: "GET",
+            scheme: "https",
+            host: "examplebucket.s3.amazonaws.com",
+            path: "/test.txt",
+            query: &[],
+            expires_secs: 86_400,
+            now: 1_369_353_600,
+        },
+    );
+    assert_eq!(
+        url,
+        "https://examplebucket.s3.amazonaws.com/test.txt?X-Amz-Algorithm=AWS4-HMAC-SHA256\
+         &X-Amz-Credential=AKIAIOSFODNN7EXAMPLE%2F20130524%2Fus-east-1%2Fs3%2Faws4_request\
+         &X-Amz-Date=20130524T000000Z&X-Amz-Expires=86400&X-Amz-SignedHeaders=host\
+         &X-Amz-Signature=aeeed9bbccd4d02ee5c0109b86d86835f995330da4c265957d157751f604d404"
+    );
+    // The mock's verifier, written separately from the documentation, agrees.
+    let keys = ("AKIAIOSFODNN7EXAMPLE", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY");
+    let q = query_of(&url);
+    assert_eq!(
+        verify_presigned("GET", "examplebucket.s3.amazonaws.com", "/test.txt", &q, keys),
+        Ok(())
+    );
+    assert!(verify_presigned("PUT", "examplebucket.s3.amazonaws.com", "/test.txt", &q, keys).is_err());
+    assert!(verify_presigned("GET", "examplebucket.s3.amazonaws.com", "/other.txt", &q, keys).is_err());
+}
+
+#[tokio::test]
+async fn driver_presigned_urls_are_scoped_to_one_key_and_bounded() {
+    let mock = Mock::start(0).await;
+    let d = mock.driver(1000, 700, "fb");
+    d.put("blobs/aa/one", body_of(b"first".to_vec())).await.unwrap();
+    d.put("blobs/bb/two", body_of(b"second".to_vec())).await.unwrap();
+    let url = d.signed_url("GET", "blobs/aa/one", 600).unwrap();
+    assert!(
+        url.starts_with(&format!(
+            "http://{}/blobs-bucket/fb/blobs/aa/one?X-Amz-Algorithm=AWS4-HMAC-SHA256\
+             &X-Amz-Credential={ACCESS}%2F20261109%2Fus-east-1%2Fs3%2Faws4_request\
+             &X-Amz-Date=20261109T120000Z&X-Amz-Expires=600&X-Amz-SignedHeaders=host&X-Amz-Signature=",
+            mock.addr
+        )),
+        "{url}"
+    );
+    let r = fetch(&url).await;
+    assert_eq!((r.status, r.body.as_slice()), (200, &b"first"[..]));
+    // One object, one method, one lifetime: any change breaks the signature.
+    for forged in [
+        url.replace("blobs/aa/one", "blobs/bb/two"),
+        url.replace("X-Amz-Expires=600", "X-Amz-Expires=6000"),
+        format!("{url}&response-content-type=text%2Fhtml"),
+    ] {
+        assert_eq!(fetch(&forged).await.status, 403, "{forged}");
+    }
+    // A PUT URL uploads, and is not a GET URL.
+    let put_url = d.signed_url("PUT", "blobs/cc/three", 60).unwrap();
+    let mut req = get_of(&put_url);
+    req.method = "PUT";
+    req.body = b"third".to_vec();
+    use forgebase_auth::social::HttpClient as _;
+    let client = HttpsClient::new(&TlsSettings::new()).unwrap();
+    assert_eq!(client.send(req).await.unwrap().status, 200);
+    assert_eq!(mock.store.lock().unwrap().objects["fb/blobs/cc/three"], b"third");
+    assert_eq!(fetch(&put_url).await.status, 403);
+    let refused = mock.store.lock().unwrap().bad_signatures.len();
+    assert_eq!(refused, 4, "exactly the forged requests were refused");
+
+    // Lifetimes: 1 second to 7 days.
+    for bad in [0, MAX_PRESIGNED_SECS + 1] {
+        assert!(matches!(
+            d.signed_url("GET", "k", bad),
+            Err(StorageError::Invalid {
+                code: "invalid_expiry",
+                ..
+            })
+        ));
+    }
+    assert!(d.signed_url("GET", "k", MAX_PRESIGNED_SECS).is_ok());
+    assert_eq!(d.presign_support(), Ok(MAX_PRESIGNED_SECS));
+
+    // Response overrides are signed and served.
+    let url = d
+        .presign_get(&PresignGet {
+            key: "blobs/aa/one",
+            now: NOW,
+            expires_secs: 60,
+            content_type: Some("text/plain; charset=utf-8"),
+            content_disposition: Some("attachment; filename=\"one.txt\""),
+        })
+        .unwrap();
+    assert!(url.contains("&response-content-disposition=attachment%3B%20filename%3D%22one.txt%22"));
+    let r = fetch(&url).await;
+    assert_eq!(r.status, 200);
+    assert_eq!(r.header("content-type"), Some("text/plain; charset=utf-8"));
+    assert_eq!(
+        r.header("content-disposition"),
+        Some("attachment; filename=\"one.txt\"")
+    );
+    let swapped = url.replace("text%2Fplain", "text%2Fhtml");
+    assert_eq!(fetch(&swapped).await.status, 403);
+
+    // Temporary credentials sign their session token into the URL.
+    let mut cfg = S3Config::new(format!("http://{}", mock.addr), "blobs-bucket", ACCESS, SECRET);
+    cfg.prefix = "fb".into();
+    cfg.session_token = Some("tok/en+1".into());
+    let temp = S3Driver::with_clock(
+        cfg,
+        Arc::new(HttpsClient::new(&TlsSettings::new()).unwrap()),
+        Arc::new(|| NOW),
+    )
+    .unwrap();
+    let url = temp.signed_url("GET", "blobs/aa/one", 60).unwrap();
+    assert!(url.contains("&X-Amz-Security-Token=tok%2Fen%2B1&"), "{url}");
+    assert_eq!(fetch(&url).await.status, 200);
+    // Without keys there is nothing to sign with.
+    let cfg = S3Config::new(format!("http://{}", mock.addr), "blobs-bucket", "", "");
+    let anon = S3Driver::new(cfg, Arc::new(HttpsClient::new(&TlsSettings::new()).unwrap())).unwrap();
+    assert!(anon.presign_support().is_err());
+    assert!(matches!(
+        anon.signed_url("GET", "k", 60),
+        Err(StorageError::Invalid {
+            code: "s3_signing_unavailable",
+            ..
+        })
+    ));
+}
+
+#[tokio::test]
+async fn native_signed_downloads_are_served_by_s3() {
+    let mock = Mock::start(0).await;
+    let driver: Arc<dyn StorageDriver> = Arc::new(mock.driver(2000, 1500, "fb"));
+    let env = Env::with(
+        |s| {
+            s.signed_urls = SignedUrlsMode::Native;
+            s.max_signed_ttl_secs = 30 * 86_400;
+        },
+        Some(driver),
+    )
+    .await;
+    env.bucket("n", false).await;
+    let data = b"hello from the bucket".to_vec();
+    let info = env
+        .storage
+        .put_object(
+            &admin(),
+            forgebase_storage::PutRequest {
+                content_type: Some("text/plain".into()),
+                ..put("n", "docs/hello.txt", &data)
+            },
+        )
+        .await
+        .unwrap();
+    let sha = info.checksum_sha256.clone().unwrap();
+    let sign = |expires_in: u64| SignRequest {
+        key: "docs/hello.txt".into(),
+        method: None,
+        expires_in: Some(expires_in),
+        version_id: None,
+        download_as: Some("hello.txt".into()),
+        content_type: None,
+    };
+    let signed = env.storage.sign_url(&admin(), "n", sign(300)).await.unwrap();
+    assert_eq!(signed.mode, SignedMode::Native);
+    let blob_url = format!("http://{}/blobs-bucket/fb/blobs/{}/{sha}?", mock.addr, &sha[..2]);
+    assert!(signed.url.starts_with(&blob_url), "{}", signed.url);
+    assert!(signed.url.contains("&X-Amz-Expires=300&"));
+    let gets_before = mock.count("GET");
+    let r = fetch(&signed.url).await;
+    assert_eq!((r.status, &r.body), (200, &data));
+    assert_eq!(r.header("content-type"), Some("text/plain"));
+    assert_eq!(
+        r.header("content-disposition"),
+        Some("attachment; filename=\"hello.txt\"")
+    );
+    assert_eq!(
+        mock.count("GET") - gets_before,
+        1,
+        "one request, straight to the bucket"
+    );
+    // Longer than S3 allows: capped at seven days, and reported so.
+    let long = env.storage.sign_url(&admin(), "n", sign(20 * 86_400)).await.unwrap();
+    assert!(long.url.contains("&X-Amz-Expires=604800&"), "{}", long.url);
+    let at = time::OffsetDateTime::parse(&long.expires_at, &time::format_description::well_known::Rfc3339)
+        .unwrap()
+        .unix_timestamp();
+    let q = query_of(&long.url);
+    let date = &q.iter().find(|(k, _)| k == "X-Amz-Date").unwrap().1;
+    assert_eq!(
+        &forgebase_storage::sigv4::stamps(at - 604_800).1,
+        date,
+        "expires_at is the signing time plus seven days"
+    );
+    assert_eq!(fetch(&long.url).await.status, 200);
+    // Signing needs read access, as for a proxy URL.
+    assert!(matches!(
+        env.storage.sign_url(&user("mallory"), "n", sign(60)).await,
+        Err(StorageError::Forbidden(_))
+    ));
+    assert!(mock.store.lock().unwrap().bad_signatures.is_empty());
 }

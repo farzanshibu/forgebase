@@ -1,7 +1,8 @@
 //! The Azure Blob driver against a mock of Blob Storage, Microsoft Entra and
 //! IMDS (no network): SharedKey signatures (Microsoft's documented string to
 //! sign, recomputed independently on every request), SAS, client credentials,
-//! managed identity, block uploads, retries, paging and signed URLs.
+//! managed identity, block uploads, retries, paging and signed URLs, and the
+//! storage service's native signed downloads fetched from the mock.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 mod common;
@@ -13,10 +14,16 @@ use std::time::Duration;
 
 use common::{Env, admin, bytes_of, chunked, put, read_all};
 use forgebase_auth::net::{HttpsClient, TlsSettings};
-use forgebase_storage::azure::{SasParams, service_sas, shared_key_authorization, shared_key_string_to_sign};
+use forgebase_core::SignedUrlsMode;
+use forgebase_storage::azure::{
+    SasOverrides, SasParams, service_sas, service_sas_with, shared_key_authorization, shared_key_string_to_sign,
+};
 use forgebase_storage::cloud::{b64_decode, http_date};
 use forgebase_storage::driver::collect;
-use forgebase_storage::{AzureAuth, AzureConfig, AzureDriver, SasPermission, StorageDriver, StorageError, body_of};
+use forgebase_storage::{
+    AzureAuth, AzureConfig, AzureDriver, PresignGet, SasPermission, SignRequest, SignedMode, StorageDriver,
+    StorageError, body_of,
+};
 use support::azure_mock::{ACCOUNT, AzureMock, CONTAINER, KEY, Mode, SAS};
 use support::{chunks_of, conformance, pattern};
 
@@ -160,6 +167,31 @@ fn service_sas_matches_an_independent_computation() {
         "{w}"
     );
     assert!(service_sas(&key, &params("b", SasPermission::Delete, None, NOW, false)).contains("sp=d&"));
+    // The response overrides of a native download are signed (rscd, rsct). The
+    // string to sign and its HMAC were computed with Python from Microsoft's
+    // field order, which reproduces the vector above when both are empty.
+    let o = service_sas_with(
+        &key,
+        &params("fb/blobs/aa/x", SasPermission::Read, Some(NOW - 300), NOW + 900, false),
+        &SasOverrides {
+            content_disposition: Some("attachment; filename=\"x.txt\""),
+            content_type: Some("text/plain"),
+        },
+    );
+    assert_eq!(
+        o,
+        "sv=2021-08-06&sr=b&sp=r&st=2026-11-09T11%3A55%3A00Z&se=2026-11-09T12%3A15%3A00Z\
+         &rscd=attachment%3B%20filename%3D%22x.txt%22&rsct=text%2Fplain\
+         &sig=cJN7Y1A2nmU2TNwm8kH0GXoLa%2FVAFbXgwBrVq0Ci9rs%3D"
+    );
+    assert_eq!(
+        service_sas_with(
+            &key,
+            &params("fb/blobs/aa/x", SasPermission::Read, Some(NOW - 300), NOW + 900, false),
+            &SasOverrides::default()
+        ),
+        q
+    );
 }
 
 #[tokio::test]
@@ -532,4 +564,183 @@ fn credentials_are_picked_from_the_environment_in_a_fixed_order() {
         AzureAuth::ManagedIdentity { endpoint, identity_header: Some(h), .. }
             if endpoint == "http://127.0.0.1:42356/msi/token" && h == "h"
     ));
+}
+
+async fn fetch(url: &str) -> forgebase_auth::social::HttpResponse {
+    use forgebase_auth::social::HttpClient as _;
+    client()
+        .send(forgebase_auth::social::HttpRequest {
+            method: "GET",
+            url: url.to_owned(),
+            headers: Vec::new(),
+            body: Vec::new(),
+        })
+        .await
+        .unwrap()
+}
+
+fn sign_req(key: &str, expires_in: Option<u64>) -> SignRequest {
+    SignRequest {
+        key: key.into(),
+        method: None,
+        expires_in,
+        version_id: None,
+        download_as: None,
+        content_type: None,
+    }
+}
+
+#[tokio::test]
+async fn presigned_downloads_verify_and_are_scoped_to_one_blob() {
+    for path_style in [false, true] {
+        let mock = AzureMock::start(Mode::SharedKey, path_style, 0).await;
+        let d = shared_key(&mock, 64_000);
+        d.put("blobs/aa/one", body_of(b"first".to_vec())).await.unwrap();
+        d.put("blobs/bb/two", body_of(b"second".to_vec())).await.unwrap();
+        assert_eq!(
+            d.presign_support(),
+            Ok(u64::MAX),
+            "no provider limit; ForgeBase's applies"
+        );
+        let url = d
+            .presign_get(&PresignGet {
+                key: "blobs/aa/one",
+                now: NOW,
+                expires_secs: 900,
+                content_type: Some("text/plain"),
+                content_disposition: Some("attachment; filename=\"one.txt\""),
+            })
+            .unwrap();
+        assert!(
+            url.starts_with(&format!(
+                "{}/{CONTAINER}/fb/blobs/aa/one?sv=2021-08-06&sr=b&sp=r&",
+                mock.endpoint()
+            )),
+            "{url}"
+        );
+        assert!(url.contains("&se=2026-11-09T12%3A15%3A00Z&"));
+        let r = fetch(&url).await;
+        assert_eq!((r.status, r.body.as_slice()), (200, &b"first"[..]));
+        assert_eq!(r.header("content-type"), Some("text/plain"));
+        assert_eq!(
+            r.header("content-disposition"),
+            Some("attachment; filename=\"one.txt\"")
+        );
+        for forged in [
+            url.replace("fb/blobs/aa/one", "fb/blobs/bb/two"),
+            url.replace("se=2026-11-09T12%3A15", "se=2027-11-09T12%3A15"),
+            url.replace("rsct=text%2Fplain", "rsct=text%2Fhtml"),
+            url.replace("sp=r", "sp=rw"),
+        ] {
+            assert_eq!(fetch(&forged).await.status, 403, "{forged}");
+        }
+        assert_eq!(mock.st.lock().unwrap().refused.len(), 4);
+        assert!(mock.bad().is_empty(), "{:?}", mock.bad());
+    }
+}
+
+#[tokio::test]
+async fn native_signed_downloads_are_served_by_azure() {
+    let mock = AzureMock::start(Mode::SharedKey, true, 0).await;
+    let driver: Arc<dyn StorageDriver> = Arc::new(shared_key(&mock, 100_000));
+    let env = Env::with(|s| s.signed_urls = SignedUrlsMode::Native, Some(driver)).await;
+    env.bucket("n", false).await;
+    let page = b"<html><script>alert(1)</script></html>".to_vec();
+    let info = env
+        .storage
+        .put_object(
+            &admin(),
+            forgebase_storage::PutRequest {
+                content_type: Some("text/html".into()),
+                ..put("n", "site/index.html", &page)
+            },
+        )
+        .await
+        .unwrap();
+    let sha = info.checksum_sha256.unwrap();
+    let signed = env
+        .storage
+        .sign_url(&admin(), "n", sign_req("site/index.html", Some(600)))
+        .await
+        .unwrap();
+    assert_eq!(signed.mode, SignedMode::Native);
+    assert!(
+        signed.url.starts_with(&format!(
+            "{}/{CONTAINER}/fb/blobs/{}/{sha}?",
+            mock.endpoint(),
+            &sha[..2]
+        )),
+        "{}",
+        signed.url
+    );
+    let r = fetch(&signed.url).await;
+    assert_eq!((r.status, &r.body), (200, &page));
+    assert_eq!(r.header("content-type"), Some("text/html"));
+    // Active content is an attachment on the provider's origin too.
+    assert_eq!(
+        r.header("content-disposition"),
+        Some("attachment; filename=\"index.html\"")
+    );
+    assert!(mock.st.lock().unwrap().refused.is_empty());
+    assert!(mock.bad().is_empty(), "{:?}", mock.bad());
+}
+
+#[tokio::test]
+async fn without_the_account_key_auto_uses_the_proxy_and_native_is_refused() {
+    let mock = AzureMock::start(Mode::Sas, false, 0).await;
+    let sas = || -> Arc<dyn StorageDriver> {
+        Arc::new(AzureDriver::new(config(&mock, AzureAuth::Sas(SAS.into()), 64_000), client()).unwrap())
+    };
+    let env = Env::with(|s| s.signed_urls = SignedUrlsMode::Auto, Some(sas())).await;
+    env.bucket("b", false).await;
+    env.storage
+        .put_object(&admin(), put("b", "k", b"proxied"))
+        .await
+        .unwrap();
+    let signed = env.storage.sign_url(&admin(), "b", sign_req("k", None)).await.unwrap();
+    assert_eq!(signed.mode, SignedMode::Proxy);
+    let (s, _, body) = env
+        .req(
+            None,
+            axum::http::Method::GET,
+            &signed.url,
+            &[],
+            axum::body::Body::empty(),
+        )
+        .await;
+    assert_eq!((s.as_u16(), body.as_slice()), (200, &b"proxied"[..]));
+
+    let env = Env::with(|s| s.signed_urls = SignedUrlsMode::Native, Some(sas())).await;
+    env.bucket("b", false).await;
+    env.storage.put_object(&admin(), put("b", "k", b"x")).await.unwrap();
+    match env.storage.sign_url(&admin(), "b", sign_req("k", None)).await {
+        Err(StorageError::Conflict {
+            code: "native_signing_unavailable",
+            message,
+        }) => assert!(
+            message.contains("azure driver") && message.contains("account key"),
+            "{message}"
+        ),
+        other => panic!("{other:?}"),
+    }
+    // Entra identities and managed identities cannot sign either.
+    for auth in [
+        AzureAuth::AccessToken("t".into()),
+        AzureAuth::ClientSecret {
+            tenant: "t".into(),
+            client_id: "c".into(),
+            client_secret: "s".into(),
+            authority: mock.server.url(),
+        },
+        AzureAuth::ManagedIdentity {
+            endpoint: mock.server.url(),
+            identity_header: None,
+            client_id: None,
+        },
+    ] {
+        let d = AzureDriver::new(config(&mock, auth, 64_000), client()).unwrap();
+        let why = d.presign_support().unwrap_err();
+        assert!(why.contains("account key"), "{why}");
+    }
+    assert!(mock.bad().is_empty(), "{:?}", mock.bad());
 }

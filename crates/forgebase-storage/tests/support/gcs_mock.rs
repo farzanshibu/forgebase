@@ -1,7 +1,10 @@
 //! A mock of the Google Cloud Storage JSON API, the OAuth token endpoint and
 //! the GCE metadata server. It checks what the driver sends (bearer tokens,
 //! JWT assertions, Content-Range of resumable chunks) and records every
-//! protocol violation in `bad`.
+//! protocol violation in `bad`. It also serves path-style XML API downloads
+//! (`GET /<bucket>/<object>`) through V4 signed URLs, verifying the
+//! signature with the service account's public key from code written from
+//! Google's documentation, and honouring the signed `response-*` overrides.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
@@ -48,6 +51,8 @@ pub struct GcsState {
     pub require_auth: bool,
     rewrites: HashSet<String>,
     next_session: u32,
+    /// Signed-URL requests refused, and why.
+    pub refused: Vec<String>,
 }
 
 pub struct GcsMock {
@@ -184,6 +189,18 @@ fn handle(st: &Arc<Mutex<GcsState>>, base: &str, req: &Req) -> Resp {
     // Resumable upload sessions are pre-authorised by their URI.
     if let Some(sid) = req.path.strip_prefix("/session/") {
         return session(&mut s, sid, req);
+    }
+
+    // XML API downloads through V4 signed URLs: no bearer token.
+    if req.q("X-Goog-Signature").is_some() {
+        let host = base.trim_start_matches("http://");
+        return match verify_v4(req, host) {
+            Ok(()) => signed_get(&s, req),
+            Err(why) => {
+                s.refused.push(why.clone());
+                err(403, &why)
+            }
+        };
     }
 
     if s.require_auth {
@@ -432,4 +449,91 @@ fn session(s: &mut GcsState, sid: &str, req: &Req) -> Resp {
             Resp::json(200, &meta(&name, &data))
         }
     }
+}
+
+/// RFC 3986 encoding (unreserved characters kept), as V4 signing wants it.
+fn uri_encode(s: &str, keep_slash: bool) -> String {
+    s.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => char::from(b).to_string(),
+            b'/' if keep_slash => "/".to_owned(),
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
+}
+
+/// Checks a V4 signed request as Google documents it ("Signature V4 signing
+/// process"): canonical request of the method, the path, every query
+/// parameter but `X-Goog-Signature` (encoded, sorted), the `host` header and
+/// `UNSIGNED-PAYLOAD`; RSA-SHA256 over the string to sign, verified with the
+/// public key of the test service account.
+fn verify_v4(req: &Req, host: &str) -> Result<(), String> {
+    let sa: Json = serde_json::from_str(SA_JSON).unwrap();
+    let email = sa["client_email"].as_str().unwrap();
+    if req.q("X-Goog-Algorithm").as_deref() != Some("GOOG4-RSA-SHA256") {
+        return Err("algorithm".into());
+    }
+    if req.q("X-Goog-SignedHeaders").as_deref() != Some("host") {
+        return Err("signed headers".into());
+    }
+    let expires: u64 = req.q("X-Goog-Expires").and_then(|e| e.parse().ok()).ok_or("expires")?;
+    if !(1..=604_800).contains(&expires) {
+        return Err("X-Goog-Expires out of range".into());
+    }
+    let credential = req.q("X-Goog-Credential").unwrap_or_default();
+    let Some(scope) = credential.strip_prefix(&format!("{email}/")) else {
+        return Err(format!("credential {credential}"));
+    };
+    let date = req.q("X-Goog-Date").unwrap_or_default();
+    if !scope.ends_with("/auto/storage/goog4_request") || !date.starts_with(&scope[..8]) {
+        return Err(format!("scope {scope}"));
+    }
+    let mut pairs: Vec<(String, String)> = req
+        .query
+        .iter()
+        .filter(|(k, _)| k != "X-Goog-Signature")
+        .map(|(k, v)| (uri_encode(k, false), uri_encode(v, false)))
+        .collect();
+    pairs.sort();
+    let query = pairs
+        .iter()
+        .map(|(k, v)| format!("{k}={v}"))
+        .collect::<Vec<_>>()
+        .join("&");
+    let canonical = format!(
+        "{}\n{}\n{query}\nhost:{host}\n\nhost\nUNSIGNED-PAYLOAD",
+        req.method,
+        uri_encode(&req.path, true)
+    );
+    let to_sign = format!(
+        "GOOG4-RSA-SHA256\n{date}\n{scope}\n{}",
+        forgebase_storage::util::sha256_hex(canonical.as_bytes())
+    );
+    let sig = forgebase_storage::util::unhex(&req.q("X-Goog-Signature").unwrap_or_default()).ok_or("signature hex")?;
+    signature::UnparsedPublicKey::new(&signature::RSA_PKCS1_2048_8192_SHA256, public_key())
+        .verify(to_sign.as_bytes(), &sig)
+        .map_err(|_| "SignatureDoesNotMatch".to_owned())
+}
+
+/// `GET /<bucket>/<object>` of the XML API, with the signed overrides.
+fn signed_get(s: &GcsState, req: &Req) -> Resp {
+    if req.method != "GET" {
+        return err(405, "signed GETs only");
+    }
+    let Some(name) = req.path.strip_prefix(&format!("/{BUCKET}/")) else {
+        return err(404, "No such bucket");
+    };
+    let Some(data) = s.objects.get(name) else {
+        return err(404, "No such object");
+    };
+    let mut r = Resp::new(200).body(data.clone());
+    for (param, header) in [
+        ("response-content-type", "Content-Type"),
+        ("response-content-disposition", "Content-Disposition"),
+    ] {
+        if let Some(v) = req.q(param) {
+            r = r.header(header, v);
+        }
+    }
+    r
 }

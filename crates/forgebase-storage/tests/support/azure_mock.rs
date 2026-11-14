@@ -1,7 +1,8 @@
 //! A mock of Azure Blob Storage, Microsoft Entra's token endpoint and IMDS.
 //! `SharedKey` signatures are recomputed from what arrived, with code written
 //! from Microsoft's documentation (not the driver's); protocol violations are
-//! recorded in `bad`.
+//! recorded in `bad`. Downloads through a service SAS (`sr=b`) are verified
+//! the same way and honour the signed `rsct` / `rscd` overrides.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
@@ -52,6 +53,8 @@ pub struct AzState {
     pub expect_date: Option<String>,
     pub token_requests: Vec<String>,
     pub deleted_with: Vec<String>,
+    /// Service-SAS downloads refused, and why.
+    pub refused: Vec<String>,
 }
 
 pub struct AzureMock {
@@ -143,6 +146,7 @@ impl AzureMock {
             expect_date: None,
             token_requests: Vec::new(),
             deleted_with: Vec::new(),
+            refused: Vec::new(),
         }));
         let state = st.clone();
         let server = Server::start(Arc::new(move |req: &Req| handle(&state, req))).await;
@@ -211,6 +215,29 @@ fn handle(st: &Arc<Mutex<AzState>>, req: &Req) -> Resp {
         s.token_requests
             .push(format!("imds {}", req.q("client_id").unwrap_or_default()));
         return issue(&mut s);
+    }
+
+    // Downloads through a service SAS: no Authorization header, no x-ms-*.
+    if req.method == "GET" && req.q("sr").as_deref() == Some("b") && req.h("authorization").is_none() {
+        let path_style = s.path_style;
+        return match verify_service_sas(req, path_style) {
+            Ok(name) => match s.blobs.get(&name) {
+                Some(data) => {
+                    let mut r = Resp::new(200).body(data.clone());
+                    for (param, header) in [("rsct", "Content-Type"), ("rscd", "Content-Disposition")] {
+                        if let Some(v) = req.q(param) {
+                            r = r.header(header, v);
+                        }
+                    }
+                    r
+                }
+                None => xml_err(404, "BlobNotFound"),
+            },
+            Err(why) => {
+                s.refused.push(why);
+                xml_err(403, "AuthenticationFailed")
+            }
+        };
     }
 
     if req.h("x-ms-version").is_none() {
@@ -439,5 +466,56 @@ fn blob(s: &mut AzState, req: &Req, name: &str) -> Resp {
             }
         }
         _ => xml_err(400, "unsupported"),
+    }
+}
+
+/// Checks a service SAS for a blob as Microsoft documents it ("Create a
+/// service SAS", version 2020-12-06 and later): HMAC-SHA256 with the account
+/// key over sp, st, se, the canonical resource `/blob/<account>/<container>/<blob>`,
+/// si, sip, spr, sv, sr, the snapshot time, ses, rscc, rscd, rsce, rscl and
+/// rsct, one per line. Returns the blob name.
+fn verify_service_sas(req: &Req, path_style: bool) -> Result<String, String> {
+    let q = |n: &str| req.q(n).unwrap_or_default();
+    let mut path = req.path.clone();
+    if path_style {
+        path = path.strip_prefix(&format!("/{ACCOUNT}")).ok_or("account")?.to_owned();
+    }
+    let blob = path
+        .strip_prefix(&format!("/{CONTAINER}/"))
+        .ok_or("container")?
+        .to_owned();
+    if q("sv") != "2021-08-06" || !q("sp").contains('r') {
+        return Err(format!("sv {} sp {}", q("sv"), q("sp")));
+    }
+    if q("se").is_empty() || (!q("st").is_empty() && q("st") >= q("se")) {
+        return Err("validity".into());
+    }
+    let to_sign = [
+        q("sp"),
+        q("st"),
+        q("se"),
+        format!("/blob/{ACCOUNT}/{CONTAINER}/{blob}"),
+        q("si"),
+        q("sip"),
+        q("spr"),
+        q("sv"),
+        q("sr"),
+        q("snapshot"),
+        q("ses"),
+        q("rscc"),
+        q("rscd"),
+        q("rsce"),
+        q("rscl"),
+        q("rsct"),
+    ]
+    .join("\n");
+    let key = base64::engine::general_purpose::STANDARD.decode(KEY).unwrap();
+    let mut m = <Hmac<Sha256> as KeyInit>::new_from_slice(&key).unwrap();
+    m.update(to_sign.as_bytes());
+    let want = base64::engine::general_purpose::STANDARD.encode(m.finalize().into_bytes());
+    if q("sig") == want {
+        Ok(blob)
+    } else {
+        Err("signature".into())
     }
 }
