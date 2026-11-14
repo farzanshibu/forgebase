@@ -1974,6 +1974,8 @@ async fn open_storage(
         max_object_bytes: sc.max_object_bytes,
         upload_ttl_secs: sc.upload_ttl_secs,
         reconcile_grace_secs: sc.reconcile_grace_secs,
+        signed_urls: sc.signed_urls,
+        signed_urls_buckets: sc.signed_urls_buckets.clone(),
         ..StorageSettings::default()
     };
     // The URL signing key is sealed with the data directory's master key

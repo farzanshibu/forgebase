@@ -761,6 +761,24 @@ pub enum StorageDriverKind {
     Azure,
 }
 
+/// How the REST API's signed download URLs are served, `[storage]
+/// signed_urls` (ADR-0040 addendum).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SignedUrlsMode {
+    /// ForgeBase's own HMAC URLs; every byte passes through the server (the
+    /// default, and the only mode for uploads).
+    #[default]
+    Proxy,
+    /// The storage provider's signed URL (S3 SigV4, GCS V4, Azure service
+    /// SAS); issuing one fails when the driver or its credentials cannot sign.
+    Native,
+    /// Native when the driver and its credentials can sign, proxy otherwise.
+    Auto,
+}
+
+config_choice!(SignedUrlsMode { Proxy => "proxy", Native => "native", Auto => "auto" });
+
 /// Object storage settings (FB-30, ADR-0018). The S3 credentials are not
 /// part of the configuration: set `FORGEBASE_STORAGE_S3_ACCESS_KEY` and
 /// `FORGEBASE_STORAGE_S3_SECRET_KEY` (and optionally
@@ -805,6 +823,13 @@ pub struct StorageConfig {
     /// Azure account URL; empty means `https://<account>.blob.core.windows.net`
     /// (Azurite: `http://127.0.0.1:10000/devstoreaccount1`).
     pub azure_endpoint: String,
+    /// How signed download URLs are served: `proxy` (default), `native` or
+    /// `auto` (ADR-0040 addendum). Uploads always use the proxy.
+    pub signed_urls: SignedUrlsMode,
+    /// Per-bucket overrides of `signed_urls`, `[storage.signed_urls_buckets]`:
+    /// a bucket name (every tenant's bucket of that name) or
+    /// `<tenant>/<name>` (one tenant's bucket) → mode.
+    pub signed_urls_buckets: std::collections::BTreeMap<String, SignedUrlsMode>,
 }
 
 /// Settings of the optional RESP (Redis protocol) listener (FB-32, ADR-0013).
@@ -927,6 +952,8 @@ impl Config {
                 azure_container: String::new(),
                 azure_prefix: String::new(),
                 azure_endpoint: String::new(),
+                signed_urls: SignedUrlsMode::Proxy,
+                signed_urls_buckets: std::collections::BTreeMap::new(),
             },
             queue: QueueConfig {
                 enabled: true,
@@ -1138,6 +1165,17 @@ impl Config {
                 format!(
                     "must be at least 1024 bytes (S3 itself needs 5242880, 5 MiB), such as {}",
                     d.storage.s3_part_size
+                ),
+            );
+        }
+        if let Some(bad) = self.storage.signed_urls_buckets.keys().find(|k| {
+            let parts: Vec<&str> = k.split('/').collect();
+            parts.len() > 2 || parts.iter().any(|p| p.trim().is_empty() || *p != p.trim())
+        }) {
+            invalid(
+                "storage.signed_urls_buckets",
+                format!(
+                    "must name buckets as <name> or <tenant>/<name>, such as avatars = \"native\" ({bad:?} is not one)"
                 ),
             );
         }
@@ -1400,6 +1438,12 @@ impl Config {
             }
             if let Some(v) = &st.azure_endpoint {
                 self.storage.azure_endpoint.clone_from(v);
+            }
+            if let Some(v) = st.signed_urls {
+                self.storage.signed_urls = v;
+            }
+            if let Some(v) = &st.signed_urls_buckets {
+                self.storage.signed_urls_buckets.clone_from(v);
             }
         }
         if let Some(q) = &o.queue {
@@ -1715,6 +1759,10 @@ impl ConfigOverrides {
                     o.storage.get_or_insert_with(StorageOverrides::default).enabled =
                         Some(parse_bool(&value).map_err(bad)?);
                 }
+                "STORAGE_SIGNED_URLS" => {
+                    o.storage.get_or_insert_with(StorageOverrides::default).signed_urls =
+                        Some(value.parse().map_err(bad)?);
+                }
                 "QUEUE_ENABLED" => {
                     o.queue.get_or_insert_with(QueueOverrides::default).enabled =
                         Some(parse_bool(&value).map_err(bad)?);
@@ -1850,6 +1898,8 @@ impl ConfigOverrides {
             put(st.azure_container.is_some(), "storage.azure_container");
             put(st.azure_prefix.is_some(), "storage.azure_prefix");
             put(st.azure_endpoint.is_some(), "storage.azure_endpoint");
+            put(st.signed_urls.is_some(), "storage.signed_urls");
+            put(st.signed_urls_buckets.is_some(), "storage.signed_urls_buckets");
         }
         if let Some(q) = &self.queue {
             put(q.enabled.is_some(), "queue.enabled");
@@ -2263,6 +2313,10 @@ pub struct StorageOverrides {
     pub azure_prefix: Option<String>,
     /// Azure account URL.
     pub azure_endpoint: Option<String>,
+    /// `proxy`, `native` or `auto` signed download URLs.
+    pub signed_urls: Option<SignedUrlsMode>,
+    /// `[storage.signed_urls_buckets]`: per-bucket `signed_urls`.
+    pub signed_urls_buckets: Option<std::collections::BTreeMap<String, SignedUrlsMode>>,
 }
 
 /// `[queue]` settings from a config file.

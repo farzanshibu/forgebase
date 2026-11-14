@@ -584,6 +584,21 @@ const STORAGE: &[SettingDef] = &[
     )
     .unit("seconds"),
     SettingDef::new(
+        "storage.signed_urls",
+        "Signed download links",
+        Enum,
+        "How signed download links are served. proxy (the default): ForgeBase streams every byte itself and counts it. native: the link points straight at S3, Google Cloud Storage or Azure, signed with the driver's credentials, so downloads skip the server and are not counted by ForgeBase; links cannot be revoked by rotating ForgeBase's signing key; creating one fails if the driver cannot sign (local driver, GCS without a service-account key, Azure without the account key). auto: native when the driver can sign, proxy otherwise. Signed uploads always go through ForgeBase.",
+    )
+    .options(&["proxy", "native", "auto"])
+    .env("FORGEBASE_STORAGE_SIGNED_URLS"),
+    SettingDef::new(
+        "storage.signed_urls_buckets",
+        "Signed links per bucket",
+        Map,
+        "Optional: a different signed-link mode for some buckets, such as avatars = \"native\" or \"acme/invoices\" = \"proxy\" (a bucket name applies to that bucket in every tenant; tenant/name to one tenant's bucket). Edit it in the [storage.signed_urls_buckets] table of forgebase.toml.",
+    )
+    .read_only(),
+    SettingDef::new(
         "storage.s3_endpoint",
         "S3 endpoint",
         Url,

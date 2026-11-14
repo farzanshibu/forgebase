@@ -36,7 +36,7 @@ pub mod uploads;
 pub mod util;
 
 pub use azure::{AzureAuth, AzureConfig, AzureDriver, SasPermission};
-pub use driver::{ByteStream, DriverObject, StorageDriver};
+pub use driver::{ByteStream, DriverObject, PresignGet, StorageDriver};
 pub use error::{Result, StorageError};
 pub use gcs::{GcsAuth, GcsConfig, GcsDriver, ServiceAccount};
 pub use http::{extension, openapi, router};

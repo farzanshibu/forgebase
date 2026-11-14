@@ -16,7 +16,9 @@
 //! * Azurite and other emulators: give the account URL as the endpoint
 //!   (`http://127.0.0.1:10000/devstoreaccount1`).
 //! * [`AzureDriver::signed_url`] makes service SAS URLs with the account key.
-//!   User-delegation SAS (Entra identities) is not implemented.
+//!   User-delegation SAS (Entra identities) is not implemented. The REST API
+//!   offloads signed downloads to them (with `rsct` / `rscd`) under
+//!   `[storage] signed_urls = "native"` or `"auto"` (ADR-0040 addendum).
 //!
 //! ForgeBase keeps its own versions, deduplication and signed URLs above the
 //! driver (ADR-0018), so the driver stores plain block blobs.
@@ -34,7 +36,7 @@ use crate::cloud::{
     Clock, RetryPolicy, Token, TokenCache, b64, b64_decode, clean_prefix, error_summary, http_date, iso_z, join_key,
     parse_http_date_ms, parse_token, system_clock, with_retry, xml_blocks, xml_escape, xml_tag,
 };
-use crate::driver::{BoxFuture, ByteStream, DriverObject, StorageDriver};
+use crate::driver::{BoxFuture, ByteStream, DriverObject, PresignGet, StorageDriver};
 use crate::error::{Result, StorageError};
 use crate::sigv4::encode;
 
@@ -333,17 +335,34 @@ pub struct SasParams<'a> {
     pub https_only: bool,
 }
 
+/// Response headers a service SAS makes the blob service answer with.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SasOverrides<'a> {
+    /// `rscd`: `Content-Disposition`.
+    pub content_disposition: Option<&'a str>,
+    /// `rsct`: `Content-Type`.
+    pub content_type: Option<&'a str>,
+}
+
 /// The query string of a service SAS for one blob (version 2021-08-06
 /// string-to-sign), signed with the account key.
 pub fn service_sas(key: &[u8], p: &SasParams<'_>) -> String {
+    service_sas_with(key, p, &SasOverrides::default())
+}
+
+/// [`service_sas`] with response header overrides (`rscd`, `rsct`), which are
+/// signed: a holder cannot change them.
+pub fn service_sas_with(key: &[u8], p: &SasParams<'_>, o: &SasOverrides<'_>) -> String {
     let sp = p.permission.letters();
     let st = p.start.map(iso_z).unwrap_or_default();
     let se = iso_z(p.expiry);
     let spr = if p.https_only { "https" } else { "" };
     let resource = format!("/blob/{}/{}/{}", p.account, p.container, p.blob);
+    let rscd = o.content_disposition.unwrap_or_default();
+    let rsct = o.content_type.unwrap_or_default();
     // sp, st, se, canonicalized resource, si, sip, spr, sv, sr, snapshot time,
     // encryption scope, rscc, rscd, rsce, rscl, rsct.
-    let to_sign = format!("{sp}\n{st}\n{se}\n{resource}\n\n\n{spr}\n{AZURE_API_VERSION}\nb\n\n\n\n\n\n\n");
+    let to_sign = format!("{sp}\n{st}\n{se}\n{resource}\n\n\n{spr}\n{AZURE_API_VERSION}\nb\n\n\n\n{rscd}\n\n\n{rsct}");
     let sig = b64(&hmac(key, to_sign.as_bytes()));
     let mut q = vec![
         ("sv", AZURE_API_VERSION.to_owned()),
@@ -356,6 +375,12 @@ pub fn service_sas(key: &[u8], p: &SasParams<'_>) -> String {
     q.push(("se", se));
     if p.https_only {
         q.push(("spr", "https".to_owned()));
+    }
+    if let Some(v) = o.content_disposition {
+        q.push(("rscd", v.to_owned()));
+    }
+    if let Some(v) = o.content_type {
+        q.push(("rsct", v.to_owned()));
     }
     q.push(("sig", sig));
     q.iter()
@@ -775,6 +800,19 @@ impl AzureDriver {
     /// the account key: SAS tokens and Entra identities cannot sign (a
     /// user-delegation SAS is not implemented).
     pub fn signed_url(&self, permission: SasPermission, key: &str, expires_secs: u64) -> Result<String> {
+        self.signed_url_with(permission, key, self.now(), expires_secs, &SasOverrides::default())
+    }
+
+    /// [`AzureDriver::signed_url`] signed at `now` (epoch seconds), with
+    /// response header overrides.
+    pub fn signed_url_with(
+        &self,
+        permission: SasPermission,
+        key: &str,
+        now: i64,
+        expires_secs: u64,
+        overrides: &SasOverrides<'_>,
+    ) -> Result<String> {
         let AzureAuth::SharedKey(account_key) = &self.inner.cfg.auth else {
             return Err(StorageError::invalid(
                 "azure_signing_unavailable",
@@ -784,10 +822,9 @@ impl AzureDriver {
         if expires_secs == 0 {
             return Err(StorageError::invalid("invalid_expiry", "the expiry must be positive"));
         }
-        let now = self.now();
         let secs = i64::try_from(expires_secs).unwrap_or(i64::MAX / 4);
         let blob = self.blob_name(key);
-        let sas = service_sas(
+        let sas = service_sas_with(
             account_key,
             &SasParams {
                 account: &self.inner.cfg.account,
@@ -798,6 +835,7 @@ impl AzureDriver {
                 expiry: now.saturating_add(secs),
                 https_only: self.inner.origin.starts_with("https://"),
             },
+            overrides,
         );
         let path = encode(&format!("{}{}", self.inner.base_path, self.blob_path(key)), true);
         Ok(format!("{}{path}?{sas}", self.inner.origin))
@@ -984,6 +1022,32 @@ impl StorageDriver for AzureDriver {
             out.sort_by(|a, b| a.key.cmp(&b.key));
             Ok(out)
         })
+    }
+
+    fn presign_support(&self) -> std::result::Result<u64, String> {
+        match &self.inner.cfg.auth {
+            // A service SAS has no provider limit; ForgeBase's own maximum applies.
+            AzureAuth::SharedKey(_) => Ok(u64::MAX),
+            AzureAuth::Sas(_) => {
+                Err("Azure signed URLs need the storage account key: a SAS token cannot sign new ones".into())
+            }
+            _ => Err(
+                "Azure signed URLs need the storage account key: Microsoft Entra identities would need a user-delegation SAS, which is not implemented".into(),
+            ),
+        }
+    }
+
+    fn presign_get(&self, req: &PresignGet<'_>) -> Result<String> {
+        self.signed_url_with(
+            SasPermission::Read,
+            req.key,
+            req.now,
+            req.expires_secs,
+            &SasOverrides {
+                content_disposition: req.content_disposition,
+                content_type: req.content_type,
+            },
+        )
     }
 
     fn ping(&self) -> BoxFuture<'_, Result<()>> {

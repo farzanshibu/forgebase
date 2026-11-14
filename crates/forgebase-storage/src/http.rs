@@ -33,8 +33,8 @@ use crate::driver::ByteStream;
 use crate::error::StorageError;
 use crate::model::{
     Acl, AclEntry, Bucket, BucketInput, BucketPatch, BucketUsage, CompleteInput, CompletePart, DeleteResult,
-    ObjectInfo, ObjectPage, PartInfo, Permission, ReconcileReport, SignRequest, SignedMethod, SignedUrl, StorageStats,
-    Upload, UploadInput, Visibility,
+    ObjectInfo, ObjectPage, PartInfo, Permission, ReconcileReport, SignRequest, SignedMethod, SignedMode, SignedUrl,
+    StorageStats, Upload, UploadInput, Visibility,
 };
 use crate::objects::{PutRequest, RangeSpec};
 use crate::service::StorageService;
@@ -139,7 +139,7 @@ fn parse_range(h: &HeaderMap) -> Result<Option<RangeSpec>, ApiError> {
     }))
 }
 
-fn disposition(name: &str) -> String {
+pub(crate) fn disposition(name: &str) -> String {
     let safe: String = name
         .chars()
         .map(|c| {
@@ -153,7 +153,7 @@ fn disposition(name: &str) -> String {
     format!("attachment; filename=\"{safe}\"")
 }
 
-fn is_active(content_type: &str) -> bool {
+pub(crate) fn is_active(content_type: &str) -> bool {
     let ct = content_type.split(';').next().unwrap_or("").trim().to_ascii_lowercase();
     matches!(
         ct.as_str(),
@@ -289,7 +289,7 @@ pub fn openapi() -> utoipa::openapi::OpenApi {
     ),
     components(schemas(
         Bucket, BucketInput, BucketPatch, Visibility, Permission, Acl, AclEntry, ObjectInfo, ObjectPage, DeleteResult,
-        Upload, UploadInput, PartInfo, CompleteInput, CompletePart, SignRequest, SignedUrl, SignedMethod,
+        Upload, UploadInput, PartInfo, CompleteInput, CompletePart, SignRequest, SignedUrl, SignedMethod, SignedMode,
         ReconcileReport, StorageStats, BucketUsage, CopyBody, RestoreBody, ItemsBuckets, ItemsObjects,
     )),
     tags((name = "storage", description = "Buckets, objects, uploads, signed URLs, quotas and maintenance")),
@@ -639,9 +639,12 @@ async fn restore_version(
     )
 }
 
-/// Makes a signed URL.
+/// Makes a signed URL. `mode` says who serves it: `proxy` (ForgeBase, a
+/// relative URL) or `native` (the storage provider, an absolute URL; downloads
+/// only, under `[storage] signed_urls = "native" | "auto"`).
 #[utoipa::path(post, path = "/api/v1/storage/buckets/{bucket}/sign", tag = "storage", request_body = SignRequest,
-    responses((status = 200, body = SignedUrl)))]
+    responses((status = 200, body = SignedUrl),
+              (status = 409, description = "`native_signing_unavailable`: native mode, but the driver or its credentials cannot sign")))]
 async fn sign(
     State(s): State<StorageService>,
     Access(ctx): Access,

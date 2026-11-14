@@ -10,6 +10,12 @@
 //!
 //! Path-style addressing (`<endpoint>/<bucket>/<key>`) is used; every
 //! S3-compatible service accepts it.
+//!
+//! [`S3Driver::signed_url`] and [`presigned_url`] make SigV4 *pre-signed*
+//! URLs (query-string authentication, `UNSIGNED-PAYLOAD`, the `host` header
+//! signed) for `GET` and `PUT`, at most seven days; the REST API offloads
+//! signed downloads to them with `[storage] signed_urls = "native"` or
+//! `"auto"` (ADR-0040 addendum).
 
 use std::sync::Arc;
 
@@ -17,10 +23,16 @@ use axum::body::Bytes;
 use forgebase_auth::social::{HttpClient, HttpRequest, HttpResponse};
 use futures_util::StreamExt;
 
-use crate::driver::{BoxFuture, ByteStream, DriverObject, StorageDriver};
+use hmac::{Hmac, KeyInit, Mac};
+use sha2::Sha256;
+
+use crate::driver::{BoxFuture, ByteStream, DriverObject, PresignGet, StorageDriver};
 use crate::error::{Result, StorageError};
-use crate::sigv4::{Credentials, SignInput, encode, sign};
-use crate::util::sha256_hex;
+use crate::sigv4::{Credentials, SignInput, encode, sign, stamps};
+use crate::util::{hex, sha256_hex};
+
+/// S3 refuses SigV4 pre-signed URLs valid for more than seven days.
+pub const MAX_PRESIGNED_SECS: u64 = 604_800;
 
 /// Settings of an S3-compatible store.
 #[derive(Clone)]
@@ -106,6 +118,84 @@ impl std::fmt::Debug for S3Driver {
 
 struct Query(Vec<(String, String)>);
 
+/// What a SigV4 pre-signed URL is made for.
+#[derive(Debug, Clone, Copy)]
+pub struct PresignInput<'a> {
+    /// HTTP method the URL allows (`GET`, `PUT`).
+    pub method: &'a str,
+    /// `http` or `https`.
+    pub scheme: &'a str,
+    /// Host (with `:port` when not the default); signed as the `host` header.
+    pub host: &'a str,
+    /// Absolute path, not yet encoded (`/<bucket>/<key>`).
+    pub path: &'a str,
+    /// Further query parameters, not yet encoded, signed with the rest
+    /// (`response-content-type`, `response-content-disposition`).
+    pub query: &'a [(String, String)],
+    /// Validity in seconds.
+    pub expires_secs: u64,
+    /// Signing time, epoch seconds.
+    pub now: i64,
+}
+
+fn hmac_sha256(key: &[u8], data: &[u8]) -> Vec<u8> {
+    #[allow(clippy::expect_used)]
+    let mut m = <Hmac<Sha256> as KeyInit>::new_from_slice(key).expect("HMAC accepts any key length");
+    m.update(data);
+    m.finalize().into_bytes().to_vec()
+}
+
+/// A SigV4 pre-signed URL: AWS's *Authenticating Requests: Using Query
+/// Parameters*. The `X-Amz-*` parameters (and `X-Amz-Security-Token` for
+/// temporary credentials) join `query` in the canonical query string, the
+/// only signed header is `host`, the payload is `UNSIGNED-PAYLOAD`, and
+/// `X-Amz-Signature` is appended last. The encoding, dates and credential
+/// scope are those of the header signer ([`crate::sigv4`], shared with
+/// `forgebase_auth::sigv4`).
+pub fn presigned_url(c: &Credentials, p: &PresignInput<'_>) -> String {
+    let (date, stamp) = stamps(p.now);
+    let scope = format!("{date}/{}/{}/aws4_request", c.region, c.service);
+    let mut query: Vec<(String, String)> = vec![
+        ("X-Amz-Algorithm".into(), "AWS4-HMAC-SHA256".into()),
+        ("X-Amz-Credential".into(), format!("{}/{scope}", c.access_key)),
+        ("X-Amz-Date".into(), stamp.clone()),
+        ("X-Amz-Expires".into(), p.expires_secs.to_string()),
+        ("X-Amz-SignedHeaders".into(), "host".into()),
+    ];
+    if let Some(t) = &c.session_token {
+        query.push(("X-Amz-Security-Token".into(), t.clone()));
+    }
+    query.extend(p.query.iter().cloned());
+    let mut encoded: Vec<(String, String)> = query
+        .iter()
+        .map(|(k, v)| (encode(k, false), encode(v, false)))
+        .collect();
+    encoded.sort();
+    let canonical_query = encoded
+        .iter()
+        .map(|(k, v)| format!("{k}={v}"))
+        .collect::<Vec<_>>()
+        .join("&");
+    let path = encode(p.path, true);
+    let canonical = format!(
+        "{}\n{path}\n{canonical_query}\nhost:{}\n\nhost\nUNSIGNED-PAYLOAD",
+        p.method, p.host
+    );
+    let to_sign = format!(
+        "AWS4-HMAC-SHA256\n{stamp}\n{scope}\n{}",
+        sha256_hex(canonical.as_bytes())
+    );
+    let k_date = hmac_sha256(format!("AWS4{}", c.secret_key).as_bytes(), date.as_bytes());
+    let k_region = hmac_sha256(&k_date, c.region.as_bytes());
+    let k_service = hmac_sha256(&k_region, c.service.as_bytes());
+    let k_signing = hmac_sha256(&k_service, b"aws4_request");
+    let signature = hex(&hmac_sha256(&k_signing, to_sign.as_bytes()));
+    format!(
+        "{}://{}{path}?{canonical_query}&X-Amz-Signature={signature}",
+        p.scheme, p.host
+    )
+}
+
 impl S3Driver {
     /// A driver talking to `cfg.endpoint` through `client`.
     pub fn new(cfg: S3Config, client: Arc<dyn HttpClient>) -> Result<Self> {
@@ -178,6 +268,47 @@ impl S3Driver {
             p.push_str(key);
         }
         p
+    }
+
+    /// A SigV4 pre-signed URL for `method` (`GET`, `PUT`) on `key`, valid
+    /// for `expires_secs` (1 second to 7 days) from the driver's clock.
+    /// Path-style, like every request of the driver. With temporary
+    /// credentials the URL also stops working when the session token
+    /// expires.
+    pub fn signed_url(&self, method: &str, key: &str, expires_secs: u64) -> Result<String> {
+        self.presigned(method, key, (self.inner.clock)(), expires_secs, &[])
+    }
+
+    fn presigned(
+        &self,
+        method: &str,
+        key: &str,
+        now: i64,
+        expires_secs: u64,
+        query: &[(String, String)],
+    ) -> Result<String> {
+        if let Err(why) = self.presign_support() {
+            return Err(StorageError::invalid("s3_signing_unavailable", why));
+        }
+        if !(1..=MAX_PRESIGNED_SECS).contains(&expires_secs) {
+            return Err(StorageError::invalid(
+                "invalid_expiry",
+                "S3 pre-signed URLs are valid for 1 second to 7 days",
+            ));
+        }
+        let i = &self.inner;
+        Ok(presigned_url(
+            &i.creds,
+            &PresignInput {
+                method,
+                scheme: &i.scheme,
+                host: &i.host,
+                path: &self.object_path(key),
+                query,
+                expires_secs,
+                now,
+            },
+        ))
     }
 
     fn bucket_key_path(&self, key: &str) -> String {
@@ -566,5 +697,24 @@ impl StorageDriver for S3Driver {
                 .await?;
             Self::check(r, "ListObjectsV2").map(|_| ())
         })
+    }
+
+    fn presign_support(&self) -> std::result::Result<u64, String> {
+        let c = &self.inner.creds;
+        if c.access_key.trim().is_empty() || c.secret_key.is_empty() {
+            return Err("S3 pre-signed URLs need an access key and a secret key".into());
+        }
+        Ok(MAX_PRESIGNED_SECS)
+    }
+
+    fn presign_get(&self, req: &PresignGet<'_>) -> Result<String> {
+        let mut query = Vec::new();
+        if let Some(ct) = req.content_type {
+            query.push(("response-content-type".to_owned(), ct.to_owned()));
+        }
+        if let Some(cd) = req.content_disposition {
+            query.push(("response-content-disposition".to_owned(), cd.to_owned()));
+        }
+        self.presigned("GET", req.key, req.now, req.expires_secs, &query)
     }
 }
