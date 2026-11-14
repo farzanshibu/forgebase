@@ -30,6 +30,8 @@ export type PruneResult = Schemas["PruneResult"];
 export type DbLogin = Schemas["DbLogin"];
 export type DbLoginSecret = Schemas["LoginSecret"];
 export type ExtensionInfo = Schemas["ExtensionInfo"];
+export type Capabilities = Schemas["Capabilities"];
+export type Capability = Schemas["Capability"];
 
 export interface AddNodeInput {
   /** `local` clones a replica on this host (an operation); `external` registers one that already runs (`url`). */
@@ -367,6 +369,14 @@ export class SystemApi {
   /** Name, version, data directory, uptime and database summary. */
   info(): Promise<Record<string, unknown>> {
     return this.t.request("/api/system/info");
+  }
+
+  /**
+   * Every feature of the server with the engine it runs on (a PostgreSQL extension or the portable implementation), whether it
+   * is `active`, `portable`, `off`, `native` or `unavailable`, its configured mode, the reason and its limits (ADR-0034).
+   */
+  capabilities(): Promise<Capabilities> {
+    return this.t.request("/api/system/capabilities");
   }
 
   /** Every module, whether it is on, and its typed settings (secrets have `value: null`). */

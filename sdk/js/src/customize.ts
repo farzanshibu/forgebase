@@ -22,6 +22,35 @@ export type Agreement = Schemas["Agreement"];
 export type AgreementRef = Schemas["AgreementRef"];
 export type AgreementAcceptance = Schemas["Acceptance"];
 export type AcceptItem = Schemas["AcceptItem"];
+export type TestMailResult = Schemas["TestMailResult"];
+
+/** Transports the mail provider can be set to (`log` writes mail to the server log and sends nothing). */
+export type MailProviderKind = "resend" | "postmark" | "sendgrid" | "mailgun" | "ses" | "smtp" | "log";
+
+/** The mail provider of a realm as the server returns it: secrets are masked (`********`). */
+export interface MailProviderState {
+  /** The realm (`*`: the instance). */
+  realm: string;
+  /** `false`: the realm uses the instance's provider, which falls back to the log provider. */
+  configured: boolean;
+  /** The settings: `provider`, `from_address` and the provider's own fields. */
+  config?: Record<string, unknown>;
+  /** Epoch milliseconds. */
+  created_at?: number;
+  updated_at?: number;
+}
+
+/** Settings of `email.putProvider`. */
+export interface MailProviderConfig {
+  provider: MailProviderKind | (string & {});
+  /** Sender address. */
+  fromAddress?: string;
+  /**
+   * Provider fields (`api_key`, `server_token`, `region`, `host`, `port`, ...), sent as is. Secrets are sealed at rest;
+   * leaving one out, or sending `"********"`, keeps the stored secret of the same provider type.
+   */
+  settings?: Record<string, unknown>;
+}
 
 /** `logo` or `favicon`. */
 export type BrandingAssetKind = "logo" | "favicon";
@@ -162,6 +191,30 @@ export class EmailApi {
   /** Queues a failed delivery again. */
   retry(id: string): Promise<EmailDelivery> {
     return this.t.request(`/api/v1/customize/email/deliveries/${seg(id)}/retry`, { method: "POST", body: {} });
+  }
+
+  /** Which transport sends the realm's email (platform administrators). `realm: "*"` is the instance's. Secrets are masked. */
+  provider(o: RealmScope = {}): Promise<MailProviderState> {
+    return this.t.request("/api/v1/customize/email/provider", { query: realmQ(o) });
+  }
+
+  /** Sets the realm's mail provider. Nothing is sent; a bad setting is a `ValidationError` (`invalid_mail_config`). */
+  putProvider(config: MailProviderConfig, o: RealmScope = {}): Promise<MailProviderState> {
+    const body = { ...config.settings, provider: config.provider, ...(config.fromAddress === undefined ? {} : { from_address: config.fromAddress }) };
+    return this.t.request("/api/v1/customize/email/provider", { method: "PUT", body, query: realmQ(o) });
+  }
+
+  /** Removes the realm's provider, so it uses the instance's again. A realm without one is a `NotFoundError`. */
+  async deleteProvider(o: RealmScope = {}): Promise<void> {
+    await this.t.request("/api/v1/customize/email/provider", { method: "DELETE", query: realmQ(o) });
+  }
+
+  /**
+   * Sends one message to `to` now with the configured provider (not queued, not logged). A failure is a `ConflictError`
+   * (`mail_test_failed`) carrying the provider's reason.
+   */
+  testProvider(to: string, o: RealmScope = {}): Promise<TestMailResult> {
+    return this.t.request("/api/v1/customize/email/provider/test", { method: "POST", body: { to }, query: realmQ(o), retry: false });
   }
 }
 

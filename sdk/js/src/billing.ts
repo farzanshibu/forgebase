@@ -1,6 +1,6 @@
 import {
   BillingCatalogApi, BillingCustomersApi, BillingInvoicesApi, BillingOpsApi, BillingOrdersApi, BillingPortalApi, BillingProvidersApi,
-  BillingSettingsApi, BillingSubjectList, BillingSubscriptionsApi,
+  BillingSettingsApi, BillingSubjectList, BillingSubscriptionsApi, BillingWebhookDeliveriesApi,
 } from "./billing-admin";
 import type {
   BillingCreditNote, BillingDunningEntry, BillingMaintenanceReport, BillingPayment, BillingRefund, BillingStats, BillingStatsOptions,
@@ -97,7 +97,7 @@ export class BillingStoreApi {
 /**
  * Billing: `client.billing`. Customers, subscriptions, orders, invoices and the portal are for customers and
  * their operators; the catalog, providers, settings and the operator views need platform administrator rights.
- * The provider webhook inspector is not part of this class.
+ * `webhookDeliveries` is the provider webhook inspector (list, get, replay, reverify).
  */
 export class BillingApi {
   readonly store: BillingStoreApi;
@@ -116,6 +116,8 @@ export class BillingApi {
   /** Payment provider accounts (Stripe, Razorpay, WeChat Pay, stores). */
   readonly providers: BillingProvidersApi;
   readonly settings: BillingSettingsApi;
+  /** Provider webhook inspector: every delivery with its verification, outcome and stored body; replay and re-verify. */
+  readonly webhookDeliveries: BillingWebhookDeliveriesApi;
   private readonly ops: BillingOpsApi;
 
   constructor(t: Transport) {
@@ -131,6 +133,7 @@ export class BillingApi {
     this.catalog = new BillingCatalogApi(t);
     this.providers = new BillingProvidersApi(t);
     this.settings = new BillingSettingsApi(t);
+    this.webhookDeliveries = new BillingWebhookDeliveriesApi(t);
     this.ops = new BillingOpsApi(t);
   }
 

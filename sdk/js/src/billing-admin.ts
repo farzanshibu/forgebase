@@ -29,6 +29,28 @@ const isoTime = (v: string | Date | undefined): string | undefined => (v instanc
 // Types
 // ---------------------------------------------------------------------------
 
+export type BillingWebhookDelivery = Schemas["WebhookDelivery"];
+export type BillingWebhookDeliveryDetail = Schemas["WebhookDeliveryDetail"];
+export type BillingWebhookDeliveryPage = Schemas["WebhookDeliveryPage"];
+/** What a replay or a re-verification did: the delivery as it is now, the `result` (`applied`, `duplicate`, `rejected`, ...) and a `detail`. */
+export type BillingWebhookDeliveryResult = Schemas["WebhookDeliveryResult"];
+
+/** Filters of `billing.webhookDeliveries.list`. */
+export interface BillingWebhookDeliveriesQuery {
+  /** `stripe`, `razorpay`, `wechatpay`, ... */
+  provider?: string;
+  /** `applied`, `duplicate`, `rejected`, `unverified`, ... as the server reports them. */
+  outcome?: string;
+  eventType?: string;
+  eventId?: string;
+  /** Received at or after this time. */
+  from?: string | Date;
+  /** Received before this time. */
+  to?: string | Date;
+  limit?: number;
+  offset?: number;
+}
+
 export type BillingCustomer = Schemas["Customer"];
 export type BillingCustomerInput = Camelize<Schemas["CustomerInput"]>;
 export type BillingSubscription = Schemas["BillingSubscription"];
@@ -403,6 +425,37 @@ export class BillingProvidersApi {
 
   delete(provider: string): Promise<void> {
     return this.t.request(`/api/v1/billing/providers/${seg(provider)}`, { method: "DELETE" });
+  }
+}
+
+/**
+ * The payment-provider webhook inspector (platform administrators): every request a provider sent to
+ * `/api/v1/billing/webhooks/{provider}` with how its signature verified, what was done with it, the stored body (when
+ * kept) and the links to the records it touched. `client.billing.webhookDeliveries`.
+ */
+export class BillingWebhookDeliveriesApi {
+  constructor(private readonly t: Transport) {}
+
+  /** Deliveries, newest first, with the total for the filter. */
+  list(q: BillingWebhookDeliveriesQuery = {}): Promise<BillingWebhookDeliveryPage> {
+    return this.t.request("/api/v1/billing/webhook-deliveries", {
+      query: { provider: q.provider, outcome: q.outcome, event_type: q.eventType, event_id: q.eventId, from: isoTime(q.from), to: isoTime(q.to), limit: q.limit, offset: q.offset },
+    });
+  }
+
+  /** One delivery with its stored body and headers (`NotFoundError` for an unknown id). */
+  get(id: string): Promise<BillingWebhookDeliveryDetail> {
+    return this.t.request(`/api/v1/billing/webhook-deliveries/${seg(id)}`);
+  }
+
+  /** Processes the stored body again (after a fix on your side); events that were applied before are skipped as duplicates. */
+  replay(id: string): Promise<BillingWebhookDeliveryResult> {
+    return this.t.request(`/api/v1/billing/webhook-deliveries/${seg(id)}/replay`, { method: "POST", body: {} });
+  }
+
+  /** Verifies the stored signature again with the provider's current secrets (after fixing a wrong secret). */
+  reverify(id: string): Promise<BillingWebhookDeliveryResult> {
+    return this.t.request(`/api/v1/billing/webhook-deliveries/${seg(id)}/reverify`, { method: "POST", body: {} });
   }
 }
 
