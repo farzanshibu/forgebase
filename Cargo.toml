@@ -134,3 +134,32 @@ debug = "line-tables-only"
 
 [profile.dev.package."*"]
 debug = false
+
+# Wasmtime's compiler, optimised in dev/test builds too. Unoptimised it takes
+# about ten times as long to compile a module (the 1 MB JavaScript engine:
+# 9.6 s instead of 1.0 s on an Apple silicon laptop). The first JavaScript
+# deploy waits for that compile inside its request, so the parallel debug
+# e2e tests on a 4-core CI runner ran past the 30 s request timeout
+# (HTTP 408). Release and bench builds are unaffected.
+[profile.dev.package.cranelift-codegen]
+opt-level = 3
+[profile.dev.package.cranelift-frontend]
+opt-level = 3
+[profile.dev.package.cranelift-entity]
+opt-level = 3
+[profile.dev.package.cranelift-bforest]
+opt-level = 3
+[profile.dev.package.cranelift-bitset]
+opt-level = 3
+[profile.dev.package.cranelift-control]
+opt-level = 3
+[profile.dev.package.cranelift-assembler-x64]
+opt-level = 3
+[profile.dev.package.regalloc2]
+opt-level = 3
+[profile.dev.package.wasmtime-internal-cranelift]
+opt-level = 3
+[profile.dev.package.wasmtime-environ]
+opt-level = 3
+[profile.dev.package.wasmparser]
+opt-level = 3
