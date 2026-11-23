@@ -60,7 +60,7 @@ The data directory records its engine in `forgebase.backend`, and a setting that
 contradicts it stops startup. Choose once, and move with `forgebase db convert`.
 
 **The `-lite` image.** The release workflow publishes `ghcr.io/farzanshibu/forgebase`
-(the standard image, tags `0.4.0`, `0.4`, `sha-…`) and no `-lite` image. To use one,
+(the standard image, tags `0.4.1`, `0.4`, `sha-…`) and no `-lite` image. To use one,
 build the Dockerfile without `ENGINE_ARCHIVE`, push it as `<repository>:<version>-lite`
 and set `image.variant=lite` (and `image.repository` if it lives elsewhere). The
 standard image also runs SQLite (`database.backend=sqlite`) and is what you want

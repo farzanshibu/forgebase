@@ -44,11 +44,11 @@ this directory (or at the Git URL), then set the namespace, the image tag, the s
 class and `public_url` there:
 
 ```yaml
-resources: [github.com/farzanshibu/forgebase//deploy/kubernetes/overlays/bundled-postgres?ref=v0.4.0]
+resources: [github.com/farzanshibu/forgebase//deploy/kubernetes/overlays/bundled-postgres?ref=v0.4.1]
 namespace: forgebase
 images:
   - name: ghcr.io/farzanshibu/forgebase
-    newTag: "0.4.0"
+    newTag: "0.4.1"
 patches:
   - target: {kind: StatefulSet, name: forgebase}
     patch: |-
