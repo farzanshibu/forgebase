@@ -643,6 +643,10 @@ async fn copy(ctx: &Ctx<'_>, rec: &MoveRecord) -> Result<(), MoveError> {
         detail.subscribed = true;
         ctx.save(rec, MoveState::Copying, &detail).await?;
     }
+    // Reported before the first check as well: a small tenant's copy can be
+    // done by then, and the stage would never be reported (nor a cancel on
+    // it seen) at all.
+    ctx.report("copying", 5.0, "initial copy started".into()).await;
     let plan = plan_of(rec)?.clone();
     for t in plan.of(Feed::Stage) {
         ctx.check_cancel()?;
