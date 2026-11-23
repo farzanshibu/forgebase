@@ -32,9 +32,16 @@ tokio-tungstenite.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 criterion = { version = "0.8.2", default-features = false, features = ["cargo_bench_support", "async_tokio"] }
 
+# `cargo bench --benches` also benches the library and the binaries when they
+# keep the default `bench = true`, through the libtest harness, which rejects
+# Criterion's options (`--warm-up-time`). Only the Criterion targets bench.
+[lib]
+bench = false
+
 [[bin]]
 name = "fb-load"
 path = "src/bin/fb-load/main.rs"
+bench = false
 
 [[bench]]
 name = "db"
