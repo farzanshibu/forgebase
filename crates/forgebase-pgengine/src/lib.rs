@@ -465,8 +465,12 @@ async fn supervise(
                         set(EngineState::Failed, None, restarts, Some(last));
                         // Stay reachable for stop requests.
                         while let Some(cmd) = rx.recv().await {
-                            if let Cmd::Stop { reply, .. } = cmd {
-                                let _ = reply.send(());
+                            match cmd {
+                                Cmd::Stop { reply, .. } => {
+                                    let _ = reply.send(());
+                                }
+                                #[cfg(unix)]
+                                Cmd::KillForTest => {}
                             }
                         }
                         return;

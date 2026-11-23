@@ -12,6 +12,7 @@ use tokio::process::{Child, ChildStdin, Command};
 
 use crate::discover::EngineDir;
 use crate::error::{EngineError, Result};
+#[cfg(unix)]
 use crate::fsutil;
 
 /// How many engine log lines are kept for error messages.
@@ -61,13 +62,16 @@ pub(crate) struct Postmaster {
 }
 
 /// Socket path limit of the platform (bytes, without the NUL).
+#[cfg(unix)]
 fn socket_path_limit() -> usize {
     if cfg!(target_os = "linux") { 107 } else { 103 }
 }
 
 /// The Unix socket directory: `preferred` when `<dir>/.s.PGSQL.<port>` fits
 /// the platform limit, otherwise `$TMPDIR/forgebase-<12 hex of key>/` (ADR-0028
-/// §4.3), checked to be private and ours.
+/// §4.3), checked to be private and ours. Unix only: Windows engines listen
+/// on loopback TCP.
+#[cfg(unix)]
 pub(crate) fn socket_dir(preferred: &Path, key: &Path, port: u16) -> Result<PathBuf> {
     let socket_name = format!(".s.PGSQL.{port}");
     let fits = |d: &Path| d.join(&socket_name).as_os_str().len() <= socket_path_limit();
@@ -109,11 +113,6 @@ fn check_owned_private_dir(dir: &Path) -> Result<()> {
             dir.display()
         )));
     }
-    Ok(())
-}
-
-#[cfg(not(unix))]
-fn check_owned_private_dir(_dir: &Path) -> Result<()> {
     Ok(())
 }
 
@@ -348,17 +347,11 @@ impl PidFile {
     }
 
     /// Whether a server accepts connections on this file's socket.
+    #[cfg(unix)]
     fn socket_answers(&self) -> bool {
-        #[cfg(unix)]
-        {
-            match (&self.socket_dir, self.port) {
-                (Some(d), Some(p)) => std::os::unix::net::UnixStream::connect(d.join(format!(".s.PGSQL.{p}"))).is_ok(),
-                _ => false,
-            }
-        }
-        #[cfg(not(unix))]
-        {
-            false
+        match (&self.socket_dir, self.port) {
+            (Some(d), Some(p)) => std::os::unix::net::UnixStream::connect(d.join(format!(".s.PGSQL.{p}"))).is_ok(),
+            _ => false,
         }
     }
 }
@@ -604,6 +597,7 @@ mod tests {
         assert_eq!(lines.last().map(String::as_str), Some("line 99"));
     }
 
+    #[cfg(unix)]
     #[test]
     fn long_socket_paths_fall_back_to_a_private_temp_dir() {
         let dir = tempfile::tempdir().expect("tempdir");
