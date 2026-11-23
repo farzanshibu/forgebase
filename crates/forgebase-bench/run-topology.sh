@@ -19,6 +19,10 @@
 # without the embedded engine).
 set -eu
 FB=$1; LOAD=$2; DIR=$3; C=${4:-16}; D=${5:-30}; REPLICAS=${6:-2}; SHARDS=${7:-0}
+# The script changes into <work dir>: make relative paths absolute first.
+case $FB in /*) ;; */*) FB=$PWD/$FB ;; esac
+case $LOAD in /*) ;; */*) LOAD=$PWD/$LOAD ;; esac
+case ${JSON_OUT:-} in "" | /*) ;; *) JSON_OUT=$PWD/$JSON_OUT ;; esac
 PORT=${PORT:-18092}
 WRITE_PCT=${WRITE_PCT:-30}
 TENANTS=${TENANTS:-$((SHARDS * 3))}

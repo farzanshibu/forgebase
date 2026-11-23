@@ -14,6 +14,10 @@
 # sampled once a second during every scenario (CPU, RSS, open fds, disk).
 set -eu
 FB=$1; LOAD=$2; DIR=$3; C=${4:-16}; D=${5:-10}; DB=${6:-}
+# The script changes into <work dir>: make relative paths absolute first.
+case $FB in /*) ;; */*) FB=$PWD/$FB ;; esac
+case $LOAD in /*) ;; */*) LOAD=$PWD/$LOAD ;; esac
+case ${JSON_OUT:-} in "" | /*) ;; *) JSON_OUT=$PWD/$JSON_OUT ;; esac
 PORT=${PORT:-18091}
 SCENARIOS=${SCENARIOS:-records,queue,realtime,auth,storage,graph,sql}
 SUBSCRIBERS=${SUBSCRIBERS:-30}
