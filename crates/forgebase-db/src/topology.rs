@@ -809,13 +809,19 @@ pub async fn insert_node(control: &dyn Backend, new: &NewNode) -> Result<DbNode,
 }
 
 /// Changes a node's state (health monitor, promote, rebuild) and bumps the
-/// epoch. Returns the updated node, `None` if unknown.
+/// epoch. Returns the updated node, `None` if unknown or retired.
+///
+/// A retired node keeps its state: the health monitor of a replica set that
+/// is being dropped records "unreachable" in the background after the
+/// replica stops, and that write must not bring a removed node back into
+/// the topology (and the read rotation).
 pub async fn update_node_state(control: &dyn Backend, id: &str, state: NodeState) -> Result<Option<DbNode>, DbError> {
     let mut tx = control.begin(TxMode::Normal).await?;
     let rows = tx
         .fetch_all(&Statement::new(
             format!(
-                "UPDATE _forgebase_db_nodes SET state = ?2, updated_at = ?3 WHERE id = ?1 RETURNING {NODE_COLUMNS}"
+                "UPDATE _forgebase_db_nodes SET state = ?2, updated_at = ?3 \
+                 WHERE id = ?1 AND state <> 'retired' RETURNING {NODE_COLUMNS}"
             ),
             vec![id.into(), state.as_str().into(), forgebase_core::now_rfc3339().into()],
         ))
