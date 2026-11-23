@@ -507,7 +507,7 @@ impl Topo {
         self.as_(
             &self.admin,
             "GET",
-            &format!("/api/v1/collections/{collection}/records?perPage=500"),
+            &format!("/api/v1/collections/{collection}/records?per_page=500"),
             &h,
             None,
         )

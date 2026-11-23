@@ -31,7 +31,7 @@ async fn put(t: &Topo, k: &str) -> bool {
 
 async fn keys(t: &Topo) -> Vec<String> {
     let r = t
-        .adm("GET", "/api/v1/collections/events/records?perPage=500", None)
+        .adm("GET", "/api/v1/collections/events/records?per_page=500", None)
         .await;
     assert_eq!(r.status, 200, "{}", r.text());
     r.json()["items"]
@@ -95,7 +95,7 @@ async fn a_killed_replica_fails_reads_over_to_the_primary_and_comes_back() {
                 let r = send(
                     addr,
                     "GET",
-                    "/api/v1/collections/events/records?perPage=500",
+                    "/api/v1/collections/events/records?per_page=500",
                     &[("Authorization", &auth)],
                     &[],
                 )

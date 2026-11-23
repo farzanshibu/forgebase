@@ -15,7 +15,7 @@ async fn count(t: &Topo, extra: &[(&str, &str)]) -> usize {
         .as_(
             &t.admin,
             "GET",
-            "/api/v1/collections/events/records?perPage=500",
+            "/api/v1/collections/events/records?per_page=500",
             extra,
             None,
         )

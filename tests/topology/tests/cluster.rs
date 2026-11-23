@@ -174,7 +174,7 @@ async fn the_topology_serves_tenants_replica_reads_and_schema_changes() {
             .expect("X-ForgeBase-Commit with shards present");
         assert!(token.starts_with("control/"), "{token}");
         let l = t
-            .adm("GET", "/api/v1/collections/settings/records?perPage=500", None)
+            .adm("GET", "/api/v1/collections/settings/records?per_page=500", None)
             .await;
         assert_eq!(l.status, 200);
         assert!(
