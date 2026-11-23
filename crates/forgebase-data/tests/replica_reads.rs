@@ -107,7 +107,12 @@ async fn record_reads_use_a_lagging_replica_when_allowed() {
     // list (and its count): the standby has one note.
     let before = rc.replica_reads();
     let list = svc.list_records(ctx, "notes", &q).await.unwrap();
-    assert_eq!(ids(&list), ["n1"], "list read the lagging replica");
+    assert_eq!(
+        ids(&list),
+        ["n1"],
+        "list read the lagging replica: {:?}",
+        rc.replicas.status()
+    );
     assert!(rc.replica_reads() > before);
 
     // search is a list read too.

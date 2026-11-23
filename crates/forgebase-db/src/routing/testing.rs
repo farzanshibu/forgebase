@@ -388,10 +388,26 @@ impl RoutedCluster {
     }
 
     /// Lets the standby catch up (DDL a service ran at open must reach it
-    /// before the first routed read), then samples its health.
+    /// before the first routed read), then samples its health until it is in
+    /// rotation. One sample is not enough: a sample that fails or takes over
+    /// its 1 s timeout (a loaded runner) takes the replica out of rotation
+    /// until `return_after` good ones, and every routed read would go to the
+    /// primary.
     pub async fn sync(&self) {
         self.cluster.wait_caught_up().await.expect("standby catches up");
-        self.replicas.refresh().await;
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            self.replicas.refresh().await;
+            if self.replicas.status().iter().all(|s| s.in_rotation) {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the standby did not return to rotation: {:?}",
+                self.replicas.status()
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
     }
 
     /// Pauses replay: the standby keeps what it has.
