@@ -926,8 +926,11 @@ async fn containers_created_during_a_move_are_copied_in_the_freeze() {
     )
     .await
     .unwrap();
-    // Run the prepare step only, by cancelling the copy … no: start the move,
-    // and create a topic while it copies (a hook-free stand-in for an API call).
+    // Start the move and create a topic while it copies or catches up (a
+    // hook-free stand-in for an API call), after the publication's row
+    // filters were set, before the freeze. `copying` is reported only while
+    // the initial copy is still running, which a fast machine can finish
+    // before the first check; `catching_up` is always reported.
     struct AtCopy<'a> {
         db: &'a Database,
         done: AtomicBool,
@@ -935,7 +938,7 @@ async fn containers_created_during_a_move_are_copied_in_the_freeze() {
     impl MoveControl for AtCopy<'_> {
         fn report<'a>(&'a self, stage: &'a str, _p: f64, _m: String) -> BoxFuture<'a, ()> {
             Box::pin(async move {
-                if stage == "copying" && !self.done.swap(true, Ordering::SeqCst) {
+                if matches!(stage, "copying" | "catching_up") && !self.done.swap(true, Ordering::SeqCst) {
                     exec(
                         self.db,
                         &format!(
@@ -969,7 +972,7 @@ async fn containers_created_during_a_move_are_copied_in_the_freeze() {
         .await
         .unwrap();
     assert_eq!(done.state, MoveState::Cleanup, "{:?}", done.error);
-    assert!(ctl.done.load(Ordering::SeqCst), "the topic was created during the copy");
+    assert!(ctl.done.load(Ordering::SeqCst), "the topic was created during the move");
     assert_eq!(
         texts(
             &shard,
