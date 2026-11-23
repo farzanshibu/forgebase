@@ -157,7 +157,14 @@ async fn slow_statements_keep_no_literal_values_and_the_overhead_is_small() {
     assert_eq!(local.peek()[0].calls, u64::from(9 * n));
 
     // (2) End to end: point lookups through the database with the statistics
-    // on and off. Best of three rounds each, to ignore scheduling noise.
+    // on and off. Each lookup is timed alone and the two medians compare: the
+    // statistics add the same few microseconds to every statement, which
+    // shifts the median, while a round trip's noise (a busy runner stalls
+    // whole runs of statements for tens of microseconds each) does not move
+    // it. The two modes alternate on, off, off, on, so drift and the order of
+    // statements fall on both alike. Comparing the totals of separate rounds
+    // let one slow round decide (57 µs "extra" on a macOS arm64 runner, where
+    // the hot path above costs about 6 µs).
     for i in 0..50 {
         db.fetch_all(&Statement::new(
             "SELECT token FROM fp_secrets WHERE id = ?1",
@@ -166,35 +173,27 @@ async fn slow_statements_keep_no_literal_values_and_the_overhead_is_small() {
         .await
         .unwrap();
     }
-    let lookups = 400;
-    let timed = |on: bool| stats.set_enabled(on);
-    let mut off = Duration::MAX;
-    let mut on = Duration::MAX;
-    for _ in 0..3 {
-        timed(false);
+    let lookups = 1000;
+    let mut off = Vec::with_capacity(lookups);
+    let mut on = Vec::with_capacity(lookups);
+    for i in 0..2 * lookups {
+        let enabled = matches!(i % 4, 0 | 3);
+        stats.set_enabled(enabled);
         let t0 = Instant::now();
-        for i in 0..lookups {
-            db.fetch_all(&Statement::new(
-                "SELECT token FROM fp_secrets WHERE id = ?1",
-                vec![i64::from(i).into()],
-            ))
-            .await
-            .unwrap();
-        }
-        off = off.min(t0.elapsed());
-        timed(true);
-        let t0 = Instant::now();
-        for i in 0..lookups {
-            db.fetch_all(&Statement::new(
-                "SELECT token FROM fp_secrets WHERE id = ?1",
-                vec![i64::from(i).into()],
-            ))
-            .await
-            .unwrap();
-        }
-        on = on.min(t0.elapsed());
+        db.fetch_all(&Statement::new(
+            "SELECT token FROM fp_secrets WHERE id = ?1",
+            vec![i64::try_from(i % 400).unwrap().into()],
+        ))
+        .await
+        .unwrap();
+        let took = t0.elapsed();
+        if enabled { on.push(took) } else { off.push(took) }
     }
-    let extra = on.saturating_sub(off) / lookups as u32;
-    eprintln!("point lookup: {off:?} off, {on:?} on for {lookups}: {extra:?} extra per statement");
+    stats.set_enabled(true);
+    off.sort_unstable();
+    on.sort_unstable();
+    let (off, on) = (off[lookups / 2], on[lookups / 2]);
+    let extra = on.saturating_sub(off);
+    eprintln!("point lookup: median {off:?} off, {on:?} on of {lookups} each: {extra:?} extra per statement");
     assert!(extra < Duration::from_micros(40), "extra per statement: {extra:?}");
 }
