@@ -751,7 +751,9 @@ export async function use() {
             "target": "ES2022", "module": "ESNext", "moduleResolution": "Bundler",
             "lib": ["ES2022", "DOM", "DOM.Iterable"], "types": [], "strict": true, "noEmit": true,
             "skipLibCheck": true, "verbatimModuleSyntax": true, "isolatedModules": true,
-            "noUncheckedIndexedAccess": true, "baseUrl": ".",
+            "noUncheckedIndexedAccess": true,
+            // No `baseUrl`: TypeScript 7 removed it (TS5102). `paths` entries
+            // resolve against this file without it, and this one is absolute.
             "paths": {"@forgebase/sdk": [sdk.display().to_string()]}
         }, "files": ["use.ts"]})
         .to_string(),
